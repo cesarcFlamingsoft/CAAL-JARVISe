@@ -23,7 +23,7 @@ Built on [LiveKit Agents](https://docs.livekit.io/agents/) with fully local STT/
 git clone https://github.com/CoreWorxLab/caal.git
 cd caal
 cp .env.example .env
-nano .env  # Set CAAL_HOST_IP and N8N_MCP_URL
+nano .env  # Set CAAL_HOST_IP, OLLAMA_HOST, N8N_MCP_URL, N8N_MCP_TOKEN
 
 # Deploy
 docker compose up -d
