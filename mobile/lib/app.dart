@@ -4,6 +4,7 @@ import 'package:livekit_components/livekit_components.dart' as components;
 import 'package:provider/provider.dart';
 
 import 'controllers/app_ctrl.dart';
+import 'controllers/tool_status_ctrl.dart';
 import 'screens/agent_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'ui/color_pallette.dart' show LKColorPaletteLight, LKColorPaletteDark;
@@ -11,6 +12,7 @@ import 'widgets/app_layout_switcher.dart';
 import 'widgets/session_error_banner.dart';
 
 final appCtrl = AppCtrl();
+late final toolStatusCtrl = ToolStatusCtrl(room: appCtrl.room);
 
 class CaalApp extends StatelessWidget {
   const CaalApp({super.key});
@@ -62,6 +64,7 @@ class CaalApp extends StatelessWidget {
           ChangeNotifierProvider.value(value: appCtrl),
           ChangeNotifierProvider<sdk.Session>.value(value: appCtrl.session),
           ChangeNotifierProvider<components.RoomContext>.value(value: appCtrl.roomContext),
+          ChangeNotifierProvider<ToolStatusCtrl>.value(value: toolStatusCtrl),
         ],
         child: components.SessionContext(
           session: appCtrl.session,
