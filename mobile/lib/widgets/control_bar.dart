@@ -14,7 +14,7 @@ import '../ui/color_pallette.dart' show LKColorPaletteLight;
 import 'floating_glass.dart';
 
 const _wakeWordBlue = Color(0xFF3B82F6);
-const _autoMuteDelay = Duration(seconds: 4);
+const _followUpWindow = Duration(seconds: 4);
 
 class ControlBar extends StatelessWidget {
   const ControlBar({super.key});
@@ -239,29 +239,33 @@ class _WakeWordButtonState extends State<_WakeWordButton> {
       return;
     }
 
-    // Track when agent becomes active (speaking or thinking)
-    if (newState == sdk.AgentState.speaking || newState == sdk.AgentState.thinking) {
+    // When agent starts thinking (user finished speaking), mute immediately
+    // This prevents background noise from interrupting CAAL's response
+    if (newState == sdk.AgentState.thinking && mediaDeviceCtx.microphoneOpened) {
       _wasAgentActive = true;
-      // If agent is thinking and mic is on, user has spoken
-      if (newState == sdk.AgentState.thinking && mediaDeviceCtx.microphoneOpened) {
-        _hasUserSpoken = true;
-        // Cancel pending auto-mute if user spoke during delay
-        _autoMuteTimer?.cancel();
-        debugPrint('[WakeWordButton] User spoke, canceling auto-mute');
-      }
+      _hasUserSpoken = true;
+      debugPrint('[WakeWordButton] User finished speaking, muting mic');
+      mediaDeviceCtx.disableMicrophone();
+      _autoMuteTimer?.cancel();
     }
 
-    // When agent returns to listening after being active, schedule auto-mute
-    if (newState == sdk.AgentState.listening && _wasAgentActive && mediaDeviceCtx.microphoneOpened && _hasUserSpoken) {
-      _wasAgentActive = false;
+    // Track when agent is speaking
+    if (newState == sdk.AgentState.speaking) {
+      _wasAgentActive = true;
+    }
+
+    // When agent finishes speaking and returns to listening, open follow-up window
+    if (newState == sdk.AgentState.listening && _lastAgentState == sdk.AgentState.speaking) {
       _autoMuteTimer?.cancel();
 
-      debugPrint('[WakeWordButton] Agent finished, will mute in ${_autoMuteDelay.inSeconds}s');
-      _autoMuteTimer = Timer(_autoMuteDelay, () {
+      // Unmute for follow-up window
+      debugPrint('[WakeWordButton] CAAL done speaking, opening ${_followUpWindow.inSeconds}s follow-up window');
+      mediaDeviceCtx.enableMicrophone();
+
+      _autoMuteTimer = Timer(_followUpWindow, () {
         if (wakeWord.isEnabled && mediaDeviceCtx.microphoneOpened) {
-          debugPrint('[WakeWordButton] Auto-muting mic');
+          debugPrint('[WakeWordButton] No follow-up, muting mic');
           mediaDeviceCtx.disableMicrophone();
-          _hasUserSpoken = false;
         }
       });
     }
