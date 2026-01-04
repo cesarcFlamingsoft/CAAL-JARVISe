@@ -31,6 +31,7 @@ from livekit.agents.types import (
     NotGivenOr,
 )
 from livekit.agents.utils import aio
+from livekit.agents.vad import VADEvent, VADEventType
 from livekit.plugins import silero
 from openwakeword.model import Model as OWWModel
 
@@ -204,6 +205,7 @@ class WakeWordGatedStream(RecognizeStream):
         self._last_speech_time: float = 0.0
         self._inner_stream: RecognizeStream | None = None
         self._agent_busy: bool = False  # True while agent is thinking/speaking
+        self._speech_active: bool = False  # True while VAD detects speech
 
     def set_agent_busy(self, busy: bool) -> None:
         """Set agent busy state - pauses silence timer while busy, resets when done."""
@@ -233,6 +235,11 @@ class WakeWordGatedStream(RecognizeStream):
         vad = silero.VAD.load()
         stream_adapter = StreamAdapter(stt=self._inner_stt, vad=vad)
 
+        # Create a separate VAD stream for tracking speech activity
+        # This lets us know when the user is still speaking (not just when STT returns)
+        speech_vad = silero.VAD.load()
+        vad_stream = speech_vad.stream()
+
         # Get a stream from the adapter
         self._inner_stream = stream_adapter.stream(
             language=self._language,
@@ -248,6 +255,7 @@ class WakeWordGatedStream(RecognizeStream):
                 if isinstance(data, self._FlushSentinel):
                     if self._state == WakeWordState.ACTIVE:
                         self._inner_stream.flush()
+                        vad_stream.flush()
                     continue
 
                 frame: rtc.AudioFrame = data
@@ -255,11 +263,13 @@ class WakeWordGatedStream(RecognizeStream):
                 if self._state == WakeWordState.LISTENING:
                     await self._process_wake_word(frame)
                 else:
-                    # Active mode - forward to StreamAdapter
+                    # Active mode - forward to StreamAdapter AND VAD tracker
                     self._inner_stream.push_frame(frame)
+                    vad_stream.push_frame(frame)
 
             # End input when done
             self._inner_stream.end_input()
+            vad_stream.end_input()
 
         async def _read_inner_events() -> None:
             """Read events from inner StreamAdapter and forward them."""
@@ -273,13 +283,29 @@ class WakeWordGatedStream(RecognizeStream):
                 ):
                     self._last_speech_time = time.time()
 
+        async def _track_speech_activity() -> None:
+            """Track VAD events to know when user is speaking."""
+            async for event in vad_stream:
+                if event.type == VADEventType.START_OF_SPEECH:
+                    self._speech_active = True
+                    self._last_speech_time = time.time()
+                    logger.debug("VAD: speech started")
+                elif event.type == VADEventType.END_OF_SPEECH:
+                    self._speech_active = False
+                    self._last_speech_time = time.time()
+                    logger.debug("VAD: speech ended")
+
         async def _monitor_silence() -> None:
             """Monitor for silence timeout to return to listening mode."""
             while True:
                 await asyncio.sleep(0.5)  # Check every 500ms
 
-                # Only timeout if active and agent is not busy
-                if self._state == WakeWordState.ACTIVE and not self._agent_busy:
+                # Only timeout if active, agent is not busy, AND user is not speaking
+                if (
+                    self._state == WakeWordState.ACTIVE
+                    and not self._agent_busy
+                    and not self._speech_active
+                ):
                     elapsed = time.time() - self._last_speech_time
                     if elapsed >= self._silence_timeout:
                         logger.info(
@@ -293,6 +319,7 @@ class WakeWordGatedStream(RecognizeStream):
         tasks = [
             asyncio.create_task(_process_audio(), name="process_audio"),
             asyncio.create_task(_read_inner_events(), name="read_inner_events"),
+            asyncio.create_task(_track_speech_activity(), name="track_speech_activity"),
             asyncio.create_task(_monitor_silence(), name="monitor_silence"),
         ]
 
@@ -302,6 +329,7 @@ class WakeWordGatedStream(RecognizeStream):
             await aio.cancel_and_wait(*tasks)
             if self._inner_stream:
                 await self._inner_stream.aclose()
+            await vad_stream.aclose()
 
     async def _process_wake_word(self, frame: rtc.AudioFrame) -> None:
         """Process audio frame for wake word detection."""
