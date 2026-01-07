@@ -10,6 +10,7 @@ import '../controllers/wake_word_state_ctrl.dart';
 import '../support/agent_selector.dart';
 import '../widgets/agent_layout_switcher.dart';
 import '../widgets/camera_toggle_button.dart';
+import '../widgets/jarvis_visualizer.dart';
 import '../widgets/message_bar.dart';
 
 class AgentTrackView extends StatelessWidget {
@@ -43,14 +44,8 @@ class AgentTrackView extends StatelessWidget {
                       return const components.VideoTrackWidget();
                     }
 
-                    return const components.AudioVisualizerWidget(
-                      options: components.AudioVisualizerWidgetOptions(
-                        barCount: 5,
-                        width: 32,
-                        minHeight: 32,
-                        maxHeight: 320,
-                        // color: Theme.of(ctx).colorScheme.primary,
-                      ),
+                    return JarvisVisualizer(
+                      participant: agentParticipant,
                     );
                   }),
                 ),

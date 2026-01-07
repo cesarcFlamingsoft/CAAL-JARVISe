@@ -37,7 +37,7 @@ class Button extends StatelessWidget {
                 height: 20,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  valueColor: const AlwaysStoppedAnimation(Color(0xFF171717)),
+                  valueColor: AlwaysStoppedAnimation(Color(0xFF171717)),
                 ),
               ),
             Text(

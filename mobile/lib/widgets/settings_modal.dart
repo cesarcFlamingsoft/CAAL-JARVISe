@@ -746,7 +746,7 @@ class _SettingsModalState extends State<SettingsModal> {
         ),
         const SizedBox(height: 4),
         DropdownButtonFormField<String>(
-          value: safeValue,
+          initialValue: safeValue,
           style: const TextStyle(color: Colors.white),
           dropdownColor: const Color(0xFF2A2A2A),
           decoration: _inputDecoration(),
