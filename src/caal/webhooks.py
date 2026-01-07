@@ -620,6 +620,8 @@ class SetupCompleteRequest(BaseModel):
     # Groq settings
     groq_api_key: str | None = None
     groq_model: str | None = None
+    # TTS provider
+    tts_provider: str = "kokoro"  # "kokoro" | "piper"
     # Integrations (optional)
     hass_enabled: bool = False
     hass_host: str | None = None
@@ -627,8 +629,6 @@ class SetupCompleteRequest(BaseModel):
     n8n_enabled: bool = False
     n8n_url: str | None = None
     n8n_token: str | None = None
-    # Prompt preset
-    prompt: str = "default"  # "default" | "hass" | "custom"
 
 
 class SetupCompleteResponse(BaseModel):
@@ -730,9 +730,8 @@ async def complete_setup(req: SetupCompleteRequest) -> SetupCompleteResponse:
             if req.n8n_token:
                 current["n8n_token"] = req.n8n_token
 
-        # Prompt preset
-        if req.prompt in ("default", "hass", "custom"):
-            current["prompt"] = req.prompt
+        # TTS provider (placeholder for now - piper not yet implemented)
+        current["tts_provider"] = req.tts_provider
 
         # Mark setup as complete
         current["first_launch_completed"] = True

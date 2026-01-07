@@ -8,8 +8,8 @@ Settings hierarchy:
 2. .env - Infrastructure values (URLs, tokens) - fallback only
 
 Prompt files:
-- prompt/default.md - Ships with CAAL, read-only in UI
-- prompt/custom.md - User's custom prompt (gitignored)
+- prompt/default.md - Ships with CAAL, used by default
+- prompt/custom.md - User's custom prompt (configured via settings menu)
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ DEFAULT_SETTINGS = {
     # Agent identity
     "agent_name": "Cal",
     "tts_voice": "am_puck",
-    "prompt": "default",  # "default" | "hass" | "custom"
+    "prompt": "default",  # "default" | "custom"
     "wake_greetings": [
         "Hey, what's up?",
         "Hi there!",
@@ -48,6 +48,7 @@ DEFAULT_SETTINGS = {
     # Provider settings (UI sets both together, but stored separately for power users)
     "stt_provider": "speaches",  # "speaches" | "groq"
     "llm_provider": "ollama",  # "ollama" | "groq"
+    "tts_provider": "kokoro",  # "kokoro" | "piper"
     "temperature": 0.7,
     # Ollama settings
     "ollama_host": "http://localhost:11434",
@@ -259,7 +260,7 @@ def load_prompt_content(prompt_name: str | None = None) -> str:
     """Load raw prompt content from file.
 
     Args:
-        prompt_name: "default", "hass", or "custom". If None, uses settings["prompt"].
+        prompt_name: "default" or "custom". If None, uses settings["prompt"].
 
     Returns:
         Prompt file content, or default content if file doesn't exist.
@@ -271,11 +272,6 @@ def load_prompt_content(prompt_name: str | None = None) -> str:
 
     # If custom doesn't exist, fall back to default
     if prompt_name == "custom" and not prompt_path.exists():
-        prompt_path = get_prompt_path("default")
-
-    # If hass doesn't exist, fall back to default
-    if prompt_name == "hass" and not prompt_path.exists():
-        logger.warning("hass.md prompt not found, falling back to default")
         prompt_path = get_prompt_path("default")
 
     try:

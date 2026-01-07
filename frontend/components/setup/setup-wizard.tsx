@@ -2,19 +2,20 @@
 
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 import { IntegrationsStep } from './integrations-step';
-import { PromptPreset, PromptStep } from './prompt-step';
 import { ProviderStep } from './provider-step';
+import { SttStep } from './stt-step';
 
 export interface SetupData {
-  // Provider
+  // LLM Provider
   llm_provider: 'ollama' | 'groq';
   ollama_host: string;
   ollama_model: string;
   groq_api_key: string;
   groq_model: string;
+  // TTS Provider
+  tts_provider: 'kokoro' | 'piper';
   // Integrations
   hass_enabled: boolean;
   hass_host: string;
@@ -22,13 +23,10 @@ export interface SetupData {
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
-  // Prompt preset
-  prompt: PromptPreset;
 }
 
 interface SetupWizardProps {
   onComplete: () => void;
-  onCancel?: () => void;
 }
 
 const INITIAL_DATA: SetupData = {
@@ -36,19 +34,19 @@ const INITIAL_DATA: SetupData = {
   ollama_host: 'http://localhost:11434',
   ollama_model: '',
   groq_api_key: '',
-  groq_model: 'llama-3.3-70b-versatile',
+  groq_model: '',
+  tts_provider: 'kokoro',
   hass_enabled: false,
   hass_host: '',
   hass_token: '',
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',
-  prompt: 'default',
 };
 
 const TOTAL_STEPS = 3;
 
-export function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
+export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [step, setStep] = useState(1);
   const [data, setData] = useState<SetupData>(INITIAL_DATA);
   const [saving, setSaving] = useState(false);
@@ -77,15 +75,13 @@ export function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
     return `${baseUrl}/mcp-server/http`;
   };
 
-  const handleComplete = async (promptPreset?: PromptPreset) => {
+  const handleComplete = async () => {
     setSaving(true);
     setError(null);
 
-    // Use prompt from parameter if provided (from prompt step), otherwise from data
     // Transform n8n_url to include full MCP path if enabled
     const finalData = {
       ...data,
-      prompt: promptPreset || data.prompt,
       n8n_url: data.n8n_enabled ? getN8nMcpUrl(data.n8n_url) : data.n8n_url,
     };
 
@@ -126,6 +122,10 @@ export function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
         return data.groq_api_key && data.groq_model;
       }
     }
+    // Step 2 (TTS) - kokoro is always valid, piper is disabled
+    if (step === 2) {
+      return data.tts_provider === 'kokoro';
+    }
     return true;
   };
 
@@ -134,29 +134,22 @@ export function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
       case 1:
         return 'Choose your AI provider';
       case 2:
-        return 'Configure integrations';
+        return 'Choose your voice';
       case 3:
-        return 'Choose a prompt preset';
+        return 'Configure integrations';
       default:
         return '';
     }
   };
 
+  const isLastStep = step === TOTAL_STEPS;
+
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="bg-background border-input dark:border-muted flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border shadow-xl">
         {/* Header */}
-        <div className="border-input dark:border-muted relative shrink-0 border-b p-4">
-          {onCancel && (
-            <button
-              onClick={onCancel}
-              className="text-muted-foreground hover:text-foreground absolute top-4 right-4 p-1 transition-colors"
-              title="Close"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          )}
-          <h2 className="text-lg font-semibold">{onCancel ? 'Settings' : 'Welcome to CAAL'}</h2>
+        <div className="border-input dark:border-muted shrink-0 border-b p-4">
+          <h2 className="text-lg font-semibold">Welcome to CAAL</h2>
           <p className="text-muted-foreground text-sm">
             Step {step} of {TOTAL_STEPS} &mdash; {getStepTitle()}
           </p>
@@ -174,34 +167,31 @@ export function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
           {error && <div className="mb-4 rounded-md bg-red-500/10 p-3 text-red-500">{error}</div>}
 
           {step === 1 && <ProviderStep data={data} updateData={updateData} />}
-          {step === 2 && <IntegrationsStep data={data} updateData={updateData} />}
-          {step === 3 && (
-            <PromptStep
-              initialPreset={data.prompt}
-              hassEnabled={data.hass_enabled}
-              onBack={handleBack}
-              onComplete={(preset) => handleComplete(preset)}
-            />
-          )}
+          {step === 2 && <SttStep data={data} updateData={updateData} />}
+          {step === 3 && <IntegrationsStep data={data} updateData={updateData} />}
         </div>
 
-        {/* Footer - hidden on step 3 since PromptStep has its own buttons */}
-        {step < 3 && (
-          <div className="border-input dark:border-muted flex shrink-0 justify-between border-t p-4">
-            <div>
-              {step > 1 && (
-                <Button variant="secondary" onClick={handleBack} disabled={saving}>
-                  Back
-                </Button>
-              )}
-            </div>
-            <div className="flex gap-2">
+        {/* Footer */}
+        <div className="border-input dark:border-muted flex shrink-0 justify-between border-t p-4">
+          <div>
+            {step > 1 && (
+              <Button variant="secondary" onClick={handleBack} disabled={saving}>
+                Back
+              </Button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            {isLastStep ? (
+              <Button variant="primary" onClick={handleComplete} disabled={saving || !canProceed()}>
+                {saving ? 'Saving...' : 'Finish Setup'}
+              </Button>
+            ) : (
               <Button variant="primary" onClick={handleNext} disabled={!canProceed()}>
                 Continue
               </Button>
-            </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>,
     document.body

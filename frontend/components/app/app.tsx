@@ -31,7 +31,6 @@ interface AppProps {
 
 export function App({ appConfig }: AppProps) {
   const [setupCompleted, setSetupCompleted] = useState<boolean | null>(null);
-  const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Check setup status on mount
   useEffect(() => {
@@ -50,17 +49,8 @@ export function App({ appConfig }: AppProps) {
 
   const handleSetupComplete = () => {
     setSetupCompleted(true);
-    setShowSetupWizard(false);
     // Reload the page to pick up new settings
     window.location.reload();
-  };
-
-  const handleOpenSettings = () => {
-    setShowSetupWizard(true);
-  };
-
-  const handleCloseSettings = () => {
-    setShowSetupWizard(false);
   };
 
   const tokenSource = useMemo(() => {
@@ -140,14 +130,11 @@ export function App({ appConfig }: AppProps) {
       >
         <AppSetup />
         <main className="grid h-svh grid-cols-1 place-content-center">
-          <ViewController appConfig={appConfig} onOpenSettings={handleOpenSettings} />
+          <ViewController appConfig={appConfig} />
         </main>
         <StartAudio label="Start Audio" />
         <AgentAudioRenderer />
         <Toaster />
-        {showSetupWizard && (
-          <SetupWizard onComplete={handleSetupComplete} onCancel={handleCloseSettings} />
-        )}
       </WakeWordProvider>
     </SessionProvider>
   );
