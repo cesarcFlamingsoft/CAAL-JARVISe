@@ -45,7 +45,10 @@ class AppCtrl extends ChangeNotifier {
   sdk.Session _createSession() {
     return sdk.Session.fromConfigurableTokenSource(
       createCaalTokenSource(serverUrl).cached(),
-      options: sdk.SessionOptions(room: _room),
+      options: sdk.SessionOptions(
+        room: _room,
+        // Don't auto-enable camera on startup to avoid Windows native renderer issues
+      ),
     );
   }
 
@@ -168,8 +171,22 @@ class AppCtrl extends ChangeNotifier {
 
   void toggleUserCamera(components.MediaDeviceContext? deviceCtx) {
     isUserCameEnabled = !isUserCameEnabled;
-    isUserCameEnabled ? deviceCtx?.enableCamera() : deviceCtx?.disableCamera();
     notifyListeners();
+    
+    try {
+      if (isUserCameEnabled) {
+        deviceCtx?.enableCamera();
+        _logger.info('Camera enabled');
+      } else {
+        deviceCtx?.disableCamera();
+        _logger.info('Camera disabled');
+      }
+    } catch (error) {
+      _logger.warning('Could not toggle camera: $error');
+      // Revert the state on error
+      isUserCameEnabled = !isUserCameEnabled;
+      notifyListeners();
+    }
   }
 
   void toggleScreenShare() {
@@ -198,14 +215,26 @@ class AppCtrl extends ChangeNotifier {
       if (_session.connectionState == sdk.ConnectionState.connected) {
         appScreenState = AppScreenState.agent;
         WakelockPlus.enable();
+        
+        // Enable microphone after connection (already requested in SessionOptions)
+        try {
+          await _room.localParticipant?.setMicrophoneEnabled(true);
+          _logger.info('Microphone enabled');
+        } catch (micError) {
+          _logger.warning('Could not enable microphone: $micError');
+        }
+        
         notifyListeners();
       }
     } catch (error, stackTrace) {
       final errorStr = error.toString();
 
-      // Check if this is a disposed MediaStreamTrack error
-      if (errorStr.contains('disposed') || errorStr.contains('MediaStreamTrack')) {
-        _logger.warning('Native resources disposed, marking for recreation...');
+      // Check if this is a native renderer or MediaStreamTrack error
+      if (errorStr.contains('disposed') || 
+          errorStr.contains('MediaStreamTrack') ||
+          errorStr.contains('NativeRenderer') ||
+          errorStr.contains('native')) {
+        _logger.warning('Native resources issue, marking for recreation...');
         _markNeedsRecreation();
         await _recreateSessionObjects();
 
@@ -215,6 +244,15 @@ class AppCtrl extends ChangeNotifier {
           if (_session.connectionState == sdk.ConnectionState.connected) {
             appScreenState = AppScreenState.agent;
             WakelockPlus.enable();
+            
+            // Try enabling microphone on retry
+            try {
+              await _room.localParticipant?.setMicrophoneEnabled(true);
+              _logger.info('Microphone enabled (after retry)');
+            } catch (micError) {
+              _logger.warning('Could not enable microphone on retry: $micError');
+            }
+            
             notifyListeners();
             return;
           }
