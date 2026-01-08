@@ -142,7 +142,8 @@ async def llm_node(
                 )
 
                 # Stream follow-up response with tool results
-                async for chunk in provider.chat_stream(messages=messages):
+                # Pass tools so Ollama can validate tool_calls in message history
+                async for chunk in provider.chat_stream(messages=messages, tools=tools):
                     yield strip_markdown_for_tts(chunk)
                 return
 
@@ -315,12 +316,13 @@ async def _discover_tools(agent) -> list[dict] | None:
                     }
                 )
 
-    # Get MCP tools from all configured servers (except n8n)
+    # Get MCP tools from all configured servers (except n8n and home_assistant)
     # n8n uses webhook-based workflow discovery, not direct MCP tools
+    # home_assistant uses wrapper tools (hass_control, hass_get_state) for simpler LLM interface
     if hasattr(agent, "_caal_mcp_servers") and agent._caal_mcp_servers:
         for server_name, server in agent._caal_mcp_servers.items():
-            # Skip n8n - it uses workflow discovery via _n8n_workflow_tools
-            if server_name == "n8n":
+            # Skip servers that use wrapper tools instead of raw MCP tools
+            if server_name in ("n8n", "home_assistant"):
                 continue
 
             mcp_tools = await _get_mcp_tools(server)
@@ -359,7 +361,7 @@ async def _get_mcp_tools(mcp_server) -> list[dict]:
                 if hasattr(mcp_tool, "inputSchema") and mcp_tool.inputSchema:
                     schema = mcp_tool.inputSchema
                     if isinstance(schema, dict):
-                        parameters = schema
+                        parameters = schema.copy()
                     elif hasattr(schema, "properties"):
                         parameters["properties"] = schema.properties or {}
                         parameters["required"] = getattr(schema, "required", []) or []

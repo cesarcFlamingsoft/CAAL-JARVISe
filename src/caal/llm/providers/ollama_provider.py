@@ -150,12 +150,14 @@ class OllamaProvider(LLMProvider):
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Execute streaming Ollama chat completion.
 
         Args:
             messages: List of message dicts
+            tools: Optional list of tool definitions (for validation of tool_calls in history)
             **kwargs: Additional options
 
         Yields:
@@ -170,6 +172,7 @@ class OllamaProvider(LLMProvider):
             return ollama.chat(
                 model=self._model,
                 messages=messages,
+                tools=tools,
                 think=think,
                 stream=True,
                 options=options,

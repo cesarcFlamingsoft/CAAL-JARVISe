@@ -42,7 +42,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, ".env"))
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, mcp
+from livekit.agents import AgentSession, Agent, mcp, function_tool
 from livekit.plugins import silero, openai, groq as groq_plugin
 
 from caal import CAALLLM
@@ -196,6 +196,102 @@ class VoiceAssistant(WebSearchTools, Agent):
             max_turns=self._max_turns,
         ):
             yield chunk
+
+    # =========================================================================
+    # Home Assistant Wrapper Tools
+    # =========================================================================
+    # These provide a simplified interface to HASS MCP, matching the n8n
+    # hass_control workflow signature for prompt compatibility.
+
+    @function_tool
+    async def hass_control(self, action: str, target: str, value: int = None) -> str:
+        """Control Home Assistant devices.
+        Parameters: action (required: turn_on, turn_off, volume_up, volume_down, set_volume, mute, unmute, pause, play, next, previous), target (required: device name), value (optional: for set_volume 0-100).
+        """
+        hass_server = self._caal_mcp_servers.get("home_assistant")
+        if not hass_server or not hasattr(hass_server, "_client"):
+            return "Home Assistant is not connected"
+
+        # Map action to HASS MCP tool and build arguments
+        action_map = {
+            "turn_on": ("HassTurnOn", {"name": target}),
+            "turn_off": ("HassTurnOff", {"name": target}),
+            "pause": ("HassMediaPause", {"name": target}),
+            "play": ("HassMediaUnpause", {"name": target}),
+            "next": ("HassMediaNext", {"name": target}),
+            "previous": ("HassMediaPrevious", {"name": target}),
+            "volume_up": ("HassSetVolumeRelative", {"name": target, "volume_step": "up"}),
+            "volume_down": ("HassSetVolumeRelative", {"name": target, "volume_step": "down"}),
+            "set_volume": ("HassSetVolume", {"name": target, "volume_level": value or 50}),
+            "mute": ("HassMediaPlayerMute", {"name": target}),
+            "unmute": ("HassMediaPlayerUnmute", {"name": target}),
+        }
+
+        if action not in action_map:
+            return f"Unknown action: {action}. Valid actions: {', '.join(action_map.keys())}"
+
+        tool_name, args = action_map[action]
+
+        try:
+            result = await hass_server._client.call_tool(tool_name, args)
+
+            # Check for errors
+            if result.isError:
+                error_texts = [c.text for c in result.content if hasattr(c, "text") and c.text]
+                return f"Error: {' '.join(error_texts)}"
+
+            # Extract success message
+            texts = [c.text for c in result.content if hasattr(c, "text") and c.text]
+            return " ".join(texts) if texts else f"Done: {action} {target}"
+
+        except Exception as e:
+            logger.error(f"hass_control error: {e}")
+            return f"Failed to {action} {target}: {e}"
+
+    @function_tool
+    async def hass_get_state(self, target: str = None) -> str:
+        """Get the current state of Home Assistant devices.
+        Parameters: target (optional: device name to filter, or omit for all devices).
+        """
+        hass_server = self._caal_mcp_servers.get("home_assistant")
+        if not hass_server or not hasattr(hass_server, "_client"):
+            return "Home Assistant is not connected"
+
+        try:
+            result = await hass_server._client.call_tool("GetLiveContext", {})
+
+            # Check for errors
+            if result.isError:
+                error_texts = [c.text for c in result.content if hasattr(c, "text") and c.text]
+                return f"Error: {' '.join(error_texts)}"
+
+            # Extract content
+            texts = [c.text for c in result.content if hasattr(c, "text") and c.text]
+            full_context = " ".join(texts) if texts else "No devices found"
+
+            # If target specified, filter to just that device
+            if target:
+                target_lower = target.lower()
+                # Simple filter: look for lines containing the target name
+                lines = full_context.split("\n")
+                filtered = []
+                capturing = False
+                for line in lines:
+                    if "names:" in line.lower() and target_lower in line.lower():
+                        capturing = True
+                    elif "names:" in line.lower() and capturing:
+                        capturing = False
+                    if capturing:
+                        filtered.append(line)
+                if filtered:
+                    return "\n".join(filtered)
+                return f"Device '{target}' not found"
+
+            return full_context
+
+        except Exception as e:
+            logger.error(f"hass_get_state error: {e}")
+            return f"Failed to get state: {e}"
 
 
 # =============================================================================
