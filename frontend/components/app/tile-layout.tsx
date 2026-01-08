@@ -2,13 +2,13 @@ import React, { useMemo } from 'react';
 import { Track } from 'livekit-client';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  BarVisualizer,
   type TrackReference,
   VideoTrack,
   useLocalParticipant,
   useTracks,
   useVoiceAssistant,
 } from '@livekit/components-react';
+import { JarvisVisualizer } from '@/components/app/jarvis-visualizer';
 import { cn } from '@/lib/utils';
 
 const MotionContainer = motion.create('div');
@@ -74,11 +74,7 @@ interface TileLayoutProps {
 }
 
 export function TileLayout({ chatOpen }: TileLayoutProps) {
-  const {
-    state: agentState,
-    audioTrack: agentAudioTrack,
-    videoTrack: agentVideoTrack,
-  } = useVoiceAssistant();
+  const { audioTrack: agentAudioTrack, videoTrack: agentVideoTrack } = useVoiceAssistant();
   const [screenShareTrack] = useTracks([Track.Source.ScreenShare]);
   const cameraTrack: TrackReference | undefined = useLocalTrackRef(Track.Source.Camera);
 
@@ -127,21 +123,7 @@ export function TileLayout({ chatOpen }: TileLayoutProps) {
                     chatOpen && 'border-input/50 drop-shadow-lg/10 delay-200'
                   )}
                 >
-                  <BarVisualizer
-                    barCount={5}
-                    state={agentState}
-                    options={{ minHeight: 5 }}
-                    trackRef={agentAudioTrack}
-                    className={cn('flex h-full items-center justify-center gap-1')}
-                  >
-                    <span
-                      className={cn([
-                        'bg-muted min-h-2.5 w-2.5 rounded-full',
-                        'origin-center transition-colors duration-250 ease-linear',
-                        'data-[lk-highlighted=true]:bg-foreground data-[lk-muted=true]:bg-muted',
-                      ])}
-                    />
-                  </BarVisualizer>
+                  <JarvisVisualizer trackRef={agentAudioTrack} className={cn('h-full w-full')} />
                 </MotionContainer>
               )}
 

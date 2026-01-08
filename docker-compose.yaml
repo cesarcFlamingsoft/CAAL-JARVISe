@@ -37,7 +37,7 @@ services:
       - "7881:7881/udp"   # UDP for WebRTC
       - "5349:5349"       # TURN/TLS (only used in Tailscale mode)
       - "30000-30100:30000-30100/udp"  # TURN relay ports
-      - "50000-50100:50000-50100/udp"  # WebRTC media ports
+      - "50100-50200:50000-50100/udp"  # WebRTC media ports (shifted to avoid Teams conflict)
     volumes:
       - ./livekit.yaml:/etc/livekit-lan.yaml:ro
       - ./livekit-tailscale.yaml.template:/etc/livekit.yaml.template:ro
