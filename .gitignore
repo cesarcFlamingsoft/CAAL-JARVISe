@@ -104,3 +104,4 @@ mobile/build/
 mobile/.packages
 mobile/.pub-cache/
 mobile/.pub/
+/.mlx-audio-venv
