@@ -3,12 +3,15 @@ import { NextResponse } from 'next/server';
 // Backend webhook server URL (same as wake endpoint)
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://agent:8889';
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
+    const body = await request.json();
+    const roomName = body?.room_name || 'voice_assistant_room';
+
     const res = await fetch(`${WEBHOOK_URL}/reload-tools`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room_name: 'voice_assistant_room' }),
+      body: JSON.stringify({ room_name: roomName }),
     });
 
     if (!res.ok) {

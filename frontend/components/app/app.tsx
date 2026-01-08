@@ -17,6 +17,12 @@ const PORCUPINE_ACCESS_KEY = process.env.NEXT_PUBLIC_PORCUPINE_ACCESS_KEY ?? '';
 
 const IN_DEVELOPMENT = process.env.NODE_ENV !== 'production';
 
+// Generate unique session ID for each conversation
+// This ensures each device/tab gets its own isolated conversation
+function generateSessionId(): string {
+  return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
 function AppSetup() {
   useDebugMode({ enabled: IN_DEVELOPMENT });
   // useAgentErrors(); // Disabled for multi-device support - timeout breaks second device
@@ -29,16 +35,32 @@ interface AppProps {
 }
 
 export function App({ appConfig }: AppProps) {
+  // Generate unique session ID once when component mounts
+  const sessionId = useMemo(() => generateSessionId(), []);
+  
   const tokenSource = useMemo(() => {
-    return typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string'
-      ? getSandboxTokenSource(appConfig)
-      : TokenSource.endpoint('/api/connection-details');
-  }, [appConfig]);
+    if (typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string') {
+      return getSandboxTokenSource(appConfig);
+    }
+    
+    // Create custom token source that includes client_id in the request
+    return TokenSource.custom(async (options) => {
+      const response = await fetch('/api/connection-details', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...options,
+          client_id: sessionId,
+          agentName: appConfig.agentName,
+        }),
+      });
+      return await response.json();
+    });
+  }, [appConfig, sessionId]);
 
-  const session = useSession(
-    tokenSource,
-    appConfig.agentName ? { agentName: appConfig.agentName } : undefined
-  );
+  const session = useSession(tokenSource);
 
   // Clean up session on page unload to prevent orphaned agent jobs
   useEffect(() => {
@@ -69,10 +91,11 @@ export function App({ appConfig }: AppProps) {
 
     // Call backend to trigger greeting
     try {
+      const roomName = session.room?.name || 'voice_assistant_room';
       const response = await fetch('/api/wake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room_name: 'voice_assistant_room' }),
+        body: JSON.stringify({ room_name: roomName }),
       });
       if (!response.ok) {
         console.error('[App] Wake endpoint failed:', response.status);

@@ -537,10 +537,25 @@ async def start_webhook_server():
 
     This runs the webhook server in the same event loop as the LiveKit agent,
     avoiding cross-thread async issues that cause 200x slower MCP calls.
+    
+    If the port is already in use (another agent process started it), silently skip.
     """
+    import socket
     import uvicorn
     from caal.webhooks import app
 
+    # Check if port is already in use before attempting to start server
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(('0.0.0.0', WEBHOOK_PORT))
+        sock.close()
+    except OSError:
+        # Port already in use - another agent started the webhook server
+        logger.debug(f"Webhook server already running on port {WEBHOOK_PORT} (started by another agent)")
+        return
+    
+    # Port is available - start the server
     config = uvicorn.Config(
         app,
         host="0.0.0.0",

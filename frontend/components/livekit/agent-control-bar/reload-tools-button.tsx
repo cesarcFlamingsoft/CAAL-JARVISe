@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import { ArrowsClockwiseIcon } from '@phosphor-icons/react/dist/ssr';
+import { useRoomContext } from '@livekit/components-react';
 import { Toggle } from '@/components/livekit/toggle';
 import { Tooltip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -11,6 +12,7 @@ import { cn } from '@/lib/utils';
  * Posts to /reload-tools webhook.
  */
 export function ReloadToolsButton() {
+  const room = useRoomContext();
   const [loading, setLoading] = React.useState(false);
   const [success, setSuccess] = React.useState(false);
 
@@ -20,7 +22,11 @@ export function ReloadToolsButton() {
     setSuccess(false);
 
     try {
-      const res = await fetch('/api/reload-tools', { method: 'POST' });
+      const res = await fetch('/api/reload-tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_name: room.name }),
+      });
       if (res.ok) {
         setSuccess(true);
         setTimeout(() => setSuccess(false), 2000);
