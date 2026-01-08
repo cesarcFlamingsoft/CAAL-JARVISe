@@ -170,7 +170,7 @@ echo ""
 
 # Check Ollama
 printf "${GREEN}[CAAL]${NC} Checking Ollama... "
-if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+if ! curl -s http://10.0.0.64:11434/api/tags > /dev/null 2>&1; then
     echo ""
     error "Ollama is not accessible on localhost:11434"
     error "Run: ollama serve"
