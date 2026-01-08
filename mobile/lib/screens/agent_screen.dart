@@ -26,11 +26,26 @@ class AgentTrackView extends StatefulWidget {
 
 class _AgentTrackViewState extends State<AgentTrackView> {
   String _visualizationType = 'jarvis';
+  bool _hasLoadedSettings = false;
+  Timer? _settingsTimer;
 
   @override
-  void initState() {
-    super.initState();
-    _loadVisualizationType();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_hasLoadedSettings) {
+      _hasLoadedSettings = true;
+      _loadVisualizationType();
+      // Poll settings every 3 seconds to detect changes
+      _settingsTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        _loadVisualizationType();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _settingsTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadVisualizationType() async {
@@ -39,17 +54,28 @@ class _AgentTrackViewState extends State<AgentTrackView> {
       final uri = Uri.parse(serverUrl);
       final webhookUrl = 'http://${uri.host}:8889';
       
+      print('Fetching settings from: $webhookUrl/settings');
       final response = await http.get(Uri.parse('$webhookUrl/settings'));
+      print('Response status: ${response.statusCode}');
+      print('Response body: ${response.body}');
+      
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        print('Parsed data: $data');
+        print('Settings object: ${data['settings']}');
         final type = data['settings']?['visualization_type'] ?? 'jarvis';
-        if (mounted) {
+        print('Loaded visualization type: $type (current: $_visualizationType)');
+        if (mounted && _visualizationType != type) {
           setState(() {
             _visualizationType = type;
           });
+          print('Updated visualization type to: $_visualizationType');
         }
+      } else {
+        print('Failed to load settings: ${response.statusCode}');
       }
     } catch (e) {
+      print('Error loading visualization type: $e');
       // Keep default on error
     }
   }
@@ -83,12 +109,15 @@ class _AgentTrackViewState extends State<AgentTrackView> {
                     }
 
                     // Render visualization based on setting
+                    print('Rendering with visualization type: $_visualizationType');
                     if (_visualizationType == 'soundbars') {
+                      print('Rendering BarVisualizer');
                       return BarVisualizer(
                         participant: agentParticipant,
                       );
                     }
 
+                    print('Rendering JarvisVisualizer (default)');
                     return JarvisVisualizer(
                       participant: agentParticipant,
                     );

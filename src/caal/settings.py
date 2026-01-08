@@ -55,6 +55,8 @@ DEFAULT_SETTINGS = {
     # Turn detection settings (advanced)
     "allow_interruptions": True,  # Whether user can interrupt agent mid-speech
     "min_endpointing_delay": 0.5,  # Seconds to wait before considering turn complete
+    # Visualization type for frontend
+    "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }
 
 # Cached settings (reloaded on save)
