@@ -128,12 +128,14 @@ class GroqProvider(LLMProvider):
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Execute streaming Groq chat completion.
 
         Args:
             messages: List of message dicts
+            tools: Optional tool definitions (for validation of tool_calls in history)
             **kwargs: Additional options
 
         Yields:
@@ -150,6 +152,10 @@ class GroqProvider(LLMProvider):
         # Disable thinking for Qwen3 models (reduces latency)
         if "qwen" in self._model.lower():
             request_kwargs["reasoning_effort"] = "none"
+
+        # Include tools if provided (for validation of tool_calls in message history)
+        if tools:
+            request_kwargs["tools"] = tools
 
         stream = await self._client.chat.completions.create(**request_kwargs)
 
