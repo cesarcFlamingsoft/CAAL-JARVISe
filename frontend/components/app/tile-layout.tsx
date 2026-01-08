@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Track } from 'livekit-client';
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  BarVisualizer,
   type TrackReference,
   VideoTrack,
   useLocalParticipant,
@@ -9,12 +10,13 @@ import {
   useVoiceAssistant,
 } from '@livekit/components-react';
 import { JarvisVisualizer } from '@/components/app/jarvis-visualizer';
+import { useVisualizationType } from '@/hooks/useVisualizationType';
 import { cn } from '@/lib/utils';
 
 const MotionContainer = motion.create('div');
 
 const ANIMATION_TRANSITION = {
-  type: 'spring',
+  type: 'spring' as const,
   stiffness: 675,
   damping: 75,
   mass: 1,
@@ -77,6 +79,7 @@ export function TileLayout({ chatOpen }: TileLayoutProps) {
   const { audioTrack: agentAudioTrack, videoTrack: agentVideoTrack } = useVoiceAssistant();
   const [screenShareTrack] = useTracks([Track.Source.ScreenShare]);
   const cameraTrack: TrackReference | undefined = useLocalTrackRef(Track.Source.Camera);
+  const visualizationType = useVisualizationType();
 
   const isCameraEnabled = cameraTrack && !cameraTrack.publication.isMuted;
   const isScreenShareEnabled = screenShareTrack && !screenShareTrack.publication.isMuted;
@@ -123,7 +126,22 @@ export function TileLayout({ chatOpen }: TileLayoutProps) {
                     chatOpen && 'border-input/50 drop-shadow-lg/10 delay-200'
                   )}
                 >
-                  <JarvisVisualizer trackRef={agentAudioTrack} className={cn('h-full w-full')} />
+                  {visualizationType === 'jarvis' ? (
+                    <JarvisVisualizer trackRef={agentAudioTrack} className={cn('h-full w-full')} />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center gap-1 px-4">
+                      <BarVisualizer
+                        barCount={5}
+                        options={{ minHeight: 8 }}
+                        trackRef={agentAudioTrack}
+                        className="flex h-full w-full items-center justify-center gap-1"
+                      >
+                        <span
+                          className={cn(['bg-primary h-full w-2 origin-center rounded-full'])}
+                        />
+                      </BarVisualizer>
+                    </div>
+                  )}
                 </MotionContainer>
               )}
 

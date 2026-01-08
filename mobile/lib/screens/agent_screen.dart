@@ -1,6 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' show max;
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as sdk;
 import 'package:livekit_components/livekit_components.dart' as components;
 import 'package:provider/provider.dart';
@@ -9,12 +12,47 @@ import '../controllers/app_ctrl.dart';
 import '../controllers/wake_word_state_ctrl.dart';
 import '../support/agent_selector.dart';
 import '../widgets/agent_layout_switcher.dart';
+import '../widgets/bar_visualizer.dart';
 import '../widgets/camera_toggle_button.dart';
 import '../widgets/jarvis_visualizer.dart';
 import '../widgets/message_bar.dart';
 
-class AgentTrackView extends StatelessWidget {
+class AgentTrackView extends StatefulWidget {
   const AgentTrackView({super.key});
+
+  @override
+  State<AgentTrackView> createState() => _AgentTrackViewState();
+}
+
+class _AgentTrackViewState extends State<AgentTrackView> {
+  String _visualizationType = 'jarvis';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVisualizationType();
+  }
+
+  Future<void> _loadVisualizationType() async {
+    try {
+      final serverUrl = context.read<AppCtrl>().serverUrl;
+      final uri = Uri.parse(serverUrl);
+      final webhookUrl = 'http://${uri.host}:8889';
+      
+      final response = await http.get(Uri.parse('$webhookUrl/settings'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final type = data['settings']?['visualization_type'] ?? 'jarvis';
+        if (mounted) {
+          setState(() {
+            _visualizationType = type;
+          });
+        }
+      }
+    } catch (e) {
+      // Keep default on error
+    }
+  }
 
   @override
   Widget build(BuildContext context) => AgentParticipantSelector(
@@ -42,6 +80,13 @@ class AgentTrackView extends StatelessWidget {
 
                     if (trackReferenceContext?.isVideo ?? false) {
                       return const components.VideoTrackWidget();
+                    }
+
+                    // Render visualization based on setting
+                    if (_visualizationType == 'soundbars') {
+                      return BarVisualizer(
+                        participant: agentParticipant,
+                      );
                     }
 
                     return JarvisVisualizer(

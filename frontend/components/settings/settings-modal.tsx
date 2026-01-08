@@ -22,6 +22,8 @@ interface Settings {
   // Turn detection (advanced)
   allow_interruptions: boolean;
   min_endpointing_delay: number;
+  // Visualization
+  visualization_type: 'jarvis' | 'soundbars';
 }
 
 interface SettingsModalProps {
@@ -46,6 +48,8 @@ const DEFAULT_SETTINGS: Settings = {
   // Turn detection (advanced)
   allow_interruptions: true,
   min_endpointing_delay: 0.5,
+  // Visualization
+  visualization_type: 'jarvis',
 };
 
 const DEFAULT_PROMPT = `# Voice Assistant
@@ -139,6 +143,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       if (!settingsRes.ok) {
         throw new Error('Failed to save settings');
       }
+
+      // Notify other components of settings update (especially visualization_type)
+      window.dispatchEvent(
+        new CustomEvent('settings-updated', {
+          detail: { visualization_type: settings.visualization_type },
+        })
+      );
 
       // Save prompt if it was edited and prompt is set to custom
       if (settings.prompt === 'custom') {
@@ -470,6 +481,36 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                   </>
                 )}
+              </div>
+
+              {/* Visualization Type */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Audio Visualization</label>
+                <p className="text-muted-foreground mb-2 text-xs">
+                  Choose how to visualize audio activity
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSettings({ ...settings, visualization_type: 'jarvis' })}
+                    className={`flex-1 rounded-md px-3 py-2 text-sm transition-colors ${
+                      settings.visualization_type === 'jarvis'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted hover:bg-muted/80'
+                    }`}
+                  >
+                    JARVIS Graphics
+                  </button>
+                  <button
+                    onClick={() => setSettings({ ...settings, visualization_type: 'soundbars' })}
+                    className={`flex-1 rounded-md px-3 py-2 text-sm transition-colors ${
+                      settings.visualization_type === 'soundbars'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted hover:bg-muted/80'
+                    }`}
+                  >
+                    Soundbars
+                  </button>
+                </div>
               </div>
 
               {/* Advanced: Turn Detection */}

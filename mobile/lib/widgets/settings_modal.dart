@@ -59,6 +59,8 @@ class _SettingsModalState extends State<SettingsModal> {
   // Turn detection (advanced)
   bool _allowInterruptions = true;
   double _minEndpointingDelay = 0.5;
+  // Visualization
+  String _visualizationType = 'jarvis';
 
   // Available options
   List<String> _voices = [];
@@ -124,6 +126,7 @@ class _SettingsModalState extends State<SettingsModal> {
           _wakeWordTimeout = (settings['wake_word_timeout'] ?? _wakeWordTimeout).toDouble();
           _allowInterruptions = settings['allow_interruptions'] ?? _allowInterruptions;
           _minEndpointingDelay = (settings['min_endpointing_delay'] ?? _minEndpointingDelay).toDouble();
+          _visualizationType = settings['visualization_type'] ?? _visualizationType;
           _wakeGreetingsController.text = _wakeGreetings.join('\n');
         });
       }
@@ -185,6 +188,7 @@ class _SettingsModalState extends State<SettingsModal> {
         'wake_word_timeout': _wakeWordTimeout,
         'allow_interruptions': _allowInterruptions,
         'min_endpointing_delay': _minEndpointingDelay,
+        'visualization_type': _visualizationType,
       };
 
       final res = await http.post(
@@ -439,6 +443,73 @@ class _SettingsModalState extends State<SettingsModal> {
                           ],
                         ],
                       ),
+                    ),
+
+                    // Visualization Type
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLabel('Audio Visualization'),
+                        const Text(
+                          'Choose how to visualize audio activity',
+                          style: TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _visualizationType = 'jarvis'),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: _visualizationType == 'jarvis'
+                                        ? const Color(0xFF45997C)
+                                        : const Color(0xFF2A2A2A),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    'JARVIS Graphics',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: _visualizationType == 'jarvis'
+                                          ? const Color(0xFF171717)
+                                          : Colors.white,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _visualizationType = 'soundbars'),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: _visualizationType == 'soundbars'
+                                        ? const Color(0xFF45997C)
+                                        : const Color(0xFF2A2A2A),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    'Soundbars',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: _visualizationType == 'soundbars'
+                                          ? const Color(0xFF171717)
+                                          : Colors.white,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                     ),
 
                     // Advanced: Turn Detection Section
