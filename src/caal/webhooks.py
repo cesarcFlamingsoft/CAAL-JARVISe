@@ -436,6 +436,7 @@ async def save_prompt(req: PromptUpdateRequest) -> PromptResponse:
 # Piper bakes voice into model ID, so each "voice" is actually a model
 PIPER_VOICES = [
     # English
+    "speaches-ai/piper-en_US-ryan-high",
     "speaches-ai/piper-en_US-ljspeech-medium",
     "speaches-ai/piper-en_US-hfc_female-medium",
     "speaches-ai/piper-en_US-lessac-medium",
@@ -758,11 +759,11 @@ class SetupCompleteRequest(BaseModel):
     tts_provider: str = "kokoro"  # "kokoro" | "piper"
     tts_voice_kokoro: str | None = None
     tts_voice_piper: str | None = None
-    # Integrations (optional)
-    hass_enabled: bool = False
+    # Integrations (optional) - None means "don't change"
+    hass_enabled: bool | None = None
     hass_host: str | None = None
     hass_token: str | None = None
-    n8n_enabled: bool = False
+    n8n_enabled: bool | None = None
     n8n_url: str | None = None
     n8n_token: str | None = None
 
@@ -850,21 +851,23 @@ async def complete_setup(req: SetupCompleteRequest) -> SetupCompleteResponse:
             if req.ollama_model:
                 current["ollama_model"] = req.ollama_model
 
-        # Home Assistant integration
-        current["hass_enabled"] = req.hass_enabled
-        if req.hass_enabled:
-            if req.hass_host:
-                current["hass_host"] = req.hass_host
-            if req.hass_token:
-                current["hass_token"] = req.hass_token
+        # Home Assistant integration - only update if explicitly provided
+        if req.hass_enabled is not None:
+            current["hass_enabled"] = req.hass_enabled
+            if req.hass_enabled:
+                if req.hass_host:
+                    current["hass_host"] = req.hass_host
+                if req.hass_token:
+                    current["hass_token"] = req.hass_token
 
-        # n8n integration
-        current["n8n_enabled"] = req.n8n_enabled
-        if req.n8n_enabled:
-            if req.n8n_url:
-                current["n8n_url"] = req.n8n_url
-            if req.n8n_token:
-                current["n8n_token"] = req.n8n_token
+        # n8n integration - only update if explicitly provided
+        if req.n8n_enabled is not None:
+            current["n8n_enabled"] = req.n8n_enabled
+            if req.n8n_enabled:
+                if req.n8n_url:
+                    current["n8n_url"] = req.n8n_url
+                if req.n8n_token:
+                    current["n8n_token"] = req.n8n_token
 
         # TTS provider and voice settings
         current["tts_provider"] = req.tts_provider

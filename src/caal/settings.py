@@ -81,7 +81,7 @@ DEFAULT_SETTINGS = {
 }
 
 # Keys that should never be returned via API (security)
-SENSITIVE_KEYS = {"groq_api_key", "hass_token", "n8n_token"}
+SENSITIVE_KEYS: set[str] = set()  # All keys returned - shown as dots in password fields
 
 # Cached settings (reloaded on save)
 _settings_cache: dict | None = None
@@ -195,12 +195,20 @@ def save_settings(settings: dict) -> None:
     """Save settings to JSON file.
 
     Args:
-        settings: Settings dict to save. Only keys in DEFAULT_SETTINGS are saved.
+        settings: Settings dict to merge with existing settings.
+                  Only keys in DEFAULT_SETTINGS are saved.
+                  Existing settings are preserved unless explicitly overwritten.
     """
     global _settings_cache
 
+    # Load existing settings first
+    existing = load_user_settings()
+
+    # Merge: existing settings + new settings (new overwrites existing)
+    merged = {**existing, **settings}
+
     # Filter to only known keys
-    filtered = {k: v for k, v in settings.items() if k in DEFAULT_SETTINGS}
+    filtered = {k: v for k, v in merged.items() if k in DEFAULT_SETTINGS}
 
     try:
         # Ensure parent directory exists

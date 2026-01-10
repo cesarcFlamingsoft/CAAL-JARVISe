@@ -17,6 +17,7 @@ interface Settings {
   llm_provider: 'ollama' | 'groq';
   ollama_host: string;
   ollama_model: string;
+  groq_api_key: string;
   groq_model: string;
   tts_provider: 'kokoro' | 'piper';
   tts_voice_kokoro: string;
@@ -58,6 +59,7 @@ const DEFAULT_SETTINGS: Settings = {
   llm_provider: 'ollama',
   ollama_host: 'http://localhost:11434',
   ollama_model: '',
+  groq_api_key: '',
   groq_model: '',
   tts_provider: 'kokoro',
   tts_voice_kokoro: 'am_puck',
@@ -116,7 +118,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [groqModels, setGroqModels] = useState<string[]>([]);
   const [wakeWordModels, setWakeWordModels] = useState<string[]>([]);
-  const [groqApiKey, setGroqApiKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string>('');
@@ -236,14 +237,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   }, [settings.ollama_host, settings.ollama_model]);
 
   const testGroq = useCallback(async () => {
-    if (!groqApiKey) return;
+    if (!settings.groq_api_key) return;
     setGroqTest({ status: 'testing', error: null });
 
     try {
       const res = await fetch('/api/setup/test-groq', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: groqApiKey }),
+        body: JSON.stringify({ api_key: settings.groq_api_key }),
       });
       const result = await res.json();
 
@@ -263,7 +264,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     } catch {
       setGroqTest({ status: 'error', error: 'Failed to validate' });
     }
-  }, [groqApiKey, settings.groq_model]);
+  }, [settings.groq_api_key, settings.groq_model]);
+
+  // Auto-fetch Groq models when API key is available and models not yet loaded
+  useEffect(() => {
+    if (isOpen && settings.groq_api_key && groqModels.length === 0 && !loading) {
+      testGroq();
+    }
+  }, [isOpen, settings.groq_api_key, groqModels.length, loading, testGroq]);
 
   const testHass = useCallback(async () => {
     if (!settings.hass_host || !settings.hass_token) return;
@@ -353,19 +361,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         if (!promptRes.ok) {
           throw new Error('Failed to save prompt');
         }
-      }
-
-      // Save Groq API key if using Groq and key is set
-      if (settings.llm_provider === 'groq' && groqApiKey) {
-        await fetch('/api/setup/complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            llm_provider: 'groq',
-            groq_api_key: groqApiKey,
-            groq_model: settings.groq_model,
-          }),
-        });
       }
 
       // Download Piper model if using Piper
@@ -668,14 +663,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               <div className="flex gap-2">
                 <input
                   type="password"
-                  value={groqApiKey}
-                  onChange={(e) => setGroqApiKey(e.target.value)}
-                  placeholder={settings.groq_model ? '••••••••••••••••' : 'gsk_...'}
+                  value={settings.groq_api_key}
+                  onChange={(e) => setSettings({ ...settings, groq_api_key: e.target.value })}
+                  placeholder="gsk_..."
                   className="border-input bg-background flex-1 rounded-lg border px-4 py-3 text-sm"
                 />
                 <button
                   onClick={testGroq}
-                  disabled={!groqApiKey || groqTest.status === 'testing'}
+                  disabled={!settings.groq_api_key || groqTest.status === 'testing'}
                   className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
                 >
                   <TestStatusIcon status={groqTest.status} />
@@ -685,11 +680,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               {groqTest.error && <p className="text-xs text-red-500">{groqTest.error}</p>}
               {groqTest.status === 'success' && (
                 <p className="text-xs text-green-500">{groqModels.length} models available</p>
-              )}
-              {!groqApiKey && settings.groq_model && groqTest.status === 'idle' && (
-                <p className="text-xs text-green-500">
-                  API key configured (enter new key to change)
-                </p>
               )}
               <p className="text-muted-foreground text-xs">
                 Get your API key at{' '}
@@ -716,7 +706,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   {groqModels.length > 0 ? (
                     <>
                       <option value="">Select a model...</option>
-                      {groqModels.map((model) => (
+                      {[...groqModels].sort().map((model) => (
                         <option key={model} value={model}>
                           {model}
                         </option>
