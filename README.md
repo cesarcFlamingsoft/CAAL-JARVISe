@@ -111,14 +111,14 @@ Run the GPU-intensive backend on a Linux server while using the frontend on a Ma
 
 CAAL supports three network configurations:
 
-| Mode          | Voice From        | Access URL                            | Command                                |
-| ------------- | ----------------- | ------------------------------------- | -------------------------------------- |
-| **LAN HTTP**  | Host machine only | `http://localhost:3000`               | `docker compose up -d`                 |
-| **LAN HTTPS** | Any LAN device    | `https://192.168.1.100`               | `docker compose --profile https up -d` |
-| **Tailscale** | Anywhere          | `https://your-machine.tailnet.ts.net` | `docker compose --profile https up -d` |
+| Mode          | Voice From        | Access URL                                 | Command                                |
+| ------------- | ----------------- | ------------------------------------------ | -------------------------------------- |
+| **LAN HTTP**  | Host machine only | `http://localhost:3000`                    | `docker compose up -d`                 |
+| **LAN HTTPS** | Any LAN device    | `https://192.168.1.100:3443`               | `docker compose --profile https up -d` |
+| **Tailscale** | Anywhere          | `https://your-machine.tailnet.ts.net:3443` | `docker compose --profile https up -d` |
 
 > **Why?** Browsers block microphone access on HTTP except from localhost. HTTPS is required for voice from other devices.
-> 
+>
 > **Note:** For utilization with mobile app as the client, only LAN HTTP is required, not HTTPS
 
 ### LAN HTTP (Default)
@@ -128,23 +128,26 @@ CAAL_HOST_IP=192.168.1.100  # Set in .env
 docker compose up -d
 ```
 
-### LAN HTTPS (mkcert)
+### LAN HTTPS
+
+Self-signed certificates are auto-generated if none exist in `./certs/`.
 
 ```bash
-# Generate certificates
-mkcert -install
-mkcert 192.168.1.100
-mkdir -p certs && mv 192.168.1.100.pem certs/server.crt && mv 192.168.1.100-key.pem certs/server.key
-chmod 644 certs/server.key
-
 # Configure .env
 CAAL_HOST_IP=192.168.1.100
 HTTPS_DOMAIN=192.168.1.100
 
-# Build and start
-docker compose --profile https build frontend
+# Start with HTTPS profile (certs auto-generated)
 docker compose --profile https up -d
 ```
+
+Access: `https://192.168.1.100:3443`
+
+> **Trusted certs:** For browser-trusted certs without warnings, use [mkcert](https://github.com/FiloSottile/mkcert):
+> ```bash
+> mkcert -install && mkcert 192.168.1.100
+> mkdir -p certs && mv 192.168.1.100.pem certs/server.crt && mv 192.168.1.100-key.pem certs/server.key
+> ```
 
 ### Tailscale (Remote Access)
 
@@ -157,10 +160,11 @@ mkdir -p certs && mv your-machine.tailnet.ts.net.crt certs/server.crt && mv your
 CAAL_HOST_IP=100.x.x.x                         # tailscale ip -4
 HTTPS_DOMAIN=your-machine.tailnet.ts.net
 
-# Build and start
-docker compose --profile https build frontend
+# Start
 docker compose --profile https up -d
 ```
+
+Access: `https://your-machine.tailnet.ts.net:3443`
 
 ---
 
