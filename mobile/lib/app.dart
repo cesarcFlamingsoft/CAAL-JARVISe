@@ -15,16 +15,16 @@ import 'ui/color_pallette.dart' show LKColorPaletteLight, LKColorPaletteDark;
 import 'widgets/app_layout_switcher.dart';
 import 'widgets/session_error_banner.dart';
 
-class CaalApp extends StatefulWidget {
+class JarvisApp extends StatefulWidget {
   final ConfigService configService;
 
-  const CaalApp({super.key, required this.configService});
+  const JarvisApp({super.key, required this.configService});
 
   @override
-  State<CaalApp> createState() => _CaalAppState();
+  State<JarvisApp> createState() => _JarvisAppState();
 }
 
-class _CaalAppState extends State<CaalApp> {
+class _JarvisAppState extends State<JarvisApp> {
   AppCtrl? _appCtrl;
 
   @override
@@ -103,7 +103,7 @@ class _CaalAppState extends State<CaalApp> {
       return ChangeNotifierProvider.value(
         value: widget.configService,
         child: MaterialApp(
-          title: 'CAAL',
+          title: 'JARVIS',
           theme: buildTheme(isLight: true),
           darkTheme: buildTheme(isLight: false),
           themeMode: ThemeMode.dark,
@@ -141,28 +141,23 @@ class _CaalAppState extends State<CaalApp> {
               child: components.SessionContext(
                 session: appCtrl.session,
                 child: MaterialApp(
-                  title: 'CAAL',
+                  title: 'JARVIS',
                   theme: buildTheme(isLight: true),
                   darkTheme: buildTheme(isLight: false),
                   themeMode: ThemeMode.dark,
                   home: Builder(
-                    builder: (ctx) => Center(
-                      child: Container(
-                        constraints: BoxConstraints(maxWidth: 620),
-                        child: Stack(
-                          children: [
-                            Selector<AppCtrl, AppScreenState>(
-                              selector: (ctx, appCtx) => appCtx.appScreenState,
-                              builder: (ctx, screen, _) => AppLayoutSwitcher(
-                                frontBuilder: (ctx) => const WelcomeScreen(),
-                                backBuilder: (ctx) => const AgentScreen(),
-                                isFront: screen == AppScreenState.welcome,
-                              ),
-                            ),
-                            const SessionErrorBanner(),
-                          ],
+                    builder: (ctx) => Stack(
+                      children: [
+                        Selector<AppCtrl, AppScreenState>(
+                          selector: (ctx, appCtx) => appCtx.appScreenState,
+                          builder: (ctx, screen, _) => AppLayoutSwitcher(
+                            frontBuilder: (ctx) => const WelcomeScreen(),
+                            backBuilder: (ctx) => const AgentScreen(),
+                            isFront: screen == AppScreenState.welcome,
+                          ),
                         ),
-                      ),
+                        const SessionErrorBanner(),
+                      ],
                     ),
                   ),
                 ),

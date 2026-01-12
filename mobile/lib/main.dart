@@ -28,5 +28,5 @@ void main() async {
     // .env file not found - that's fine, we'll use ConfigService
   }
 
-  runApp(CaalApp(configService: configService));
+  runApp(JarvisApp(configService: configService));
 }

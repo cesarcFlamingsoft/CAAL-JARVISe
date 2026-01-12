@@ -20,8 +20,8 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'CAAL',
-  pageTitle: 'CAAL Voice Assistant',
+  companyName: 'JARVIS',
+  pageTitle: 'JARVIS Voice Assistant',
   pageDescription: 'A local voice assistant with Home Assistant and n8n integrations',
 
   supportsChatInput: true,
@@ -33,7 +33,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   accent: '#45997c',
   logoDark: '/cwl-logo-round.png',
   accentDark: '#45997c',
-  startButtonText: 'Talk to CAAL',
+  startButtonText: 'Talk to JARVIS',
 
   // for LiveKit Cloud Sandbox
   sandboxId: undefined,
