@@ -55,7 +55,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:5678/api/v1/workflows",
+        "url": "http://{{N8N_HOST}}/api/v1/workflows",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -100,7 +100,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=http://localhost:5678/api/v1/workflows/{{ $json.id }}/activate",
+        "url": "=http://{{N8N_HOST}}/api/v1/workflows/{{ $json.id }}/activate",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -244,7 +244,7 @@
     {
       "parameters": {
         "method": "PUT",
-        "url": "=http://localhost:5678/api/v1/workflows/{{ $('Create Workflow').item.json.id }}",
+        "url": "=http://{{N8N_HOST}}/api/v1/workflows/{{ $('Create Workflow').item.json.id }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -289,7 +289,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=http://localhost:5678/api/v1/workflows/{{ $json.id }}/activate",
+        "url": "=http://{{N8N_HOST}}/api/v1/workflows/{{ $json.id }}/activate",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
