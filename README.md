@@ -4,56 +4,91 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![LiveKit](https://img.shields.io/badge/LiveKit-Agents-purple.svg)](https://docs.livekit.io/agents/)
 
-> **Local voice assistant that learns new abilities via auto-discovered n8n workflows exposed as tools via MCP**
+> **Local voice assistant with n8n workflow integrations and Home Assistant control**
 
-Built on [LiveKit Agents](https://docs.livekit.io/agents/) with fully local STT/TTS/LLM using [Speaches](https://github.com/speaches-ai/speaches), [Kokoro](https://github.com/remsky/Kokoro-FastAPI), and [Ollama](https://ollama.ai/).
+Built on [LiveKit Agents](https://docs.livekit.io/agents/). Runs fully local with [Ollama](https://ollama.ai/) + [Speaches](https://github.com/speaches-ai/speaches) + [Kokoro](https://github.com/remsky/Kokoro-FastAPI), or GPU-free with [Groq](https://groq.com/) + [Piper](https://github.com/rhasspy/piper).
 
 ![CAAL Voice Assistant](frontend/.github/assets/readme-hero.webp)
 
 ## Features
 
-- **Local Voice Pipeline** - Speaches (Faster-Whisper STT) + Kokoro (TTS) + Ollama LLM
-- **Wake Word Detection** - "Hey Cal" activation via Picovoice Porcupine
-- **n8n Integrations** - Home Assistant, APIs, databases - anything n8n can connect to
+- **First-Start Wizard** - Configure everything from the browser, only one edit in `.env` required
+- **Flexible Providers** - Ollama (local) or Groq (cloud) for LLM/STT, Kokoro or Piper for TTS
+- **Home Assistant** - Native MCP integration with simplified `hass_control` and `hass_get_state` tools
+- **n8n Workflows** - Expandable LLM tool capability - any n8n workflow can become a tool for CAAL
+- **Wake Word Detection** - "Hey Cal" activation via OpenWakeWord (server-side)
 - **Web Search** - DuckDuckGo integration for real-time information
 - **Webhook API** - External triggers for announcements and tool reload
 - **Mobile App** - Flutter client for Android and iOS
 
 ## Quick Start
 
-Choose your deployment mode:
+```bash
+git clone https://github.com/CoreWorxLab/caal.git
+cd caal
+cp .env.example .env
+nano .env  # Set CAAL_HOST_IP to your server's LAN IP
 
-| Mode | Hardware | Command | Documentation |
-|------|----------|---------|---------------|
-| **NVIDIA GPU** | Linux + NVIDIA GPU | `docker compose up -d` | [Below](#nvidia-gpu-linux) |
-| **Apple Silicon** | M1/M2/M3/M4 Mac | `./start-apple.sh` | [docs/APPLE-SILICON.md](docs/APPLE-SILICON.md) |
-| **Distributed** | GPU Server + macOS | See docs | [docs/DISTRIBUTED-DEPLOYMENT.md](docs/DISTRIBUTED-DEPLOYMENT.md) |
+# GPU mode (Ollama + Kokoro)
+docker compose up -d
+
+# CPU-only mode (Groq + Piper) - no GPU required
+docker compose -f docker-compose.cpu.yaml up -d
+```
+
+Open `http://YOUR_SERVER_IP:3000` and complete the setup wizard.
+
+| Mode | Hardware | Command |
+|------|----------|---------|
+| **GPU** | Linux + NVIDIA GPU | `docker compose up -d` |
+| **CPU-only** | Any Docker host | `docker compose -f docker-compose.cpu.yaml up -d` |
+| **Apple Silicon** | M1/M2/M3/M4 Mac | [docs/APPLE-SILICON.md](docs/APPLE-SILICON.md) |
+| **Distributed** | GPU Server + Mac | [docs/DISTRIBUTED-DEPLOYMENT.md](docs/DISTRIBUTED-DEPLOYMENT.md) |
 
 ---
 
-## NVIDIA GPU (Linux)
+## GPU Mode (NVIDIA Linux)
+
+Full local stack with GPU-accelerated STT (Speaches), LLM (Ollama) and TTS (Kokoro).
 
 ### Requirements
 
 - Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- [Ollama](https://ollama.ai/) running on your network
-- [n8n](https://n8n.io/) with MCP enabled (Settings > MCP Access)
 - 12GB+ VRAM recommended
 
 ### Installation
 
 ```bash
-# Clone and configure
 git clone https://github.com/CoreWorxLab/caal.git
 cd caal
 cp .env.example .env
-nano .env  # Set CAAL_HOST_IP, OLLAMA_HOST, N8N_MCP_URL, N8N_MCP_TOKEN
+nano .env  # Set CAAL_HOST_IP
 
-# Deploy
 docker compose up -d
 ```
 
-Open `http://YOUR_SERVER_IP:3000` from any device on your network.
+The setup wizard will guide you through LLM (Ollama), TTS, and integration configuration.
+
+---
+
+## CPU-Only Mode (No GPU)
+
+Run CAAL without a GPU using Groq for LLM/STT and Piper (CPU) for TTS.
+
+```bash
+docker compose -f docker-compose.cpu.yaml up -d
+```
+
+For HTTPS:
+```bash
+docker compose -f docker-compose.cpu.yaml --profile https up -d
+```
+
+In the setup wizard:
+1. Select **Groq** as LLM provider and enter your [free API key](https://console.groq.com/)
+2. Select **Piper** as TTS provider (models download automatically)
+
+> **Note:** Voice data is sent to Groq's API. For fully local operation, use GPU mode with Ollama.
 
 ---
 
@@ -81,13 +116,15 @@ Run the GPU-intensive backend on a Linux server while using the frontend on a Ma
 
 CAAL supports three network configurations:
 
-| Mode | Voice From | Access URL | Command |
-|------|------------|------------|---------|
-| **LAN HTTP** | Host machine only | `http://localhost:3000` | `docker compose up -d` |
-| **LAN HTTPS** | Any LAN device | `https://192.168.1.100` | `docker compose --profile https up -d` |
-| **Tailscale** | Anywhere | `https://your-machine.tailnet.ts.net` | `docker compose --profile https up -d` |
+| Mode          | Voice From        | Access URL                                 | Command                                |
+| ------------- | ----------------- | ------------------------------------------ | -------------------------------------- |
+| **LAN HTTP**  | Host machine only | `http://localhost:3000`                    | `docker compose up -d`                 |
+| **LAN HTTPS** | Any LAN device    | `https://192.168.1.100:3443`               | `docker compose --profile https up -d` |
+| **Tailscale** | Anywhere          | `https://your-machine.tailnet.ts.net:3443` | `docker compose --profile https up -d` |
 
 > **Why?** Browsers block microphone access on HTTP except from localhost. HTTPS is required for voice from other devices.
+>
+> **Note:** For utilization with mobile app as the client, only LAN HTTP is required, not HTTPS
 
 ### LAN HTTP (Default)
 
@@ -96,23 +133,26 @@ CAAL_HOST_IP=192.168.1.100  # Set in .env
 docker compose up -d
 ```
 
-### LAN HTTPS (mkcert)
+### LAN HTTPS
+
+Self-signed certificates are auto-generated if none exist in `./certs/`.
 
 ```bash
-# Generate certificates
-mkcert -install
-mkcert 192.168.1.100
-mkdir -p certs && mv 192.168.1.100.pem certs/server.crt && mv 192.168.1.100-key.pem certs/server.key
-chmod 644 certs/server.key
-
 # Configure .env
 CAAL_HOST_IP=192.168.1.100
 HTTPS_DOMAIN=192.168.1.100
 
-# Build and start
-docker compose --profile https build frontend
+# Start with HTTPS profile (certs auto-generated)
 docker compose --profile https up -d
 ```
+
+Access: `https://192.168.1.100:3443`
+
+> **Trusted certs:** For browser-trusted certs without warnings, use [mkcert](https://github.com/FiloSottile/mkcert):
+> ```bash
+> mkcert -install && mkcert 192.168.1.100
+> mkdir -p certs && mv 192.168.1.100.pem certs/server.crt && mv 192.168.1.100-key.pem certs/server.key
+> ```
 
 ### Tailscale (Remote Access)
 
@@ -125,37 +165,68 @@ mkdir -p certs && mv your-machine.tailnet.ts.net.crt certs/server.crt && mv your
 CAAL_HOST_IP=100.x.x.x                         # tailscale ip -4
 HTTPS_DOMAIN=your-machine.tailnet.ts.net
 
-# Build and start
-docker compose --profile https build frontend
+# Start
 docker compose --profile https up -d
 ```
+
+Access: `https://your-machine.tailnet.ts.net:3443`
 
 ---
 
 ## Configuration
 
-### Essential Environment Variables
+### Environment Variables
+
+Only `CAAL_HOST_IP` is required. Everything else is configured via the web UI.
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `CAAL_HOST_IP` | Your server's LAN/Tailscale IP | Yes |
-| `OLLAMA_HOST` | Ollama server URL | Yes |
-| `N8N_MCP_URL` | n8n MCP endpoint | Yes |
-| `N8N_MCP_TOKEN` | n8n access token | Yes |
-| `OLLAMA_MODEL` | LLM model (default: `ministral-3:8b`) | No |
-| `TTS_VOICE` | Kokoro voice (default: `am_puck`) | No |
-| `PORCUPINE_ACCESS_KEY` | Picovoice key for wake word | No |
+| `HTTPS_DOMAIN` | Domain for HTTPS mode | No |
 
-See `.env.example` for full configuration options.
+See `.env.example` for additional options (ports, default models).
+
+### Settings Panel
+
+After setup, click the gear icon to access the settings panel:
+
+- **Agent** - Agent name, voice selection, wake greetings
+- **Prompt** - Default or custom system prompt
+- **Providers** - LLM provider (Ollama/Groq), TTS provider (Kokoro/Piper)
+- **LLM Settings** - Temperature, context size, max turns, turn detection settings
+- **Integrations** - Home Assistant and n8n connection configuration
+- **Wake Word** - Enable/disable, model selection, threshold, timeout
 
 ---
 
 ## Integrations
 
+### Home Assistant
+
+Control your smart home with voice commands. CAAL exposes two simplified tools:
+
+- `hass_control(action, target, value)` - Control devices
+  - Actions: `turn_on`, `turn_off`, `set_volume`, `volume_up`, `volume_down`, `mute`, `unmute`, `pause`, `play`, `next`, `previous`
+  - Value: 0-100 for `set_volume`
+- `hass_get_state(target)` - Query device states
+
+**Setup:**
+1. Create a [Long-Lived Access Token](https://www.home-assistant.io/docs/authentication/#your-account-profile) in Home Assistant
+2. In CAAL settings, enable Home Assistant and enter your host URL and token
+3. Restart the agent - CAAL auto-discovers your devices
+
+See [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md) for action mappings and examples.
+
 ### n8n Workflows
 
-CAAL discovers tools from n8n workflows via MCP. Each workflow with a webhook trigger becomes a voice command.
+Extend CAAL with any API, database, or service via n8n workflows exposed through MCP.
 
+**Setup n8n:**
+1. Enable MCP: **Settings > MCP Access > Enable MCP**
+2. Set connection method to **Access Token** and copy the token
+3. In CAAL settings, enable n8n and enter your MCP URL and token
+
+**Import example workflows:**
 ```bash
 cd n8n-workflows
 cp config.env.example config.env
@@ -163,24 +234,22 @@ nano config.env  # Set your n8n IP and API key
 python setup.py  # Creates all workflows
 ```
 
-**Setup n8n:**
-1. Enable MCP: **Settings > MCP Access > Enable MCP**
-2. Set connection method to **Access Token** and copy the token
-3. Set `N8N_MCP_URL` in `.env`
-
-See `n8n-workflows/README.md` for included workflows.
+See [docs/N8N-WORKFLOWS.md](docs/N8N-WORKFLOWS.md) for how to create your own workflows.
 
 ### Wake Word Detection
 
-1. Get a free access key from [Picovoice Console](https://console.picovoice.ai/)
-2. Train "Hey Cal" wake word, download **Web (WASM)** model
-3. Place `hey_cal.ppn` in `frontend/public/`
-4. Set `PORCUPINE_ACCESS_KEY` in `.env`
-5. Rebuild: `docker compose build frontend && docker compose up -d`
+Enable "Hey Cal" wake word in the settings panel. Two options:
+
+- **OpenWakeWord (Server-side)** - Runs on the server, works with any client
+- **Picovoice (Client-side)** - Requires access key and trained model per device
 
 ---
 
 ## Webhook API
+
+The agent exposes a REST API on port 8889 for external integrations.
+
+**Core Endpoints:**
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -188,6 +257,24 @@ See `n8n-workflows/README.md` for included workflows.
 | `/wake` | POST | Trigger wake word greeting |
 | `/reload-tools` | POST | Refresh MCP tool cache |
 | `/health` | GET | Health check |
+
+**Settings & Configuration:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/settings` | GET/POST | Read/update settings |
+| `/prompt` | GET/POST | Read/update system prompt |
+| `/voices` | GET | List available TTS voices |
+| `/models` | GET | List available Ollama models |
+
+**Wake Word:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/wake-word/status` | GET | Get wake word status |
+| `/wake-word/enable` | POST | Enable wake word detection |
+| `/wake-word/disable` | POST | Disable wake word detection |
+| `/wake-word/models` | GET | List available wake word models |
 
 ```bash
 curl -X POST http://localhost:8889/announce \
@@ -199,12 +286,13 @@ curl -X POST http://localhost:8889/announce \
 
 ## Mobile App
 
-Flutter client for Android and iOS in `mobile/`.
+Android app available from [GitHub Releases](https://github.com/CoreWorxLab/caal/releases). Download the APK and install on your device.
 
+**Building from source:**
 ```bash
 cd mobile
 flutter pub get
-flutter run
+flutter build apk
 ```
 
 See [mobile/README.md](mobile/README.md) for full documentation.
@@ -243,8 +331,8 @@ uv run pytest            # Test
 │  Docker Compose Stack                                                 │
 │                                                                       │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
-│  │  Frontend  │  │  LiveKit   │  │  Speaches  │  │   Kokoro   │       │
-│  │  (Next.js) │  │   Server   │  │ (STT, GPU) │  │ (TTS, GPU) │       │
+│  │  Frontend  │  │  LiveKit   │  │  Speaches  │  │Kokoro/Piper│       │
+│  │  (Next.js) │  │   Server   │  │(STT, GPU)  │  │  (TTS)     │       │
 │  │   :3000    │  │   :7880    │  │   :8000    │  │   :8880    │       │
 │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘       │
 │        │               │               │               │              │
@@ -259,13 +347,13 @@ uv run pytest            # Test
 │                                    │                                  │
 └────────────────────────────────────┼──────────────────────────────────┘
                                      │
-                   ┌─────────────────┼─────────────────┐
-                   │                 │                 │
-             ┌─────┴─────┐     ┌─────┴─────┐     ┌─────┴─────┐
-             │  Ollama   │     │    n8n    │     │   Your    │
-             │   (LLM)   │     │ Workflows │     │   APIs    │
-             └───────────┘     └───────────┘     └───────────┘
-                    External Services (on your network)
+            ┌────────────────────────┼────────────────────────┐
+            │                        │                        │
+      ┌─────┴─────┐           ┌──────┴──────┐          ┌──────┴──────┐
+      │Ollama/Groq│           │     n8n     │          │    Home     │
+      │   (LLM)   │           │  Workflows  │          │  Assistant  │
+      └───────────┘           └─────────────┘          └─────────────┘
+                       External Services (via MCP)
 ```
 
 ---
@@ -295,16 +383,26 @@ Normal - models download on first run (~2-5 minutes):
 docker compose logs -f speaches kokoro
 ```
 
+### Integration Connection Errors
+
+If Home Assistant or n8n fail to connect, you'll see a toast notification with the error. Check:
+- Host URL is reachable from the Docker container
+- Access token is valid and has correct permissions
+- For n8n: MCP Access is enabled in Settings
+
 ---
 
 ## Related Projects
 
 - [LiveKit Agents](https://github.com/livekit/agents) - Voice agent framework
-- [Speaches](https://github.com/speaches-ai/speaches) - Faster-Whisper STT server
+- [Speaches](https://github.com/speaches-ai/speaches) - Faster-Whisper STT server (also includes Piper TTS)
 - [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) - Kokoro TTS server
+- [Piper](https://github.com/rhasspy/piper) - Fast local TTS (CPU-friendly)
 - [mlx-audio](https://github.com/Blaizzy/mlx-audio) - STT/TTS for Apple Silicon
 - [Ollama](https://ollama.ai/) - Local LLM server
+- [Groq](https://groq.com/) - Fast cloud LLM inference (free tier available)
 - [n8n](https://n8n.io/) - Workflow automation
+- [Home Assistant](https://www.home-assistant.io/) - Smart home platform
 
 ---
 

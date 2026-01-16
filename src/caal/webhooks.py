@@ -34,13 +34,16 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import random
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from livekit import api
+from livekit.protocol.models import DataPacket
+from livekit.protocol.room import SendDataRequest
 from pydantic import BaseModel
 
 from . import settings as settings_module
@@ -61,6 +64,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def get_livekit_api() -> api.LiveKitAPI:
+    """Get a LiveKit API client for sending data messages to agents."""
+    return api.LiveKitAPI(
+        url=os.getenv("LIVEKIT_URL", "http://localhost:7880"),
+        api_key=os.getenv("LIVEKIT_API_KEY", "devkey"),
+        api_secret=os.getenv("LIVEKIT_API_SECRET", "secret"),
+    )
+
+
+async def send_agent_command(room_name: str, command: dict) -> tuple[bool, str | None]:
+    """Send a command to the agent via LiveKit data channel.
+
+    Args:
+        room_name: The room to send to
+        command: Dict with 'action' and other fields
+
+    Returns:
+        Tuple of (success, error_message)
+    """
+    lk = None
+    try:
+        lk = get_livekit_api()
+        payload = json.dumps(command)
+        await lk.room.send_data(
+            SendDataRequest(
+                room=room_name,
+                data=payload.encode("utf-8"),
+                kind=DataPacket.Kind.RELIABLE,
+                topic="webhook_command",
+            )
+        )
+        return True, None
+    except Exception as e:
+        error_msg = str(e)
+        # Check for common error patterns
+        if "no response from servers" in error_msg or "503" in error_msg:
+            error_msg = f"No active session in room: {room_name}"
+        logger.error(f"Failed to send agent command: {error_msg}")
+        return False, error_msg
+    finally:
+        if lk:
+            await lk.aclose()
 
 
 class AnnounceRequest(BaseModel):
@@ -117,8 +164,8 @@ class HealthResponse(BaseModel):
 async def announce(req: AnnounceRequest) -> AnnounceResponse:
     """Make the agent speak a message.
 
-    This endpoint injects an announcement into an active voice session.
-    The agent will speak the provided message using TTS.
+    This endpoint sends an announcement command to the agent via LiveKit
+    data channel. The agent will speak the provided message using TTS.
 
     Args:
         req: AnnounceRequest with message and optional room_name
@@ -127,33 +174,28 @@ async def announce(req: AnnounceRequest) -> AnnounceResponse:
         AnnounceResponse with status
 
     Raises:
-        HTTPException: 404 if no active session in the specified room
+        HTTPException: 404 if no active session, 500 if failed to send
     """
-    from . import session_registry
-
-    result = session_registry.get(req.room_name)
-    if not result:
-        logger.warning(f"Announce failed: no session in room {req.room_name}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active session in room: {req.room_name}",
-        )
-
-    session, _agent = result
     logger.info(f"Announcing to room {req.room_name}: {req.message[:50]}...")
 
-    # Say the message directly (bypasses LLM for instant response)
-    await session.say(req.message)
+    success, error = await send_agent_command(
+        req.room_name,
+        {"action": "announce", "message": req.message},
+    )
 
-    return AnnounceResponse(status="announced", room_name=req.room_name)
+    if not success:
+        status_code = 404 if "No active session" in (error or "") else 500
+        raise HTTPException(status_code=status_code, detail=error)
+
+    return AnnounceResponse(status="queued", room_name=req.room_name)
 
 
 @app.post("/reload-tools", response_model=ReloadToolsResponse)
 async def reload_tools(req: ReloadToolsRequest) -> ReloadToolsResponse:
     """Refresh MCP tool cache and optionally announce new tool availability.
 
-    This endpoint clears the n8n workflow cache and re-discovers available
-    workflows. Optionally announces the change:
+    This endpoint sends a reload command to the agent via LiveKit data channel.
+    The agent will clear caches, re-discover workflows, and optionally announce:
     - If `message` is provided, speaks that exact message
     - If only `tool_name` is provided, speaks "A new tool called '{tool_name}' is now available."
     - If neither is provided, reloads silently
@@ -162,53 +204,30 @@ async def reload_tools(req: ReloadToolsRequest) -> ReloadToolsResponse:
         req: ReloadToolsRequest with optional message, tool_name, and room_name
 
     Returns:
-        ReloadToolsResponse with status and tool count
+        ReloadToolsResponse with status
 
     Raises:
-        HTTPException: 404 if no active session in the specified room
+        HTTPException: 500 if failed to send command
     """
-    from . import session_registry
-    from .integrations import n8n
-
-    result = session_registry.get(req.room_name)
-    if not result:
-        logger.warning(f"Reload failed: no session in room {req.room_name}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active session in room: {req.room_name}",
-        )
-
-    session, agent = result
     logger.info(f"Reloading tools for room {req.room_name}")
 
-    # Clear all caches
-    agent._ollama_tools_cache = None
-    n8n.clear_caches()
+    success, error = await send_agent_command(
+        req.room_name,
+        {
+            "action": "reload_tools",
+            "message": req.message,
+            "tool_name": req.tool_name,
+        },
+    )
 
-    # Re-discover n8n workflows if MCP is configured
-    tool_count = 0
-    n8n_mcp = agent._caal_mcp_servers.get("n8n")
-    if n8n_mcp and agent._n8n_base_url:
-        try:
-            tools, name_map = await n8n.discover_n8n_workflows(
-                n8n_mcp, agent._n8n_base_url
-            )
-            agent._n8n_workflow_tools = tools
-            agent._n8n_workflow_name_map = name_map
-            tool_count = len(tools)
-            logger.info(f"Discovered {tool_count} n8n workflows")
-        except Exception as e:
-            logger.error(f"Failed to re-discover n8n workflows: {e}")
+    if not success:
+        status_code = 404 if "No active session" in (error or "") else 500
+        raise HTTPException(status_code=status_code, detail=error)
 
-    # Announce: custom message takes priority, then tool_name format
-    if req.message:
-        await session.say(req.message)
-    elif req.tool_name:
-        await session.say(f"A new tool called '{req.tool_name}' is now available.")
-
+    # Tool count is now handled agent-side, return 0 as placeholder
     return ReloadToolsResponse(
-        status="reloaded",
-        tool_count=tool_count,
+        status="queued",
+        tool_count=0,
         room_name=req.room_name,
     )
 
@@ -217,7 +236,10 @@ async def reload_tools(req: ReloadToolsRequest) -> ReloadToolsResponse:
 async def wake(req: WakeRequest) -> WakeResponse:
     """Handle wake word detection - greet the user.
 
-    This endpoint is primarily for:
+    This endpoint sends a wake command to the agent via LiveKit data channel.
+    The agent will play a random greeting from the configured greetings list.
+
+    This is primarily for:
     - Client-side wake word detection (Picovoice - deprecated)
     - Manual testing via curl
 
@@ -231,39 +253,20 @@ async def wake(req: WakeRequest) -> WakeResponse:
         WakeResponse with status
 
     Raises:
-        HTTPException: 404 if no active session in the specified room
+        HTTPException: 500 if failed to send command
     """
-    from . import session_registry
-
-    result = session_registry.get(req.room_name)
-    if not result:
-        logger.warning(f"Wake failed: no session in room {req.room_name}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active session in room: {req.room_name}",
-        )
-
-    session, _agent = result
     logger.info(f"Wake word detected in room {req.room_name}")
 
-    # Get greeting
-    greetings = settings_module.get_setting("wake_greetings")
-    greeting = random.choice(greetings)
+    success, error = await send_agent_command(
+        req.room_name,
+        {"action": "wake"},
+    )
 
-    # Call TTS directly and push to audio output, bypassing agent turn-taking
-    tts = session.tts
-    audio_output = session.output.audio
-    audio_stream = tts.synthesize(greeting)
+    if not success:
+        status_code = 404 if "No active session" in (error or "") else 500
+        raise HTTPException(status_code=status_code, detail=error)
 
-    # Push audio frames directly to the audio output
-    async for event in audio_stream:
-        if hasattr(event, 'frame') and event.frame:
-            await audio_output.capture_frame(event.frame)
-
-    # Flush to complete the segment
-    audio_output.flush()
-
-    return WakeResponse(status="greeted", room_name=req.room_name)
+    return WakeResponse(status="queued", room_name=req.room_name)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -271,13 +274,22 @@ async def health() -> HealthResponse:
     """Health check endpoint.
 
     Returns:
-        HealthResponse with status and list of active session room names
+        HealthResponse with status and list of active room names
     """
-    from . import session_registry
+    try:
+        lk = get_livekit_api()
+        from livekit.protocol.room import ListRoomsRequest
+
+        response = await lk.room.list_rooms(ListRoomsRequest())
+        await lk.aclose()
+        rooms = [room.name for room in response.rooms]
+    except Exception as e:
+        logger.warning(f"Failed to list rooms: {e}")
+        rooms = []
 
     return HealthResponse(
         status="ok",
-        active_sessions=session_registry.list_rooms(),
+        active_sessions=rooms,
     )
 
 
@@ -331,9 +343,10 @@ async def get_settings() -> SettingsResponse:
     """Get current settings and prompt content.
 
     Returns:
-        SettingsResponse with current settings, prompt content, and custom prompt status
+        SettingsResponse with current settings, prompt content, and custom prompt status.
+        Sensitive keys (tokens) are excluded for security.
     """
-    settings = settings_module.load_settings()
+    settings = settings_module.load_settings_safe()  # Excludes sensitive keys
     prompt_content = settings_module.load_prompt_content()
     custom_exists = settings_module.custom_prompt_exists()
 
@@ -357,9 +370,16 @@ async def update_settings(req: SettingsUpdateRequest) -> SettingsResponse:
     # Load current settings
     current = settings_module.load_settings()
 
+    # Secret fields that should not be overwritten with empty values
+    # (UI doesn't show these, so saving would clear them)
+    secret_fields = {"groq_api_key", "hass_token", "n8n_token"}
+
     # Merge with new settings (only known keys)
     for key, value in req.settings.items():
         if key in settings_module.DEFAULT_SETTINGS:
+            # Don't overwrite secrets with empty values
+            if key in secret_fields and not value:
+                continue
             current[key] = value
 
     # Save merged settings
@@ -424,13 +444,57 @@ async def save_prompt(req: PromptUpdateRequest) -> PromptResponse:
     )
 
 
+# Default Piper voices (model IDs from HuggingFace speaches-ai)
+# Piper bakes voice into model ID, so each "voice" is actually a model
+PIPER_VOICES = [
+    # English
+    "speaches-ai/piper-en_US-ryan-high",
+    "speaches-ai/piper-en_US-ljspeech-medium",
+    "speaches-ai/piper-en_US-hfc_female-medium",
+    "speaches-ai/piper-en_US-lessac-medium",
+    "speaches-ai/piper-en_GB-aru-medium",
+    "speaches-ai/piper-en_GB-alba-medium",
+    # German
+    "speaches-ai/piper-de_DE-eva_k-x_low",
+    "speaches-ai/piper-de_DE-kerstin-low",
+    "speaches-ai/piper-de_DE-thorsten-high",
+    # French
+    "speaches-ai/piper-fr_FR-mls-medium",
+    "speaches-ai/piper-fr_FR-siwis-medium",
+    # Spanish
+    "speaches-ai/piper-es_ES-davefx-medium",
+    "speaches-ai/piper-es_MX-ald-medium",
+    # Russian
+    "speaches-ai/piper-ru_RU-irina-medium",
+    # Other
+    "speaches-ai/piper-it_IT-riccardo-x_low",
+    "speaches-ai/piper-pl_PL-darkman-medium",
+    "speaches-ai/piper-pt_BR-faber-medium",
+    "speaches-ai/piper-sk_SK-lili-medium",
+    "speaches-ai/piper-uk_UA-lada-x_low",
+]
+
+
 @app.get("/voices", response_model=VoicesResponse)
-async def get_voices() -> VoicesResponse:
-    """Get available TTS voices from Kokoro.
+async def get_voices(provider: str | None = None) -> VoicesResponse:
+    """Get available TTS voices based on TTS provider.
+
+    Args:
+        provider: Optional provider override ("kokoro" or "piper").
+                  If not specified, uses current setting.
 
     Returns:
-        VoicesResponse with list of voice IDs
+        VoicesResponse with list of voice IDs (Kokoro) or model IDs (Piper)
     """
+    if provider is None:
+        settings = settings_module.load_settings()
+        provider = settings.get("tts_provider", "kokoro")
+
+    if provider == "piper":
+        # Piper voices are model IDs - return curated list
+        return VoicesResponse(voices=PIPER_VOICES)
+
+    # Kokoro - fetch from API
     kokoro_url = os.getenv("KOKORO_URL", "http://kokoro:8880")
 
     try:
@@ -442,9 +506,15 @@ async def get_voices() -> VoicesResponse:
             response.raise_for_status()
             data = response.json()
 
-            # Kokoro returns {"voices": [{"id": "...", ...}, ...]}
-            voices = [v.get("id") or v.get("voice_id") for v in data.get("voices", [])]
-            voices = [v for v in voices if v]  # Filter None values
+            # Kokoro returns {"voices": ["am_puck", ...]} as plain strings
+            raw_voices = data.get("voices", [])
+            if raw_voices and isinstance(raw_voices[0], str):
+                # Plain string list
+                voices = raw_voices
+            else:
+                # Object list with id field
+                voices = [v.get("id") or v.get("voice_id") for v in raw_voices]
+                voices = [v for v in voices if v]  # Filter None values
 
             return VoicesResponse(voices=voices)
     except Exception as e:
@@ -452,6 +522,83 @@ async def get_voices() -> VoicesResponse:
         # Return default voices as fallback
         return VoicesResponse(
             voices=["af_heart", "af_bella", "af_sarah", "am_adam", "am_puck"]
+        )
+
+
+class DownloadModelRequest(BaseModel):
+    """Request body for /download-piper-model endpoint."""
+
+    model_id: str
+
+
+class DownloadModelResponse(BaseModel):
+    """Response body for /download-piper-model endpoint."""
+
+    success: bool
+    message: str
+
+
+@app.post("/download-piper-model", response_model=DownloadModelResponse)
+async def download_piper_model(request: DownloadModelRequest) -> DownloadModelResponse:
+    """Download a Piper TTS model to Speaches.
+
+    Args:
+        request: Request containing model_id (e.g., "speaches-ai/piper-en_US-ljspeech-medium")
+
+    Returns:
+        DownloadModelResponse with success status and message
+    """
+    speaches_url = os.getenv("SPEACHES_URL", "http://speaches:8000")
+    model_id = request.model_id
+
+    logger.info(f"Piper model download requested: {model_id}")
+
+    # Validate it's a Piper model
+    if not model_id.startswith("speaches-ai/piper-"):
+        logger.warning(f"Invalid Piper model ID: {model_id}")
+        return DownloadModelResponse(
+            success=False,
+            message=f"Invalid Piper model ID: {model_id}"
+        )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # Check if already downloaded
+            check_response = await client.get(
+                f"{speaches_url}/v1/models/{model_id}",
+                timeout=5.0,
+            )
+            if check_response.status_code == 200:
+                logger.info(f"Piper model already installed: {model_id}")
+                return DownloadModelResponse(
+                    success=True,
+                    message=f"Model '{model_id}' already installed"
+                )
+
+            # Download the model (~60MB, should take <30s)
+            logger.info(f"Downloading Piper model: {model_id}")
+            response = await client.post(
+                f"{speaches_url}/v1/models/{model_id}",
+                timeout=60.0,
+            )
+            response.raise_for_status()
+
+            logger.info(f"Piper model downloaded successfully: {model_id}")
+            return DownloadModelResponse(
+                success=True,
+                message=f"Model '{model_id}' downloaded successfully"
+            )
+    except httpx.TimeoutException:
+        logger.error(f"Timeout downloading Piper model: {model_id}")
+        return DownloadModelResponse(
+            success=False,
+            message=f"Timeout downloading model '{model_id}'"
+        )
+    except Exception as e:
+        logger.error(f"Failed to download Piper model {model_id}: {e}")
+        return DownloadModelResponse(
+            success=False,
+            message=f"Failed to download model: {e}"
         )
 
 
@@ -597,3 +744,373 @@ async def get_wake_word_models() -> WakeWordModelsResponse:
                 models.append(f"models/{f.name}")
 
     return WakeWordModelsResponse(models=sorted(models))
+
+
+# =============================================================================
+# Setup Wizard Endpoints
+# =============================================================================
+
+
+class SetupStatusResponse(BaseModel):
+    """Response body for /setup/status endpoint."""
+
+    completed: bool
+
+
+class SetupCompleteRequest(BaseModel):
+    """Request body for /setup/complete endpoint."""
+
+    llm_provider: str  # "ollama" | "groq"
+    # Ollama settings
+    ollama_host: str | None = None
+    ollama_model: str | None = None
+    # Groq settings
+    groq_api_key: str | None = None
+    groq_model: str | None = None
+    # TTS provider
+    tts_provider: str = "kokoro"  # "kokoro" | "piper"
+    tts_voice_kokoro: str | None = None
+    tts_voice_piper: str | None = None
+    # Integrations (optional) - None means "don't change"
+    hass_enabled: bool | None = None
+    hass_host: str | None = None
+    hass_token: str | None = None
+    n8n_enabled: bool | None = None
+    n8n_url: str | None = None
+    n8n_token: str | None = None
+
+
+class SetupCompleteResponse(BaseModel):
+    """Response body for /setup/complete endpoint."""
+
+    success: bool
+    message: str
+
+
+class TestConnectionResponse(BaseModel):
+    """Response body for connection test endpoints."""
+
+    success: bool
+    error: str | None = None
+    models: list[str] | None = None  # For Ollama
+    device_count: int | None = None  # For Home Assistant
+    workflow_count: int | None = None  # For n8n
+
+
+class TestOllamaRequest(BaseModel):
+    """Request body for /setup/test-ollama endpoint."""
+
+    host: str
+
+
+class TestGroqRequest(BaseModel):
+    """Request body for /setup/test-groq endpoint."""
+
+    api_key: str
+
+
+class TestHassRequest(BaseModel):
+    """Request body for /setup/test-hass endpoint."""
+
+    host: str
+    token: str
+
+
+class TestN8nRequest(BaseModel):
+    """Request body for /setup/test-n8n endpoint."""
+
+    url: str
+    token: str | None = None
+
+
+@app.get("/setup/status", response_model=SetupStatusResponse)
+async def get_setup_status() -> SetupStatusResponse:
+    """Check if first-launch setup has been completed.
+
+    Returns:
+        SetupStatusResponse with completed flag
+    """
+    settings = settings_module.load_settings()
+    return SetupStatusResponse(completed=settings.get("first_launch_completed", False))
+
+
+@app.post("/setup/complete", response_model=SetupCompleteResponse)
+async def complete_setup(req: SetupCompleteRequest) -> SetupCompleteResponse:
+    """Complete the first-launch setup wizard.
+
+    Saves all settings and marks setup as completed.
+    UI sets both stt_provider and llm_provider together based on llm_provider choice.
+
+    Args:
+        req: SetupCompleteRequest with provider and integration settings
+
+    Returns:
+        SetupCompleteResponse with success status
+    """
+    try:
+        current = settings_module.load_settings()
+
+        # Provider settings - UI couples STT and LLM together
+        current["llm_provider"] = req.llm_provider
+        if req.llm_provider == "groq":
+            current["stt_provider"] = "groq"
+            if req.groq_model:
+                current["groq_model"] = req.groq_model
+        else:
+            current["stt_provider"] = "speaches"
+            if req.ollama_host:
+                current["ollama_host"] = req.ollama_host
+            if req.ollama_model:
+                current["ollama_model"] = req.ollama_model
+
+        # Home Assistant integration - only update if explicitly provided
+        if req.hass_enabled is not None:
+            current["hass_enabled"] = req.hass_enabled
+            if req.hass_enabled:
+                if req.hass_host:
+                    current["hass_host"] = req.hass_host
+                if req.hass_token:
+                    current["hass_token"] = req.hass_token
+
+        # n8n integration - only update if explicitly provided
+        if req.n8n_enabled is not None:
+            current["n8n_enabled"] = req.n8n_enabled
+            if req.n8n_enabled:
+                if req.n8n_url:
+                    current["n8n_url"] = req.n8n_url
+                if req.n8n_token:
+                    current["n8n_token"] = req.n8n_token
+
+        # TTS provider and voice settings
+        current["tts_provider"] = req.tts_provider
+        if req.tts_voice_kokoro:
+            current["tts_voice_kokoro"] = req.tts_voice_kokoro
+        if req.tts_voice_piper:
+            current["tts_voice_piper"] = req.tts_voice_piper
+
+        # Mark setup as complete
+        current["first_launch_completed"] = True
+
+        # Save Groq API key to settings (before save_settings call)
+        if req.groq_api_key:
+            current["groq_api_key"] = req.groq_api_key
+
+        # Save settings
+        settings_module.save_settings(current)
+
+        logger.info("First-launch setup completed")
+        return SetupCompleteResponse(success=True, message="Setup completed successfully")
+
+    except Exception as e:
+        logger.error(f"Setup failed: {e}")
+        return SetupCompleteResponse(success=False, message=str(e))
+
+
+@app.post("/setup/test-ollama", response_model=TestConnectionResponse)
+async def test_ollama(req: TestOllamaRequest) -> TestConnectionResponse:
+    """Test Ollama connection and list available models.
+
+    Args:
+        req: TestOllamaRequest with host URL
+
+    Returns:
+        TestConnectionResponse with success status and model list
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{req.host}/api/tags",
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            models = [m.get("name") for m in data.get("models", [])]
+            models = [m for m in models if m]
+
+            return TestConnectionResponse(success=True, models=models)
+    except httpx.ConnectError:
+        return TestConnectionResponse(
+            success=False, error=f"Cannot connect to Ollama at {req.host}"
+        )
+    except Exception as e:
+        return TestConnectionResponse(success=False, error=str(e))
+
+
+@app.post("/setup/test-groq", response_model=TestConnectionResponse)
+async def test_groq(req: TestGroqRequest) -> TestConnectionResponse:
+    """Test Groq API key validity.
+
+    Args:
+        req: TestGroqRequest with API key
+
+    Returns:
+        TestConnectionResponse with success status
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {req.api_key}"},
+                timeout=10.0,
+            )
+            if response.status_code == 401:
+                return TestConnectionResponse(success=False, error="Invalid API key")
+            response.raise_for_status()
+
+            data = response.json()
+            models = [m.get("id") for m in data.get("data", [])]
+            models = [m for m in models if m]
+
+            return TestConnectionResponse(success=True, models=models)
+    except Exception as e:
+        return TestConnectionResponse(success=False, error=str(e))
+
+
+@app.post("/setup/test-hass", response_model=TestConnectionResponse)
+async def test_hass(req: TestHassRequest) -> TestConnectionResponse:
+    """Test Home Assistant connection.
+
+    Args:
+        req: TestHassRequest with host and token
+
+    Returns:
+        TestConnectionResponse with success status and device count
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{req.host}/api/states",
+                headers={"Authorization": f"Bearer {req.token}"},
+                timeout=10.0,
+            )
+            if response.status_code == 401:
+                return TestConnectionResponse(
+                    success=False, error="Invalid access token"
+                )
+            response.raise_for_status()
+
+            states = response.json()
+            device_count = len(states)
+
+            return TestConnectionResponse(success=True, device_count=device_count)
+    except httpx.ConnectError:
+        return TestConnectionResponse(
+            success=False, error=f"Cannot connect to Home Assistant at {req.host}"
+        )
+    except Exception as e:
+        return TestConnectionResponse(success=False, error=str(e))
+
+
+@app.post("/setup/test-n8n", response_model=TestConnectionResponse)
+async def test_n8n(req: TestN8nRequest) -> TestConnectionResponse:
+    """Test n8n MCP connection.
+
+    Args:
+        req: TestN8nRequest with URL and token
+
+    Returns:
+        TestConnectionResponse with success status
+    """
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if req.token:
+            headers["Authorization"] = f"Bearer {req.token}"
+
+        async with httpx.AsyncClient() as client:
+            # MCP protocol: list tools to verify connection
+            response = await client.post(
+                req.url,
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list",
+                    "params": {},
+                },
+                timeout=10.0,
+            )
+
+            # Check for auth error in response body (n8n returns 200 with error message)
+            if response.status_code == 200:
+                text = response.text
+                if "Unauthorized" in text:
+                    return TestConnectionResponse(
+                        success=False, error="Invalid access token"
+                    )
+                # SSE response with tools means success
+                if "search_workflows" in text:
+                    return TestConnectionResponse(success=True)
+
+            if response.status_code == 401:
+                return TestConnectionResponse(
+                    success=False, error="Invalid access token"
+                )
+            response.raise_for_status()
+
+            return TestConnectionResponse(success=True)
+    except httpx.ConnectError:
+        return TestConnectionResponse(
+            success=False, error=f"Cannot connect to n8n at {req.url}"
+        )
+    except Exception as e:
+        return TestConnectionResponse(success=False, error=str(e))
+
+
+# =============================================================================
+# Prewarm Endpoint
+# =============================================================================
+
+
+class PrewarmResponse(BaseModel):
+    """Response body for /prewarm endpoint."""
+
+    status: str
+    message: str
+
+
+@app.post("/prewarm", response_model=PrewarmResponse)
+async def prewarm() -> PrewarmResponse:
+    """Trigger model preloading for Ollama.
+
+    This endpoint triggers the preload_models() function to warm up
+    the STT and LLM models. It returns immediately - preloading happens
+    in background.
+
+    Returns:
+        PrewarmResponse with status
+    """
+    settings = settings_module.load_settings()
+
+    # Only prewarm if using Ollama
+    if settings.get("llm_provider", "ollama") != "ollama":
+        return PrewarmResponse(
+            status="skipped",
+            message="Prewarm only applies to Ollama provider",
+        )
+
+    # Import and call preload in background
+    import asyncio
+
+    async def do_prewarm():
+        try:
+            # Import here to avoid circular imports
+            from voice_agent import preload_models
+
+            ollama_host = settings.get("ollama_host", "http://localhost:11434")
+            ollama_model = settings.get("ollama_model", "ministral-3:8b")
+            await preload_models(ollama_host, ollama_model)
+            logger.info("Model prewarm completed")
+        except Exception as e:
+            logger.error(f"Prewarm failed: {e}")
+
+    # Fire and forget
+    asyncio.create_task(do_prewarm())
+
+    return PrewarmResponse(
+        status="started",
+        message="Model preloading started in background",
+    )

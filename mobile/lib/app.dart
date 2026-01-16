@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import 'controllers/app_ctrl.dart';
 import 'controllers/audio_filter_ctrl.dart';
+import 'controllers/connection_error_ctrl.dart';
 import 'controllers/tool_status_ctrl.dart';
 import 'controllers/wake_word_state_ctrl.dart';
 import 'screens/agent_screen.dart';
@@ -13,6 +14,7 @@ import 'screens/welcome_screen.dart';
 import 'services/config_service.dart';
 import 'ui/color_pallette.dart' show LKColorPaletteLight, LKColorPaletteDark;
 import 'widgets/app_layout_switcher.dart';
+import 'widgets/connection_error_banner.dart';
 import 'widgets/session_error_banner.dart';
 
 class CaalApp extends StatefulWidget {
@@ -128,6 +130,7 @@ class _CaalAppState extends State<CaalApp> {
               serverUrl: widget.configService.serverUrl,
             );
             final audioFilterCtrl = AudioFilterCtrl(room: appCtrl.room);
+            final connectionErrorCtrl = ConnectionErrorCtrl(room: appCtrl.room);
 
             return MultiProvider(
               key: ValueKey(appCtrl.sessionKey),
@@ -137,6 +140,7 @@ class _CaalAppState extends State<CaalApp> {
                 ChangeNotifierProvider<ToolStatusCtrl>.value(value: toolStatusCtrl),
                 ChangeNotifierProvider<WakeWordStateCtrl>.value(value: wakeWordStateCtrl),
                 ChangeNotifierProvider<AudioFilterCtrl>.value(value: audioFilterCtrl),
+                ChangeNotifierProvider<ConnectionErrorCtrl>.value(value: connectionErrorCtrl),
               ],
               child: components.SessionContext(
                 session: appCtrl.session,
@@ -160,6 +164,7 @@ class _CaalAppState extends State<CaalApp> {
                               ),
                             ),
                             const SessionErrorBanner(),
+                            const ConnectionErrorBanner(),
                           ],
                         ),
                       ),

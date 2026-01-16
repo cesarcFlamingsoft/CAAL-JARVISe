@@ -1,3 +1,4 @@
+import { Gear } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 
 function WelcomeImage() {
@@ -21,15 +22,28 @@ function WelcomeImage() {
 interface WelcomeViewProps {
   startButtonText: string;
   onStartCall: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const WelcomeView = ({
   startButtonText,
   onStartCall,
+  onOpenSettings,
   ref,
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
   return (
-    <div ref={ref}>
+    <div ref={ref} className="relative">
+      {/* Settings gear - top right */}
+      {onOpenSettings && (
+        <button
+          onClick={onOpenSettings}
+          className="text-muted-foreground hover:text-foreground hover:bg-muted fixed top-6 right-6 z-40 rounded-full p-2 transition-colors"
+          title="Settings"
+        >
+          <Gear className="h-6 w-6" weight="bold" />
+        </button>
+      )}
+
       <section className="bg-background flex flex-col items-center justify-center text-center">
         <WelcomeImage />
 

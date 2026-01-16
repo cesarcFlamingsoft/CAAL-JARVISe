@@ -10,7 +10,6 @@ import '../controllers/tool_status_ctrl.dart';
 import '../controllers/wake_word_state_ctrl.dart';
 import '../ui/color_pallette.dart' show LKColorPaletteLight;
 import 'floating_glass.dart';
-import 'settings_modal.dart';
 
 const _wakeWordBlue = Color(0xFF3B82F6);  // Sleeping - waiting for wake word
 const _wakeWordGreen = Color(0xFF22C55E); // Listening - active conversation
@@ -100,15 +99,6 @@ class ControlBar extends StatelessWidget {
               ),
               // Wake word toggle button with auto-mute logic
               const _WakeWordButton(),
-              // Settings button
-              Flexible(
-                flex: 1,
-                fit: FlexFit.tight,
-                child: FloatingGlassButton(
-                  sfIcon: sf.SFIcons.sf_gearshape_fill,
-                  onTap: () => SettingsModal.show(ctx),
-                ),
-              ),
               Flexible(
                 flex: 1,
                 fit: FlexFit.tight,

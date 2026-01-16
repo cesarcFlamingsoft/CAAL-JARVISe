@@ -1,8 +1,8 @@
-"""Web search tool with DuckDuckGo + Ollama summarization.
+"""Web search tool with DuckDuckGo + LLM summarization.
 
 Provides a voice-friendly web search capability that:
 1. Searches DuckDuckGo (free, no API key)
-2. Summarizes results with Ollama for concise voice output
+2. Summarizes results with the configured LLM provider for concise voice output
 3. Returns 1-3 sentence answers instead of raw search results
 
 Usage:
@@ -12,10 +12,12 @@ Usage:
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import ollama
 from livekit.agents import function_tool
+
+if TYPE_CHECKING:
+    from ..llm.providers import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +34,10 @@ Summary:"""
 
 
 class WebSearchTools:
-    """Mixin providing web search via DuckDuckGo with Ollama summarization.
+    """Mixin providing web search via DuckDuckGo with LLM summarization.
 
     Requires the parent class to have:
-    - self.llm: OllamaLLM instance (for model access)
+    - self._provider: LLMProvider instance (for summarization)
 
     Configuration (override in subclass if needed):
     - _search_max_results: int = 5
@@ -95,7 +97,7 @@ class WebSearchTools:
         query: str,
         results: list[dict[str, Any]]
     ) -> str:
-        """Summarize search results with Ollama for voice-friendly output."""
+        """Summarize search results with configured LLM provider."""
 
         # Truncate to avoid exceeding context limits (~500 tokens total)
         formatted = []
@@ -107,18 +109,18 @@ class WebSearchTools:
         results_text = "\n".join(formatted)
         prompt = SUMMARIZE_PROMPT.format(query=query, results=results_text)
 
-        # Use agent's model for summarization
-        model = getattr(self.llm, "model", "qwen3:8b")
+        # Use agent's provider for summarization
+        provider: "LLMProvider" = getattr(self, "_provider", None)
+        if provider is None:
+            logger.warning("No provider available for summarization, returning raw results")
+            if results:
+                return results[0].get("body", "No description available.")
+            return "I had trouble processing the search results."
 
         try:
-            response = await asyncio.to_thread(
-                ollama.chat,
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.3},  # Low temp for factual output
-                stream=False,
-            )
-            summary = response.get("message", {}).get("content", "").strip()
+            messages = [{"role": "user", "content": prompt}]
+            response = await provider.chat(messages=messages)
+            summary = (response.content or "").strip()
             return summary or "I found some results but couldn't summarize them."
 
         except Exception as e:

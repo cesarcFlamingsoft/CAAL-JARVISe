@@ -22,7 +22,7 @@ This guide describes how to deploy CAAL in a distributed architecture, separatin
 │         GPU Server (Backend)            │
 │                                         │
 │  ┌──────────────────────────────────┐   │
-│  │  nginx (TLS termination) :443    │   │
+│  │  nginx (TLS termination) :3443   │   │
 │  └──────────────┬───────────────────┘   │
 │                 │                       │
 │  ┌──────────────┼───────────────────┐   │
@@ -67,7 +67,7 @@ This guide describes how to deploy CAAL in a distributed architecture, separatin
 - 8880 (Kokoro TTS)
 - 8889 (Agent webhooks)
 - 11434 (Ollama API)
-- 443 (nginx HTTPS)
+- 3443 (nginx HTTPS)
 - 50000-50100 (WebRTC UDP media)
 
 ### Step 1: Install NVIDIA Container Toolkit
@@ -344,7 +344,7 @@ services:
     profiles:
       - https
     ports:
-      - "443:443"
+      - "3443:3443"
     volumes:
       - ./certs:/etc/nginx/certs:ro
       - ./nginx-distributed.conf:/etc/nginx/nginx.conf:ro
@@ -373,7 +373,7 @@ http {
     }
 
     server {
-        listen 443 ssl;
+        listen 3443 ssl;
         server_name _;
 
         ssl_certificate /etc/nginx/certs/server.crt;
@@ -423,7 +423,7 @@ docker compose logs -f agent
 
 ```bash
 curl http://localhost:11434/api/tags  # Ollama
-curl -v https://gpu-server.tailnet-name.ts.net/health  # nginx/agent
+curl -v https://gpu-server.tailnet-name.ts.net:3443/health  # nginx/agent
 nvidia-smi  # GPU usage
 ```
 
@@ -472,7 +472,7 @@ Before configuring the frontend, verify you can reach the GPU server:
 ping gpu-server.tailnet-name.ts.net
 
 # Test backend health endpoint
-curl https://gpu-server.tailnet-name.ts.net/health
+curl https://gpu-server.tailnet-name.ts.net:3443/health
 # Expected: {"status": "healthy", ...}
 
 # Test LiveKit server (port 7443 via nginx)
@@ -480,7 +480,7 @@ curl https://gpu-server.tailnet-name.ts.net:7443/
 # Expected: OK
 
 # Test models API
-curl https://gpu-server.tailnet-name.ts.net/api/models
+curl https://gpu-server.tailnet-name.ts.net:3443/api/models
 # Expected: {"models": ["ministral-3:14b", ...]}
 ```
 
@@ -509,7 +509,7 @@ NEXT_PUBLIC_LIVEKIT_URL=wss://gpu-server.tailnet-name.ts.net:7443
 
 # Backend webhook URL (for settings, models, voices APIs)
 # Points to the agent service via nginx reverse proxy
-WEBHOOK_URL=https://gpu-server.tailnet-name.ts.net/api
+WEBHOOK_URL=https://gpu-server.tailnet-name.ts.net:3443/api
 
 # LiveKit API credentials - MUST match GPU server values
 LIVEKIT_API_KEY=API3F4xKZpWbzDk

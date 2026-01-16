@@ -1,10 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
 import { SessionView } from '@/components/app/session-view';
 import { WelcomeView } from '@/components/app/welcome-view';
+import { SettingsPanel } from '@/components/settings/settings-panel';
 
 const MotionWelcomeView = motion.create(WelcomeView);
 const MotionSessionView = motion.create(SessionView);
@@ -33,6 +35,7 @@ interface ViewControllerProps {
 
 export function ViewController({ appConfig }: ViewControllerProps) {
   const { isConnected, start } = useSessionContext();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <>
@@ -44,6 +47,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
             {...VIEW_MOTION_PROPS}
             startButtonText={appConfig.startButtonText}
             onStartCall={start}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
         {/* Session view */}
@@ -51,6 +55,9 @@ export function ViewController({ appConfig }: ViewControllerProps) {
           <MotionSessionView key="session-view" {...VIEW_MOTION_PROPS} appConfig={appConfig} />
         )}
       </AnimatePresence>
+
+      {/* Settings panel */}
+      <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );
 }

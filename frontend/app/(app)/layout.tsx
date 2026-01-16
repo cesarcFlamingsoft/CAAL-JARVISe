@@ -11,7 +11,8 @@ export default async function Layout({ children }: LayoutProps) {
 
   return (
     <>
-      <header className="fixed top-0 left-0 z-50 hidden w-full flex-row justify-between p-6 md:flex">
+      {/* Logo - top left */}
+      <header className="fixed top-0 left-0 z-40 hidden p-6 md:block">
         <a
           target="_blank"
           rel="noopener noreferrer"
@@ -27,20 +28,24 @@ export default async function Layout({ children }: LayoutProps) {
             className="hidden size-12 dark:block"
           />
         </a>
-        <span className="text-foreground font-mono text-xs font-bold tracking-wider uppercase">
+      </header>
+
+      {children}
+
+      {/* Branding - bottom right */}
+      <footer className="fixed right-0 bottom-0 z-40 hidden p-6 md:block">
+        <span className="text-muted-foreground font-mono text-xs font-medium tracking-wider uppercase">
           Built by{' '}
           <a
             target="_blank"
             rel="noopener noreferrer"
             href="https://github.com/coreworxlab"
-            className="underline underline-offset-4"
+            className="hover:text-foreground underline underline-offset-4 transition-colors"
           >
             CoreWorxLab
           </a>
         </span>
-      </header>
-
-      {children}
+      </footer>
     </>
   );
 }

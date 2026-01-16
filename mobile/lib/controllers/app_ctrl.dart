@@ -125,15 +125,20 @@ class AppCtrl extends ChangeNotifier {
 
   /// Update server URL config.
   /// Called when user changes settings.
-  void updateConfig({
+  Future<void> updateConfig({
     required String serverUrl,
-  }) {
+  }) async {
     if (serverUrl == _serverUrl) {
       return;
     }
 
     _logger.info('Updating config - serverUrl: $serverUrl');
     _serverUrl = serverUrl;
+
+    // Recreate session with new server URL
+    _markNeedsRecreation();
+    await _recreateSessionObjects();
+
     notifyListeners();
   }
 
