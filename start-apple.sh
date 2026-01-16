@@ -252,7 +252,11 @@ echo -e "${CYAN}═════════════════════�
 echo -e "${BOLD}  CAAL is ready!${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  ${BOLD}Web interface:${NC}  http://localhost:3000"
+if [ -n "${HTTPS_DOMAIN}" ]; then
+    echo -e "  ${BOLD}Web interface:${NC}  https://${HTTPS_DOMAIN}:3443"
+else
+    echo -e "  ${BOLD}Web interface:${NC}  http://localhost:3000"
+fi
 echo -e "  ${BOLD}Stop command:${NC}   ./start-apple.sh --stop"
 echo ""
 echo -e "  ${BOLD}Logs:${NC}"

@@ -37,6 +37,7 @@ dependencies = [
 
     # LLM
     "ollama>=0.3.0",
+    "groq>=0.11.0",  # For GroqProvider (livekit-plugins-groq doesn't include it)
 
     # Core utilities
     "python-dotenv>=1.0.0",

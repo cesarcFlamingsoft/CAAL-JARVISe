@@ -1,4 +1,5 @@
 {
+  "first_launch_completed": false,
   "agent_name": "Cal",
   "tts_voice": "am_puck",
   "prompt": "default",
@@ -16,7 +17,7 @@
   "num_ctx": 8192,
   "max_turns": 20,
   "tool_cache_size": 3,
-  "wake_word_enabled": false,
+  "wake_word_enabled": true,
   "wake_word_model": "models/hey_cal.onnx",
   "wake_word_threshold": 0.5,
   "wake_word_timeout": 3.0,

@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../services/config_service.dart';
 
@@ -23,6 +26,7 @@ class _SetupScreenState extends State<SetupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _serverUrlController = TextEditingController();
   bool _isSaving = false;
+  String? _statusMessage;
 
   @override
   void initState() {
@@ -36,12 +40,51 @@ class _SetupScreenState extends State<SetupScreen> {
     super.dispose();
   }
 
+  String get _webhookUrl {
+    final serverUrl = _serverUrlController.text.trim();
+    if (serverUrl.isEmpty) return '';
+    final uri = Uri.tryParse(serverUrl);
+    if (uri == null) return '';
+    return 'http://${uri.host}:8889';
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _statusMessage = null;
+    });
 
     try {
+      // Check if wizard has been completed on the server
+      final webhookUrl = _webhookUrl;
+      if (webhookUrl.isEmpty) {
+        setState(() => _statusMessage = 'Invalid server URL');
+        return;
+      }
+
+      try {
+        final res = await http
+            .get(Uri.parse('$webhookUrl/setup/status'))
+            .timeout(const Duration(seconds: 5));
+
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          if (data['completed'] != true) {
+            setState(() => _statusMessage = 'Complete the first-start wizard in your browser first');
+            return;
+          }
+        } else {
+          setState(() => _statusMessage = 'Could not reach server');
+          return;
+        }
+      } catch (e) {
+        setState(() => _statusMessage = 'Could not connect to server');
+        return;
+      }
+
+      // All checks passed - save and proceed
       await widget.configService.setServerUrl(_serverUrlController.text.trim());
       widget.onConfigured();
     } finally {
@@ -143,7 +186,17 @@ class _SetupScreenState extends State<SetupScreen> {
                     'Your CAAL server address',
                     style: TextStyle(fontSize: 12, color: Colors.white54),
                   ),
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 24),
+
+                  // Status message (wizard not complete, connection error, etc.)
+                  if (_statusMessage != null) ...[
+                    Text(
+                      _statusMessage!,
+                      style: const TextStyle(fontSize: 13, color: Colors.orange),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                  ],
 
                   // Save button
                   SizedBox(
@@ -177,7 +230,7 @@ class _SetupScreenState extends State<SetupScreen> {
                   if (isFirstSetup) ...[
                     const SizedBox(height: 24),
                     const Text(
-                      'Full agent settings are available during an active session via the gear icon.',
+                      'Complete the first-start wizard in your browser, then connect here.',
                       style: TextStyle(fontSize: 12, color: Colors.white38),
                       textAlign: TextAlign.center,
                     ),

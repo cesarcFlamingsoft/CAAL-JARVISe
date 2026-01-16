@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../controllers/app_ctrl.dart' as ctrl;
 import '../services/config_service.dart';
 import '../widgets/button.dart' as buttons;
+import 'settings_screen.dart';
 import 'setup_screen.dart';
 
 class WelcomeScreen extends StatelessWidget {
@@ -13,20 +14,34 @@ class WelcomeScreen extends StatelessWidget {
   void _openSettings(BuildContext context) {
     final configService = context.read<ConfigService>();
     final appCtrl = context.read<ctrl.AppCtrl>();
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => SetupScreen(
-          configService: configService,
-          onConfigured: () {
-            Navigator.of(context).pop();
-            // Recreate AppCtrl with new config values
-            appCtrl.updateConfig(
-              serverUrl: configService.serverUrl,
-            );
-          },
+
+    // If first start (not configured), show simple URL setup
+    // Otherwise show full settings page
+    if (!configService.isConfigured) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => SetupScreen(
+            configService: configService,
+            onConfigured: () {
+              Navigator.of(context).pop();
+              appCtrl.updateConfig(serverUrl: configService.serverUrl);
+            },
+          ),
         ),
-      ),
-    );
+      );
+    } else {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => SettingsScreen(
+            configService: configService,
+            onSave: () {
+              Navigator.of(context).pop();
+              appCtrl.updateConfig(serverUrl: configService.serverUrl);
+            },
+          ),
+        ),
+      );
+    }
   }
 
   @override

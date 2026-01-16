@@ -49,11 +49,10 @@ export async function POST(req: Request) {
       agentName
     );
 
-    // Determine the WebSocket URL for the browser
+    // Determine the WebSocket URL for the client
     // Priority:
-    // 1. If NEXT_PUBLIC_LIVEKIT_URL is an explicit wss:// URL, use it directly
-    // 2. If HTTPS request and NEXT_PUBLIC_LIVEKIT_URL is set, use it
-    // 3. Otherwise, derive ws:// from request hostname
+    // 1. If HTTPS request and NEXT_PUBLIC_LIVEKIT_URL is set, use it (secure mode)
+    // 2. Otherwise, derive ws:// from request hostname (LAN/mobile HTTP access)
     let serverUrl: string;
     const forwardedProto = req.headers.get('x-forwarded-proto');
     const isHttps = forwardedProto === 'https' || req.url.startsWith('https://');
@@ -62,7 +61,7 @@ export async function POST(req: Request) {
       // HTTPS request - use configured secure URL (Tailscale/distributed mode)
       serverUrl = LIVEKIT_PUBLIC_URL;
     } else {
-      // HTTP request - derive ws:// from request host for LAN access
+      // HTTP request - derive ws:// from request host for LAN/mobile access
       const host = req.headers.get('host') || 'localhost';
       const hostname = host.split(':')[0]; // Remove port if present
       serverUrl = `ws://${hostname}:7880`;

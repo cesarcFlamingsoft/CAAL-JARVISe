@@ -105,3 +105,4 @@ mobile/.packages
 mobile/.pub-cache/
 mobile/.pub/
 /.mlx-audio-venv
+mobile/releases/*.apk

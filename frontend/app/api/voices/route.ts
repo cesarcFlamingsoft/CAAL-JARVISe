@@ -1,10 +1,14 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'http://agent:8889';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const res = await fetch(`${WEBHOOK_URL}/voices`, {
+    // Pass provider query param to backend if present
+    const provider = request.nextUrl.searchParams.get('provider');
+    const url = provider ? `${WEBHOOK_URL}/voices?provider=${provider}` : `${WEBHOOK_URL}/voices`;
+
+    const res = await fetch(url, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
     });

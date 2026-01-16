@@ -8,8 +8,8 @@ Settings hierarchy:
 2. .env - Infrastructure values (URLs, tokens) - fallback only
 
 Prompt files:
-- prompt/default.md - Ships with CAAL, read-only in UI
-- prompt/custom.md - User's custom prompt (gitignored)
+- prompt/default.md - Ships with CAAL, used by default
+- prompt/custom.md - User's custom prompt (configured via settings menu)
 """
 
 from __future__ import annotations
@@ -30,9 +30,11 @@ SETTINGS_PATH = Path(os.getenv("CAAL_SETTINGS_PATH", _SCRIPT_DIR / "settings.jso
 PROMPT_DIR = Path(os.getenv("CAAL_PROMPT_DIR", _SCRIPT_DIR / "prompt"))
 
 DEFAULT_SETTINGS = {
+    # First-launch flag
+    "first_launch_completed": False,
+    # Agent identity
     "agent_name": "Cal",
-    "tts_voice": "am_puck",
-    "prompt": "default",  # "default" or "custom"
+    "prompt": "default",  # "default" | "custom"
     "wake_greetings": [
         "Hey, what's up?",
         "Hi there!",
@@ -42,13 +44,34 @@ DEFAULT_SETTINGS = {
         "Yo!",
         "What's up?",
     ],
+    # Provider settings (UI sets both together, but stored separately for power users)
+    "stt_provider": "speaches",  # "speaches" | "groq"
+    "llm_provider": "ollama",  # "ollama" | "groq"
+    "tts_provider": "kokoro",  # "kokoro" | "piper"
+    # TTS settings - voice selection (Kokoro uses voice param, Piper bakes voice into model)
+    "tts_voice_kokoro": "am_puck",
+    "tts_voice_piper": "speaches-ai/piper-en_US-ryan-high",
     "temperature": 0.7,
-    "model": "ministral-3:8b",
+    # Ollama settings
+    "ollama_host": "http://localhost:11434",
+    "ollama_model": "ministral-3:8b",
     "num_ctx": 8192,
+    # Groq settings
+    "groq_api_key": "",  # API key from console.groq.com
+    "groq_model": "llama-3.3-70b-versatile",
+    # Home Assistant integration
+    "hass_enabled": False,
+    "hass_host": "",
+    "hass_token": "",  # Long-lived access token
+    # n8n integration
+    "n8n_enabled": False,
+    "n8n_url": "",
+    "n8n_token": "",
+    # Shared settings
     "max_turns": 20,
     "tool_cache_size": 3,
     # Wake word detection (server-side OpenWakeWord)
-    "wake_word_enabled": False,
+    "wake_word_enabled": True,
     "wake_word_model": "models/hey_jarvis.onnx",
     "wake_word_threshold": 0.5,
     "wake_word_timeout": 3.0,  # seconds of silence before returning to listening
@@ -58,6 +81,9 @@ DEFAULT_SETTINGS = {
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }
+
+# Keys that should never be returned via API (security)
+SENSITIVE_KEYS: set[str] = set()  # All keys returned - shown as dots in password fields
 
 # Cached settings (reloaded on save)
 _settings_cache: dict | None = None
@@ -85,6 +111,25 @@ def load_settings() -> dict:
             for key in DEFAULT_SETTINGS:
                 if key in user_settings:
                     settings[key] = user_settings[key]
+
+            # Migration: existing users who upgraded from before first_launch_completed existed.
+            # They would have a settings file with values that differ from defaults.
+            # Skip migration if first_launch_completed is already set (either true or false).
+            if "first_launch_completed" not in user_settings:
+                # Check if user has customized beyond default values (not just having the keys)
+                # A true existing user would have changed ollama_host or n8n_url
+                env_configured = (
+                    os.getenv("OLLAMA_HOST") and user_settings.get("ollama_host") or
+                    os.getenv("N8N_MCP_URL") and user_settings.get("n8n_url")
+                )
+                if env_configured:
+                    settings["first_launch_completed"] = True
+                    # Migrate .env values to settings
+                    settings = _migrate_env_to_settings(settings)
+                    # Save migrated settings
+                    save_settings(settings)
+                    logger.info("Migrated existing user settings")
+
             logger.debug(f"Loaded settings from {SETTINGS_PATH}")
         except Exception as e:
             logger.warning(f"Failed to load settings from {SETTINGS_PATH}: {e}")
@@ -95,16 +140,77 @@ def load_settings() -> dict:
     return settings
 
 
+def _migrate_env_to_settings(settings: dict) -> dict:
+    """Migrate .env values to settings for existing users.
+
+    Args:
+        settings: Current settings dict
+
+    Returns:
+        Settings with .env values migrated
+    """
+    # Ollama settings
+    if ollama_host := os.getenv("OLLAMA_HOST"):
+        settings["ollama_host"] = ollama_host
+    if ollama_model := os.getenv("OLLAMA_MODEL"):
+        settings["ollama_model"] = ollama_model
+
+    # n8n settings
+    if n8n_url := os.getenv("N8N_MCP_URL"):
+        settings["n8n_enabled"] = True
+        settings["n8n_url"] = n8n_url
+    if n8n_token := os.getenv("N8N_MCP_TOKEN"):
+        settings["n8n_token"] = n8n_token
+
+    return settings
+
+
+def load_settings_safe() -> dict:
+    """Load settings without sensitive keys (for API responses).
+
+    Returns:
+        Settings dict with sensitive keys removed.
+    """
+    settings = load_settings().copy()
+    for key in SENSITIVE_KEYS:
+        settings.pop(key, None)
+    return settings
+
+
+def load_user_settings() -> dict:
+    """Load only user-specified settings from JSON file (no defaults).
+
+    Returns:
+        Dict with only keys explicitly set by the user in settings.json.
+        Empty dict if file doesn't exist or is empty.
+    """
+    if SETTINGS_PATH.exists():
+        try:
+            with open(SETTINGS_PATH) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load user settings from {SETTINGS_PATH}: {e}")
+    return {}
+
+
 def save_settings(settings: dict) -> None:
     """Save settings to JSON file.
 
     Args:
-        settings: Settings dict to save. Only keys in DEFAULT_SETTINGS are saved.
+        settings: Settings dict to merge with existing settings.
+                  Only keys in DEFAULT_SETTINGS are saved.
+                  Existing settings are preserved unless explicitly overwritten.
     """
     global _settings_cache
 
+    # Load existing settings first
+    existing = load_user_settings()
+
+    # Merge: existing settings + new settings (new overwrites existing)
+    merged = {**existing, **settings}
+
     # Filter to only known keys
-    filtered = {k: v for k, v in settings.items() if k in DEFAULT_SETTINGS}
+    filtered = {k: v for k, v in merged.items() if k in DEFAULT_SETTINGS}
 
     try:
         # Ensure parent directory exists

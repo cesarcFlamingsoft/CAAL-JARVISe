@@ -10,7 +10,6 @@ import { ToolStatusIndicator } from '@/components/livekit/agent-control-bar/tool
 import { TrackToggle } from '@/components/livekit/agent-control-bar/track-toggle';
 import { Button } from '@/components/livekit/button';
 import { Toggle } from '@/components/livekit/toggle';
-import { SettingsButton } from '@/components/settings/settings-button';
 import { Tooltip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { ChatInput } from './chat-input';
@@ -163,9 +162,6 @@ export function AgentControlBar({
               <ChatTextIcon weight="bold" />
             </Toggle>
           </Tooltip>
-
-          {/* Settings Button */}
-          <SettingsButton />
 
           {/* Reload Tools Button */}
           <ReloadToolsButton />
