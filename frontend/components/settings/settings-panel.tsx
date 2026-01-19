@@ -31,6 +31,7 @@ interface Settings {
   hass_enabled: boolean;
   hass_host: string;
   hass_token: string;
+  hass_agent_id: string;
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
@@ -71,6 +72,7 @@ const DEFAULT_SETTINGS: Settings = {
   hass_enabled: false,
   hass_host: '',
   hass_token: '',
+  hass_agent_id: 'conversation.home_assistant',
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',
@@ -150,6 +152,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     error: null,
     info: null,
   });
+  const [hassAgents, setHassAgents] = useState<{ id: string; name: string }[]>([]);
 
   // ---------------------------------------------------------------------------
   // Load settings
@@ -273,6 +276,27 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
   }, [isOpen, settings.groq_api_key, groqModels.length, loading, testGroq]);
 
+  const fetchHassAgents = useCallback(async () => {
+    if (!settings.hass_host || !settings.hass_token) return;
+    try {
+      const res = await fetch('/api/setup/hass-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: settings.hass_host, token: settings.hass_token }),
+      });
+      const result = await res.json();
+      if (result.success && result.agents) {
+        setHassAgents(result.agents);
+        // Set default agent if not already set
+        if (!settings.hass_agent_id && result.agents.length > 0) {
+          setSettings((prev) => ({ ...prev, hass_agent_id: result.agents[0].id }));
+        }
+      }
+    } catch {
+      // Silently fail
+    }
+  }, [settings.hass_host, settings.hass_token, settings.hass_agent_id]);
+
   const testHass = useCallback(async () => {
     if (!settings.hass_host || !settings.hass_token) return;
     setHassTest({ status: 'testing', error: null, info: null });
@@ -291,13 +315,17 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
           error: null,
           info: `Connected - ${result.device_count} entities`,
         });
+        // Fetch available agents on successful connection
+        fetchHassAgents();
       } else {
         setHassTest({ status: 'error', error: result.error || 'Connection failed', info: null });
+        setHassAgents([]);
       }
     } catch {
       setHassTest({ status: 'error', error: 'Failed to connect', info: null });
+      setHassAgents([]);
     }
-  }, [settings.hass_host, settings.hass_token]);
+  }, [settings.hass_host, settings.hass_token, fetchHassAgents]);
 
   const testN8n = useCallback(async () => {
     if (!settings.n8n_url || !settings.n8n_token) return;
@@ -935,6 +963,25 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               {hassTest.error && <p className="text-xs text-red-500">{hassTest.error}</p>}
               {hassTest.info && <p className="text-xs text-green-500">{hassTest.info}</p>}
             </div>
+            {hassAgents.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">AI Assistant</label>
+                <select
+                  value={settings.hass_agent_id || ''}
+                  onChange={(e) => setSettings({ ...settings, hass_agent_id: e.target.value })}
+                  className="border-input bg-background w-full rounded-lg border px-4 py-3 text-sm"
+                >
+                  {hassAgents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-muted-foreground text-xs">
+                  Choose which AI assistant handles smart home requests
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -17,6 +17,11 @@ interface IntegrationTestState {
   info: string | null;
 }
 
+interface HassAgent {
+  id: string;
+  name: string;
+}
+
 export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
   const [hassTest, setHassTest] = useState<IntegrationTestState>({
     status: 'idle',
@@ -28,6 +33,32 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
     error: null,
     info: null,
   });
+  const [hassAgents, setHassAgents] = useState<HassAgent[]>([]);
+
+  // Fetch available Home Assistant agents
+  const fetchHassAgents = useCallback(async () => {
+    if (!data.hass_host || !data.hass_token) return;
+
+    try {
+      const response = await fetch('/api/setup/hass-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: data.hass_host, token: data.hass_token }),
+      });
+
+      const result = await response.json();
+
+      if (result.success && result.agents) {
+        setHassAgents(result.agents);
+        // Set default agent if not already set
+        if (!data.hass_agent_id && result.agents.length > 0) {
+          updateData({ hass_agent_id: result.agents[0].id });
+        }
+      }
+    } catch {
+      // Silently fail - agents dropdown just won't be populated
+    }
+  }, [data.hass_host, data.hass_token, data.hass_agent_id, updateData]);
 
   // Test Home Assistant connection
   const testHass = useCallback(async () => {
@@ -50,12 +81,15 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
           error: null,
           info: `Connected - ${result.device_count} entities`,
         });
+        // Fetch available agents on successful connection
+        fetchHassAgents();
       } else {
         setHassTest({
           status: 'error',
           error: result.error || 'Connection failed',
           info: null,
         });
+        setHassAgents([]);
       }
     } catch {
       setHassTest({
@@ -63,8 +97,9 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
         error: 'Failed to connect',
         info: null,
       });
+      setHassAgents([]);
     }
-  }, [data.hass_host, data.hass_token]);
+  }, [data.hass_host, data.hass_token, fetchHassAgents]);
 
   // Build full n8n MCP URL from host
   const getN8nMcpUrl = (host: string) => {
@@ -200,6 +235,25 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
               {hassTest.error && <p className="text-xs text-red-500">{hassTest.error}</p>}
               {hassTest.info && <p className="text-xs text-green-500">{hassTest.info}</p>}
             </div>
+            {hassAgents.length > 0 && (
+              <div className="space-y-1">
+                <label className="text-muted-foreground text-xs">AI Assistant</label>
+                <select
+                  value={data.hass_agent_id || ''}
+                  onChange={(e) => updateData({ hass_agent_id: e.target.value })}
+                  className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
+                >
+                  {hassAgents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-muted-foreground text-xs">
+                  Choose which AI assistant handles smart home requests
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

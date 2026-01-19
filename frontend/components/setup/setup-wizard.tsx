@@ -22,6 +22,7 @@ export interface SetupData {
   hass_enabled: boolean;
   hass_host: string;
   hass_token: string;
+  hass_agent_id: string;
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
@@ -43,6 +44,7 @@ const INITIAL_DATA: SetupData = {
   hass_enabled: false,
   hass_host: '',
   hass_token: '',
+  hass_agent_id: 'conversation.home_assistant',
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',

@@ -50,6 +50,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _hassEnabled = false;
   String _hassHost = '';
   String _hassToken = '';
+  String _hassAgentId = 'conversation.home_assistant';
+  List<Map<String, String>> _hassAgents = [];
   bool _n8nEnabled = false;
   String _n8nUrl = '';
   String _n8nToken = '';
@@ -214,6 +216,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _hassEnabled = settings['hass_enabled'] ?? _hassEnabled;
           _hassHost = settings['hass_host'] ?? _hassHost;
           _hassToken = settings['hass_token'] ?? _hassToken;
+          _hassAgentId = settings['hass_agent_id'] ?? _hassAgentId;
           _n8nEnabled = settings['n8n_enabled'] ?? _n8nEnabled;
           _n8nUrl = settings['n8n_url'] ?? _n8nUrl;
           _n8nToken = settings['n8n_token'] ?? _n8nToken;
@@ -368,6 +371,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _fetchHassAgents() async {
+    if (_hassHost.isEmpty || _hassToken.isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('$_webhookUrl/setup/hass-agents'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'host': _hassHost, 'token': _hassToken}),
+      );
+      final result = jsonDecode(res.body);
+
+      if (result['success'] == true && result['agents'] != null) {
+        setState(() {
+          _hassAgents = (result['agents'] as List)
+              .map((a) => {'id': a['id'] as String, 'name': a['name'] as String})
+              .toList();
+          // Set default agent if not already set
+          if (_hassAgentId.isEmpty && _hassAgents.isNotEmpty) {
+            _hassAgentId = _hassAgents.first['id']!;
+          }
+        });
+      }
+    } catch (e) {
+      // Silently fail
+    }
+  }
+
   Future<void> _testHass() async {
     if (_hassHost.isEmpty || _hassToken.isEmpty) return;
     setState(() {
@@ -389,16 +418,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _hassConnected = true;
           _hassInfo = 'Connected - ${result['device_count']} entities';
         });
+        // Fetch available agents on successful connection
+        _fetchHassAgents();
       } else {
         setState(() {
           _hassConnected = false;
           _hassError = result['error'] ?? 'Connection failed';
+          _hassAgents = [];
         });
       }
     } catch (e) {
       setState(() {
         _hassConnected = false;
         _hassError = 'Failed to connect';
+        _hassAgents = [];
       });
     } finally {
       setState(() {
@@ -502,6 +535,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'hass_enabled': _hassEnabled,
           'hass_host': _hassHost,
           'hass_token': _hassToken,
+          'hass_agent_id': _hassAgentId,
           'n8n_enabled': _n8nEnabled,
           'n8n_url': _n8nEnabled ? _getN8nMcpUrl(_n8nUrl) : _n8nUrl,
           'n8n_token': _n8nToken,
@@ -920,6 +954,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(_hassInfo!, style: const TextStyle(color: Color(0xFF45997C), fontSize: 12)),
                       ),
+                    if (_hassAgents.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _buildLabel('AI Assistant'),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E1E1E),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF333333)),
+                        ),
+                        child: DropdownButton<String>(
+                          value: _hassAgentId.isNotEmpty ? _hassAgentId : null,
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF1E1E1E),
+                          style: const TextStyle(color: Colors.white),
+                          underline: const SizedBox(),
+                          hint: const Text('Select assistant', style: TextStyle(color: Colors.grey)),
+                          items: _hassAgents.map((agent) {
+                            return DropdownMenuItem<String>(
+                              value: agent['id'],
+                              child: Text(agent['name']!),
+                            );
+                          }).toList(),
+                          onChanged: (v) => setState(() => _hassAgentId = v ?? ''),
+                        ),
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Choose which AI assistant handles smart home requests',
+                          style: TextStyle(color: Colors.grey, fontSize: 11),
+                        ),
+                      ),
+                    ],
                   ],
                 ]),
 

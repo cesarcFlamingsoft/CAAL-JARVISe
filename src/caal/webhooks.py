@@ -775,6 +775,7 @@ class SetupCompleteRequest(BaseModel):
     hass_enabled: bool | None = None
     hass_host: str | None = None
     hass_token: str | None = None
+    hass_agent_id: str | None = None  # Conversation agent entity_id
     n8n_enabled: bool | None = None
     n8n_url: str | None = None
     n8n_token: str | None = None
@@ -814,6 +815,21 @@ class TestHassRequest(BaseModel):
 
     host: str
     token: str
+
+
+class HassAgent(BaseModel):
+    """A Home Assistant conversation agent."""
+
+    id: str
+    name: str
+
+
+class HassAgentsResponse(BaseModel):
+    """Response for /setup/hass-agents endpoint."""
+
+    success: bool
+    agents: list[HassAgent] = []
+    error: str | None = None
 
 
 class TestN8nRequest(BaseModel):
@@ -871,6 +887,8 @@ async def complete_setup(req: SetupCompleteRequest) -> SetupCompleteResponse:
                     current["hass_host"] = req.hass_host
                 if req.hass_token:
                     current["hass_token"] = req.hass_token
+                if req.hass_agent_id:
+                    current["hass_agent_id"] = req.hass_agent_id
 
         # n8n integration - only update if explicitly provided
         if req.n8n_enabled is not None:
@@ -1000,6 +1018,57 @@ async def test_hass(req: TestHassRequest) -> TestConnectionResponse:
         )
     except Exception as e:
         return TestConnectionResponse(success=False, error=str(e))
+
+
+@app.post("/setup/hass-agents", response_model=HassAgentsResponse)
+async def get_hass_agents(req: TestHassRequest) -> HassAgentsResponse:
+    """Get available conversation agents from Home Assistant.
+
+    Args:
+        req: TestHassRequest with host and token
+
+    Returns:
+        HassAgentsResponse with list of conversation agents
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{req.host}/api/states",
+                headers={"Authorization": f"Bearer {req.token}"},
+                timeout=10.0,
+            )
+            if response.status_code == 401:
+                return HassAgentsResponse(
+                    success=False, error="Invalid access token"
+                )
+            response.raise_for_status()
+
+            states = response.json()
+            agents = []
+
+            # Find all conversation.* entities
+            for entity in states:
+                entity_id = entity.get("entity_id", "")
+                if entity_id.startswith("conversation."):
+                    friendly_name = entity.get("attributes", {}).get(
+                        "friendly_name", entity_id
+                    )
+                    agents.append(HassAgent(id=entity_id, name=friendly_name))
+
+            # Sort by name, but put "Home Assistant" first as default
+            agents.sort(key=lambda a: (
+                0 if a.id == "conversation.home_assistant" else 1,
+                a.name.lower()
+            ))
+
+            return HassAgentsResponse(success=True, agents=agents)
+
+    except httpx.ConnectError:
+        return HassAgentsResponse(
+            success=False, error=f"Cannot connect to Home Assistant at {req.host}"
+        )
+    except Exception as e:
+        return HassAgentsResponse(success=False, error=str(e))
 
 
 @app.post("/setup/test-n8n", response_model=TestConnectionResponse)

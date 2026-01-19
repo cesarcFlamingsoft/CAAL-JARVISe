@@ -63,6 +63,7 @@ DEFAULT_SETTINGS = {
     "hass_enabled": False,
     "hass_host": "",
     "hass_token": "",  # Long-lived access token
+    "hass_agent_id": "conversation.home_assistant",  # Conversation agent entity_id
     # n8n integration
     "n8n_enabled": False,
     "n8n_url": "",
