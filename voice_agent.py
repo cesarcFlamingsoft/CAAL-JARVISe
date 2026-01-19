@@ -207,6 +207,8 @@ def create_hass_tools(hass_host: str, hass_token: str, hass_agent_id: str) -> tu
                 response.raise_for_status()
                 data = response.json()
 
+            logger.info(f"Home Assistant API response: {data}")
+
             # Store conversation_id for follow-up requests
             if "conversation_id" in data:
                 conversation_state["conversation_id"] = data["conversation_id"]
@@ -214,11 +216,14 @@ def create_hass_tools(hass_host: str, hass_token: str, hass_agent_id: str) -> tu
             # Extract speech response
             speech = data.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "")
             if speech:
+                logger.info(f"hass_assist returning speech: {speech}")
                 return speech
 
             # Fallback to response_type if no speech
             response_type = data.get("response", {}).get("response_type", "unknown")
-            return f"Action completed ({response_type})"
+            fallback = f"Action completed ({response_type})"
+            logger.info(f"hass_assist returning fallback: {fallback}")
+            return fallback
 
         except httpx.HTTPStatusError as e:
             logger.error(f"hass_assist HTTP error: {e}")
