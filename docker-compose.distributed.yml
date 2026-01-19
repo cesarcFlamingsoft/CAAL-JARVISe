@@ -32,3 +32,5 @@ services:
     depends_on: !override
       livekit:
         condition: service_healthy
+      agent:
+        condition: service_started
