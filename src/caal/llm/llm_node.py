@@ -148,12 +148,12 @@ async def llm_node(
                 # Pass tools so Ollama can validate tool_calls in message history
                 logger.info("Streaming follow-up response from LLM...")
                 chunk_count = 0
+                full_response = []
                 async for chunk in provider.chat_stream(messages=messages, tools=tools):
                     chunk_count += 1
-                    if chunk_count <= 3:  # Log first few chunks
-                        logger.debug(f"Follow-up chunk {chunk_count}: {chunk[:50] if chunk else '(empty)'}")
+                    full_response.append(chunk)
                     yield strip_markdown_for_tts(chunk)
-                logger.info(f"Follow-up complete: {chunk_count} chunks yielded")
+                logger.info(f"Follow-up complete: {chunk_count} chunks, content: {''.join(full_response)}")
                 return
 
             # No tool calls - return content directly
