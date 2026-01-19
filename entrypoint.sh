@@ -25,8 +25,13 @@ if [ ! -f "$CONFIG_DIR/mcp_servers.json" ]; then
 fi
 
 # Create symlinks from /app to config files (for code that expects them in /app)
-ln -sf "$CONFIG_DIR/settings.json" /app/settings.json
-ln -sf "$CONFIG_DIR/mcp_servers.json" /app/mcp_servers.json
+# Skip if files are already mounted directly (e.g., via docker-compose volumes)
+if [ ! -e /app/settings.json ]; then
+    ln -sf "$CONFIG_DIR/settings.json" /app/settings.json
+fi
+if [ ! -e /app/mcp_servers.json ]; then
+    ln -sf "$CONFIG_DIR/mcp_servers.json" /app/mcp_servers.json
+fi
 
 # Drop privileges and execute the main command as agent user
 exec gosu agent "$@"
