@@ -382,6 +382,11 @@ async def _discover_tools(agent) -> list[dict] | None:
     if hasattr(agent, "_n8n_workflow_tools") and agent._n8n_workflow_tools:
         ollama_tools.extend(agent._n8n_workflow_tools)
 
+    # Add Home Assistant tools (wrapper functions for direct MCP control)
+    if hasattr(agent, "_hass_tool_definitions") and agent._hass_tool_definitions:
+        ollama_tools.extend(agent._hass_tool_definitions)
+        logger.info(f"Added {len(agent._hass_tool_definitions)} Home Assistant tools")
+
     # Cache tools on agent and return
     result = ollama_tools if ollama_tools else None
     agent._ollama_tools_cache = result
@@ -501,10 +506,18 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     """Execute a single tool call.
 
     Routing priority:
-    1. Agent methods (@function_tool decorated)
-    2. n8n workflows (webhook-based execution)
-    3. MCP servers (with server_name__tool_name prefix parsing)
+    1. Home Assistant tools (hass_control, hass_get_state)
+    2. Agent methods (@function_tool decorated)
+    3. n8n workflows (webhook-based execution)
+    4. MCP servers (with server_name__tool_name prefix parsing)
     """
+
+    # Check Home Assistant tools first (wrapper functions)
+    if hasattr(agent, "_hass_tool_callables") and tool_name in agent._hass_tool_callables:
+        logger.info(f"Calling HASS tool: {tool_name}")
+        result = await agent._hass_tool_callables[tool_name](**arguments)
+        logger.info(f"HASS tool {tool_name} completed")
+        return result
 
     # Check if it's an agent method
     if hasattr(agent, tool_name) and callable(getattr(agent, tool_name)):
