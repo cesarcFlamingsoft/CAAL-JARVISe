@@ -1,6 +1,6 @@
 #!/bin/bash
 # CAAL Startup Script for Apple Silicon
-# Usage: ./start-apple.sh [--stop]
+# Usage: ./start-apple.sh [--stop] [--build]
 
 set -e
 cd "$(dirname "$0")"
@@ -94,10 +94,19 @@ stop_all() {
     exit 0
 }
 
-# Handle --stop flag
-if [ "$1" == "--stop" ]; then
-    stop_all
-fi
+# Handle flags
+BUILD_FLAG=""
+for arg in "$@"; do
+    case $arg in
+        --stop)
+            stop_all
+            ;;
+        --build)
+            BUILD_FLAG="--build"
+            log "Will rebuild Docker images..."
+            ;;
+    esac
+done
 
 setup_mlx_audio() {
     log "Setting up mlx-audio environment..."
@@ -237,7 +246,7 @@ fi
 
 # Start Docker services
 log "Starting Docker services..."
-docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE up -d
+docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE up -d $BUILD_FLAG
 
 # Wait for services
 printf "${GREEN}[CAAL]${NC} Waiting for services"
