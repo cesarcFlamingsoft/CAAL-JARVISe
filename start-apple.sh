@@ -198,7 +198,7 @@ setup_deepfilter() {
 
     # Install PyTorch (for MPS) and DeepFilterNet into the mlx-audio venv
     # This is efficient since we already have a venv with most dependencies
-    "$MLX_VENV/bin/pip" install -q torch deepfilternet httpx
+    "$MLX_VENV/bin/pip" install -q torch torchaudio deepfilternet httpx
 
     # Verify MPS is available
     if "$MLX_PYTHON" -c "import torch; exit(0 if torch.backends.mps.is_available() else 1)" 2>/dev/null; then
