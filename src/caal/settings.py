@@ -79,6 +79,16 @@ DEFAULT_SETTINGS = {
     # Turn detection settings (advanced)
     "allow_interruptions": True,  # Whether user can interrupt agent mid-speech
     "min_endpointing_delay": 0.5,  # Seconds to wait before considering turn complete
+    # VAD tuning parameters (voice vs noise separation)
+    "vad_min_speech_duration": 0.08,  # Min duration to start speech chunk (filter noise bursts)
+    "vad_min_silence_duration": 0.4,  # Wait before ending speech (lower = faster response)
+    "vad_prefix_padding": 0.3,  # Padding before speech onset
+    "vad_activation_threshold": 0.6,  # Higher = less sensitive to noise (0.0-1.0)
+    # Adaptive endpointing (natural conversation flow)
+    "adaptive_endpointing_enabled": True,  # Enable context-aware endpointing delays
+    "endpointing_delay_after_question": 0.25,  # Short delay after agent asks question
+    "endpointing_delay_after_statement": 0.5,  # Normal delay after agent statement
+    "endpointing_delay_initial_turns": 0.7,  # Longer delay for first few turns (be patient)
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }

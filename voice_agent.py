@@ -54,6 +54,7 @@ from caal.integrations import (
 )
 from caal.llm import llm_node, ToolDataCache
 from caal.stt import WakeWordGatedSTT
+from caal.conversation import AdaptiveEndpointer
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
 # so we use non-propagating loggers with our own handler to avoid duplicates
@@ -136,6 +137,16 @@ def get_runtime_settings() -> dict:
         # Turn detection settings
         "allow_interruptions": settings.get("allow_interruptions", True),
         "min_endpointing_delay": settings.get("min_endpointing_delay", 0.5),
+        # VAD tuning parameters (noise rejection + responsiveness)
+        "vad_min_speech_duration": settings.get("vad_min_speech_duration", 0.08),
+        "vad_min_silence_duration": settings.get("vad_min_silence_duration", 0.4),
+        "vad_prefix_padding": settings.get("vad_prefix_padding", 0.3),
+        "vad_activation_threshold": settings.get("vad_activation_threshold", 0.6),
+        # Adaptive endpointing settings
+        "adaptive_endpointing_enabled": settings.get("adaptive_endpointing_enabled", True),
+        "endpointing_delay_after_question": settings.get("endpointing_delay_after_question", 0.25),
+        "endpointing_delay_after_statement": settings.get("endpointing_delay_after_statement", 0.5),
+        "endpointing_delay_initial_turns": settings.get("endpointing_delay_initial_turns", 0.7),
     }
 
 
@@ -422,6 +433,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         f"  Turn detection: interruptions={runtime['allow_interruptions']}, "
         f"endpointing_delay={runtime['min_endpointing_delay']}s"
     )
+    logger.info(
+        f"  VAD tuning: threshold={runtime['vad_activation_threshold']}, "
+        f"min_silence={runtime['vad_min_silence_duration']}s, "
+        f"min_speech={runtime['vad_min_speech_duration']}s"
+    )
     logger.info("=" * 60)
 
     # Build STT - Speaches (local) or Groq (cloud)
@@ -531,11 +547,19 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # Create session with STT and TTS (both OpenAI-compatible)
     logger.info(f"  STT instance type: {type(stt_instance).__name__}")
     logger.info(f"  STT capabilities: streaming={stt_instance.capabilities.streaming}")
+    # Load VAD with tuned parameters for better noise rejection and responsiveness
+    vad_instance = silero.VAD.load(
+        min_speech_duration=runtime.get("vad_min_speech_duration", 0.08),  # Slightly higher than default 0.05 to filter noise bursts
+        min_silence_duration=runtime.get("vad_min_silence_duration", 0.4),  # Lower than default 0.55 for faster response
+        prefix_padding_duration=runtime.get("vad_prefix_padding", 0.3),  # Capture speech onset
+        activation_threshold=runtime.get("vad_activation_threshold", 0.6),  # Higher than default 0.5 to reject background noise
+    )
+
     session = AgentSession(
         stt=stt_instance,
         llm=caal_llm,
         tts=tts_instance,
-        vad=silero.VAD.load(),
+        vad=vad_instance,
         allow_interruptions=runtime["allow_interruptions"],
         min_endpointing_delay=runtime["min_endpointing_delay"],
     )
@@ -567,6 +591,65 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # Notify wake word STT of agent state for silence timer management
         if isinstance(stt_instance, WakeWordGatedSTT):
             stt_instance.set_agent_busy(ev.new_state in ("thinking", "speaking"))
+
+    # ==========================================================================
+    # Adaptive Endpointing (context-aware turn detection)
+    # ==========================================================================
+
+    adaptive_endpointer = AdaptiveEndpointer.from_settings(runtime)
+    _last_agent_text: str = ""
+
+    if runtime.get("adaptive_endpointing_enabled", True):
+        logger.info(
+            f"  Adaptive endpointing: ENABLED "
+            f"(question={runtime['endpointing_delay_after_question']}s, "
+            f"statement={runtime['endpointing_delay_after_statement']}s, "
+            f"initial={runtime['endpointing_delay_initial_turns']}s)"
+        )
+
+        @session.on("agent_speech_committed")
+        def on_agent_speech_committed(ev) -> None:
+            """Track agent utterances for adaptive endpointing."""
+            nonlocal _last_agent_text
+            if hasattr(ev, "content") and ev.content:
+                _last_agent_text += ev.content
+
+        @session.on("agent_state_changed")
+        def on_agent_state_adaptive(ev) -> None:
+            """Update endpointing delay when agent finishes speaking."""
+            nonlocal _last_agent_text
+            if ev.new_state == "listening" and _last_agent_text:
+                # Agent finished speaking - calculate new delay
+                new_delay = adaptive_endpointer.on_agent_utterance(_last_agent_text)
+                _last_agent_text = ""
+
+                # Update VAD's min_silence_duration dynamically
+                # This affects how quickly we detect end-of-speech
+                try:
+                    vad_instance.update_options(min_silence_duration=new_delay)
+                    logger.debug(f"Updated VAD min_silence_duration to {new_delay:.2f}s")
+                except Exception as e:
+                    logger.debug(f"Could not update VAD options: {e}")
+
+        @session.on("user_started_speaking")
+        def on_user_started_adaptive(ev) -> None:
+            """Track when user starts speaking."""
+            adaptive_endpointer.on_user_started_speaking()
+
+        @session.on("user_stopped_speaking")
+        def on_user_stopped_adaptive(ev) -> None:
+            """Track when user finishes speaking."""
+            adaptive_endpointer.on_user_finished_speaking()
+
+        @session.on("agent_speech_interrupted")
+        def on_agent_interrupted(ev) -> None:
+            """Track interruptions for learning user patterns."""
+            adaptive_endpointer.on_interruption()
+            logger.debug("User interrupted agent - tracking for adaptive delay")
+    else:
+        logger.info("  Adaptive endpointing: disabled")
+
+    # ==========================================================================
 
     async def _publish_tool_status(
         tool_used: bool,
