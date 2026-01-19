@@ -89,6 +89,9 @@ DEFAULT_SETTINGS = {
     "endpointing_delay_after_question": 0.25,  # Short delay after agent asks question
     "endpointing_delay_after_statement": 0.5,  # Normal delay after agent statement
     "endpointing_delay_initial_turns": 0.7,  # Longer delay for first few turns (be patient)
+    # Noise suppression (DeepFilterNet)
+    "noise_suppression_enabled": False,  # Off by default (requires deepfilternet package)
+    "noise_suppression_atten_db": 100.0,  # Attenuation limit in dB (higher = more aggressive)
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }

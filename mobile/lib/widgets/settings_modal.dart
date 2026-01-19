@@ -59,6 +59,9 @@ class _SettingsModalState extends State<SettingsModal> {
   // Turn detection (advanced)
   bool _allowInterruptions = true;
   double _minEndpointingDelay = 0.5;
+  // Noise suppression
+  bool _noiseSuppressionEnabled = false;
+  double _noiseSuppressionAttenDb = 100.0;
   // Visualization
   String _visualizationType = 'jarvis';
 
@@ -126,6 +129,8 @@ class _SettingsModalState extends State<SettingsModal> {
           _wakeWordTimeout = (settings['wake_word_timeout'] ?? _wakeWordTimeout).toDouble();
           _allowInterruptions = settings['allow_interruptions'] ?? _allowInterruptions;
           _minEndpointingDelay = (settings['min_endpointing_delay'] ?? _minEndpointingDelay).toDouble();
+          _noiseSuppressionEnabled = settings['noise_suppression_enabled'] ?? _noiseSuppressionEnabled;
+          _noiseSuppressionAttenDb = (settings['noise_suppression_atten_db'] ?? _noiseSuppressionAttenDb).toDouble();
           _visualizationType = settings['visualization_type'] ?? _visualizationType;
           _wakeGreetingsController.text = _wakeGreetings.join('\n');
         });
@@ -188,6 +193,8 @@ class _SettingsModalState extends State<SettingsModal> {
         'wake_word_timeout': _wakeWordTimeout,
         'allow_interruptions': _allowInterruptions,
         'min_endpointing_delay': _minEndpointingDelay,
+        'noise_suppression_enabled': _noiseSuppressionEnabled,
+        'noise_suppression_atten_db': _noiseSuppressionAttenDb,
         'visualization_type': _visualizationType,
       };
 
@@ -605,6 +612,86 @@ class _SettingsModalState extends State<SettingsModal> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 16),
+                          // Noise Suppression Toggle
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Noise Suppression',
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Filter background noise',
+                                    style: TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Switch(
+                                value: _noiseSuppressionEnabled,
+                                onChanged: (v) => setState(() => _noiseSuppressionEnabled = v),
+                                activeTrackColor: const Color(0xFF45997C),
+                              ),
+                            ],
+                          ),
+                          if (_noiseSuppressionEnabled) ...[
+                            const SizedBox(height: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      'Suppression Strength',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${_noiseSuppressionAttenDb.toInt()}dB',
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    activeTrackColor: const Color(0xFF45997C),
+                                    thumbColor: const Color(0xFF45997C),
+                                    inactiveTrackColor: Colors.white24,
+                                  ),
+                                  child: Slider(
+                                    value: _noiseSuppressionAttenDb,
+                                    min: 20,
+                                    max: 100,
+                                    divisions: 8,
+                                    onChanged: (v) => setState(() => _noiseSuppressionAttenDb = v),
+                                  ),
+                                ),
+                                const Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text('Conservative', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                                    Text('Aggressive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),

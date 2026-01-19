@@ -61,6 +61,9 @@ cloud = [
     "livekit-plugins-cartesia~=1.0",
     "livekit-plugins-openai~=1.0",
 ]
+noise-suppression = [
+    "deepfilternet>=0.5.0",  # Neural noise suppression
+]
 
 [project.urls]
 Homepage = "https://github.com/CoreWorxLab/caal"

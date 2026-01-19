@@ -22,6 +22,9 @@ interface Settings {
   // Turn detection (advanced)
   allow_interruptions: boolean;
   min_endpointing_delay: number;
+  // Noise suppression
+  noise_suppression_enabled: boolean;
+  noise_suppression_atten_db: number;
   // Visualization
   visualization_type: 'jarvis' | 'soundbars';
 }
@@ -48,6 +51,9 @@ const DEFAULT_SETTINGS: Settings = {
   // Turn detection (advanced)
   allow_interruptions: true,
   min_endpointing_delay: 0.5,
+  // Noise suppression
+  noise_suppression_enabled: false,
+  noise_suppression_atten_db: 100,
   // Visualization
   visualization_type: 'jarvis',
 };

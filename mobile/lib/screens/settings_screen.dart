@@ -66,6 +66,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _allowInterruptions = true;
   double _minEndpointingDelay = 0.5;
 
+  // Noise suppression
+  bool _noiseSuppressionEnabled = false;
+  double _noiseSuppressionAttenDb = 100.0;
+
   // Wake word
   bool _wakeWordEnabled = false;
   String _wakeWordModel = 'models/hey_cal.onnx';
@@ -230,6 +234,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Turn detection
           _allowInterruptions = settings['allow_interruptions'] ?? _allowInterruptions;
           _minEndpointingDelay = (settings['min_endpointing_delay'] ?? _minEndpointingDelay).toDouble();
+
+          // Noise suppression
+          _noiseSuppressionEnabled = settings['noise_suppression_enabled'] ?? _noiseSuppressionEnabled;
+          _noiseSuppressionAttenDb = (settings['noise_suppression_atten_db'] ?? _noiseSuppressionAttenDb).toDouble();
 
           // Wake word
           _wakeWordEnabled = settings['wake_word_enabled'] ?? _wakeWordEnabled;
@@ -549,6 +557,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Turn detection
           'allow_interruptions': _allowInterruptions,
           'min_endpointing_delay': _minEndpointingDelay,
+
+          // Noise suppression
+          'noise_suppression_enabled': _noiseSuppressionEnabled,
+          'noise_suppression_atten_db': _noiseSuppressionAttenDb,
 
           // Wake word
           'wake_word_enabled': _wakeWordEnabled,
@@ -1150,6 +1162,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'How long to wait after you stop speaking',
                     style: TextStyle(color: Colors.white38, fontSize: 11),
                   ),
+                  const Divider(color: Colors.white24, height: 24),
+                  // Noise Suppression section
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Noise Suppression',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          Text(
+                            'Filter background noise (DeepFilterNet)',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: _noiseSuppressionEnabled,
+                        onChanged: (v) => setState(() => _noiseSuppressionEnabled = v),
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_noiseSuppressionEnabled) ...[
+                    const SizedBox(height: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Suppression Strength',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                            Text(
+                              '${_noiseSuppressionAttenDb.toInt()}dB',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: const Color(0xFF45997C),
+                            thumbColor: const Color(0xFF45997C),
+                            inactiveTrackColor: Colors.white24,
+                          ),
+                          child: Slider(
+                            value: _noiseSuppressionAttenDb,
+                            min: 20,
+                            max: 100,
+                            divisions: 8,
+                            onChanged: (v) => setState(() => _noiseSuppressionAttenDb = v),
+                          ),
+                        ),
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Conservative', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                            Text('Aggressive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Higher values remove more noise but may affect voice quality',
+                          style: TextStyle(color: Colors.white38, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ],
                 ]),
 
                 const SizedBox(height: 24),

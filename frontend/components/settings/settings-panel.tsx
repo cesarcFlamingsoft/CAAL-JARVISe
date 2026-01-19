@@ -43,6 +43,9 @@ interface Settings {
   // Turn detection
   allow_interruptions: boolean;
   min_endpointing_delay: number;
+  // Noise suppression
+  noise_suppression_enabled: boolean;
+  noise_suppression_atten_db: number;
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
@@ -82,6 +85,8 @@ const DEFAULT_SETTINGS: Settings = {
   wake_word_timeout: 3.0,
   allow_interruptions: true,
   min_endpointing_delay: 0.5,
+  noise_suppression_enabled: false,
+  noise_suppression_atten_db: 100,
 };
 
 const DEFAULT_PROMPT = `# Voice Assistant
@@ -910,6 +915,66 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               How long to wait after you stop speaking before responding
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Noise Suppression Section */}
+      <div className="border-t pt-6">
+        <h3 className="mb-4 text-sm font-semibold">Noise Suppression</h3>
+        <p className="text-muted-foreground mb-4 text-xs">
+          Filter background noise from your microphone using DeepFilterNet AI
+        </p>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm font-medium">Enable Noise Suppression</label>
+              <p className="text-muted-foreground text-xs">
+                Requires deepfilternet package installed
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.noise_suppression_enabled}
+              onToggle={() =>
+                setSettings({
+                  ...settings,
+                  noise_suppression_enabled: !settings.noise_suppression_enabled,
+                })
+              }
+            />
+          </div>
+
+          {settings.noise_suppression_enabled && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Suppression Strength</label>
+                <span className="text-muted-foreground text-sm">
+                  {settings.noise_suppression_atten_db}dB
+                </span>
+              </div>
+              <input
+                type="range"
+                min="20"
+                max="100"
+                step="10"
+                value={settings.noise_suppression_atten_db}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    noise_suppression_atten_db: parseFloat(e.target.value),
+                  })
+                }
+                className="bg-muted accent-primary h-2 w-full cursor-pointer appearance-none rounded-lg"
+              />
+              <div className="text-muted-foreground flex justify-between text-xs">
+                <span>Conservative</span>
+                <span>Aggressive</span>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                Higher values remove more noise but may affect voice quality
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

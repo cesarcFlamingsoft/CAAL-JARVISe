@@ -55,6 +55,7 @@ from caal.integrations import (
 from caal.llm import llm_node, ToolDataCache
 from caal.stt import WakeWordGatedSTT
 from caal.conversation import AdaptiveEndpointer
+from caal.audio import NoiseSuppressedSTT
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
 # so we use non-propagating loggers with our own handler to avoid duplicates
@@ -147,6 +148,9 @@ def get_runtime_settings() -> dict:
         "endpointing_delay_after_question": settings.get("endpointing_delay_after_question", 0.25),
         "endpointing_delay_after_statement": settings.get("endpointing_delay_after_statement", 0.5),
         "endpointing_delay_initial_turns": settings.get("endpointing_delay_initial_turns", 0.7),
+        # Noise suppression settings (DeepFilterNet)
+        "noise_suppression_enabled": settings.get("noise_suppression_enabled", False),  # Off by default (requires extra dep)
+        "noise_suppression_atten_db": settings.get("noise_suppression_atten_db", 100.0),
     }
 
 
@@ -452,6 +456,19 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             api_key="not-needed",  # Speaches doesn't require auth
             model=WHISPER_MODEL,
         )
+
+    # Apply noise suppression wrapper (if enabled and DeepFilterNet available)
+    base_stt = NoiseSuppressedSTT.create(base_stt, runtime)
+    if runtime.get("noise_suppression_enabled", False):
+        if isinstance(base_stt, NoiseSuppressedSTT):
+            logger.info(
+                f"  Noise suppression: ENABLED (DeepFilterNet, "
+                f"atten={runtime.get('noise_suppression_atten_db', 100)}dB)"
+            )
+        else:
+            logger.info("  Noise suppression: enabled but DeepFilterNet not available")
+    else:
+        logger.info("  Noise suppression: disabled")
 
     # Load wake word settings
     all_settings = settings_module.load_settings()
