@@ -194,20 +194,24 @@ print('Done')
 }
 
 setup_deepfilter() {
-    log "Setting up DeepFilterNet with MPS GPU support..."
+    log "Setting up noise suppression..."
 
-    # Install PyTorch (for MPS) and DeepFilterNet into the mlx-audio venv
-    # This is efficient since we already have a venv with most dependencies
-    "$MLX_VENV/bin/pip" install -q torch torchaudio deepfilternet httpx
+    # Install noisereduce (always works) and try DeepFilterNet
+    "$MLX_VENV/bin/pip" install -q noisereduce httpx
 
-    # Verify MPS is available
-    if "$MLX_PYTHON" -c "import torch; exit(0 if torch.backends.mps.is_available() else 1)" 2>/dev/null; then
-        log "✓ MPS GPU acceleration available"
+    # Try to install DeepFilterNet with compatible torch versions
+    log "Attempting DeepFilterNet installation (optional)..."
+    if "$MLX_VENV/bin/pip" install -q torch==2.0.1 torchaudio==2.0.2 deepfilternet 2>/dev/null; then
+        if "$MLX_PYTHON" -c "from df import init_df" 2>/dev/null; then
+            log "✓ DeepFilterNet available (GPU accelerated)"
+        else
+            warn "DeepFilterNet import failed, using noisereduce fallback"
+        fi
     else
-        warn "MPS not available - DeepFilterNet will use CPU"
+        warn "DeepFilterNet installation failed, using noisereduce fallback"
     fi
 
-    log "✓ DeepFilterNet ready"
+    log "✓ Noise suppression ready"
 }
 
 banner

@@ -1,86 +1,116 @@
 #!/usr/bin/env python3
-"""DeepFilterNet Server - Native macOS service for GPU-accelerated noise suppression.
+"""Noise Suppression Server - Native macOS service for audio noise reduction.
 
-Runs natively on macOS to leverage MPS (Metal Performance Shaders) for
-GPU-accelerated noise suppression. The Docker agent sends audio to this
-service for processing.
+Supports two backends:
+1. DeepFilterNet (if available) - Neural network based, GPU accelerated
+2. noisereduce (fallback) - Spectral gating, CPU based but fast
+
+Runs natively on macOS. The Docker agent sends audio to this service for processing.
 
 Usage:
     python deepfilter_server.py [--port 8002] [--host 0.0.0.0]
 """
 
 import argparse
-import io
 import logging
-import struct
-import sys
 import time
 from contextlib import asynccontextmanager
 
 import numpy as np
-import torch
-
-# Fix for torchaudio.backend deprecation in newer versions
-# DeepFilterNet uses an old API that references torchaudio.backend
-try:
-    import torchaudio
-    # Create a fake backend module if it doesn't exist (torchaudio >= 2.1)
-    if not hasattr(torchaudio, 'backend'):
-        import types
-        torchaudio.backend = types.ModuleType('torchaudio.backend')
-        torchaudio.backend.utils = types.ModuleType('torchaudio.backend.utils')
-        sys.modules['torchaudio.backend'] = torchaudio.backend
-        sys.modules['torchaudio.backend.utils'] = torchaudio.backend.utils
-except ImportError:
-    pass
-
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global DeepFilterNet state
-df_model = None
-df_state = None
-DF_SAMPLE_RATE = 48000
+# Global state
+noise_reducer = None
+backend_name = None
+SAMPLE_RATE = 48000
 
 
-def init_deepfilter():
-    """Initialize DeepFilterNet model."""
-    global df_model, df_state
+class DeepFilterBackend:
+    """DeepFilterNet backend for GPU-accelerated noise suppression."""
 
-    try:
+    def __init__(self):
         from df import init_df
+        import torch
 
-        # Check MPS availability
-        if torch.backends.mps.is_available():
-            logger.info("MPS (Metal) GPU available - using GPU acceleration")
-        else:
-            logger.info("MPS not available - using CPU")
+        self.mps_available = torch.backends.mps.is_available()
+        logger.info(f"Initializing DeepFilterNet (MPS={self.mps_available})...")
 
-        logger.info("Loading DeepFilterNet model...")
-        start = time.time()
-        df_model, df_state, _ = init_df()
-        elapsed = time.time() - start
-        logger.info(f"DeepFilterNet loaded in {elapsed:.2f}s")
+        self.model, self.state, _ = init_df()
+        logger.info("DeepFilterNet initialized")
+
+    def enhance(self, audio: np.ndarray, atten_lim_db: float = 100.0) -> np.ndarray:
+        from df import enhance
+        return enhance(self.model, self.state, audio, atten_lim_db=atten_lim_db)
+
+    @property
+    def name(self) -> str:
+        return "deepfilter"
+
+
+class NoiseReduceBackend:
+    """noisereduce backend for spectral gating noise suppression."""
+
+    def __init__(self):
+        import noisereduce as nr
+        self.nr = nr
+        logger.info("Initialized noisereduce (spectral gating)")
+
+    def enhance(self, audio: np.ndarray, atten_lim_db: float = 100.0) -> np.ndarray:
+        # noisereduce expects float audio in [-1, 1] range
+        # prop_decrease controls how much noise is reduced (0-1)
+        prop_decrease = min(1.0, atten_lim_db / 100.0)
+        return self.nr.reduce_noise(
+            y=audio,
+            sr=SAMPLE_RATE,
+            prop_decrease=prop_decrease,
+            stationary=False,  # Non-stationary for speech
+        )
+
+    @property
+    def name(self) -> str:
+        return "noisereduce"
+
+
+def init_backend():
+    """Initialize the best available noise suppression backend."""
+    global noise_reducer, backend_name
+
+    # Try DeepFilterNet first
+    try:
+        noise_reducer = DeepFilterBackend()
+        backend_name = "deepfilter"
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize DeepFilterNet: {e}")
-        return False
+        logger.warning(f"DeepFilterNet not available: {e}")
+
+    # Fall back to noisereduce
+    try:
+        noise_reducer = NoiseReduceBackend()
+        backend_name = "noisereduce"
+        return True
+    except Exception as e:
+        logger.error(f"noisereduce not available: {e}")
+
+    return False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize DeepFilterNet on startup."""
-    if not init_deepfilter():
-        logger.error("DeepFilterNet initialization failed!")
+    """Initialize noise suppression on startup."""
+    if not init_backend():
+        logger.error("No noise suppression backend available!")
+    else:
+        logger.info(f"Using {backend_name} backend for noise suppression")
     yield
-    logger.info("Shutting down DeepFilterNet server")
+    logger.info("Shutting down noise suppression server")
 
 
 app = FastAPI(
-    title="DeepFilterNet Server",
+    title="Noise Suppression Server",
     description="GPU-accelerated noise suppression for CAAL",
     lifespan=lifespan,
 )
@@ -89,11 +119,14 @@ app = FastAPI(
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    import torch
+
     return {
         "status": "ok",
-        "model_loaded": df_model is not None,
-        "mps_available": torch.backends.mps.is_available(),
-        "sample_rate": DF_SAMPLE_RATE,
+        "model_loaded": noise_reducer is not None,
+        "backend": backend_name,
+        "mps_available": torch.backends.mps.is_available() if backend_name == "deepfilter" else False,
+        "sample_rate": SAMPLE_RATE,
     }
 
 
@@ -107,14 +140,10 @@ async def enhance_audio(request: Request):
     Query params:
         atten_lim_db: Attenuation limit in dB (default: 100)
     """
-    global df_model, df_state
-
-    if df_model is None:
-        raise HTTPException(status_code=503, detail="DeepFilterNet not initialized")
+    if noise_reducer is None:
+        raise HTTPException(status_code=503, detail="Noise suppression not initialized")
 
     try:
-        from df import enhance
-
         # Get attenuation limit from query params
         atten_lim_db = float(request.query_params.get("atten_lim_db", 100))
 
@@ -127,17 +156,15 @@ async def enhance_audio(request: Request):
         # Convert to numpy array (int16)
         audio_int16 = np.frombuffer(pcm_data, dtype=np.int16)
 
-        # Convert to float32 [-1, 1] for DeepFilterNet
+        # Convert to float32 [-1, 1]
         audio_float = audio_int16.astype(np.float32) / 32768.0
 
-        # DeepFilterNet expects (samples,) or (batch, samples)
-        # Process through DeepFilterNet
-        enhanced = enhance(
-            df_model,
-            df_state,
-            audio_float,
-            atten_lim_db=atten_lim_db,
-        )
+        # Process through noise reducer
+        enhanced = noise_reducer.enhance(audio_float, atten_lim_db=atten_lim_db)
+
+        # Ensure output is the right shape
+        if isinstance(enhanced, np.ndarray):
+            enhanced = enhanced.squeeze()
 
         # Convert back to int16
         enhanced_int16 = (enhanced * 32768.0).clip(-32768, 32767).astype(np.int16)
@@ -152,73 +179,15 @@ async def enhance_audio(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/enhance_batch")
-async def enhance_audio_batch(request: Request):
-    """Enhance multiple audio chunks in a single request.
-
-    Expects JSON with:
-        - chunks: list of base64-encoded PCM audio chunks
-        - atten_lim_db: optional attenuation limit
-
-    Returns JSON with:
-        - chunks: list of base64-encoded enhanced audio chunks
-    """
-    global df_model, df_state
-
-    if df_model is None:
-        raise HTTPException(status_code=503, detail="DeepFilterNet not initialized")
-
-    try:
-        import base64
-        from df import enhance
-
-        data = await request.json()
-        chunks = data.get("chunks", [])
-        atten_lim_db = float(data.get("atten_lim_db", 100))
-
-        enhanced_chunks = []
-        for chunk_b64 in chunks:
-            # Decode base64
-            pcm_data = base64.b64decode(chunk_b64)
-
-            if len(pcm_data) == 0:
-                enhanced_chunks.append("")
-                continue
-
-            # Convert to numpy
-            audio_int16 = np.frombuffer(pcm_data, dtype=np.int16)
-            audio_float = audio_int16.astype(np.float32) / 32768.0
-
-            # Enhance
-            enhanced = enhance(
-                df_model,
-                df_state,
-                audio_float,
-                atten_lim_db=atten_lim_db,
-            )
-
-            # Convert back
-            enhanced_int16 = (enhanced * 32768.0).clip(-32768, 32767).astype(np.int16)
-
-            # Encode to base64
-            enhanced_chunks.append(base64.b64encode(enhanced_int16.tobytes()).decode())
-
-        return JSONResponse({"chunks": enhanced_chunks})
-
-    except Exception as e:
-        logger.error(f"Error in batch enhance: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 def main():
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="DeepFilterNet Server")
+    parser = argparse.ArgumentParser(description="Noise Suppression Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8002, help="Port to listen on")
     args = parser.parse_args()
 
-    logger.info(f"Starting DeepFilterNet server on {args.host}:{args.port}")
+    logger.info(f"Starting noise suppression server on {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
