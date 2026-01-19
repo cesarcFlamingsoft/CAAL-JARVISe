@@ -653,8 +653,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 await session.say(greeting)
 
             elif action == "reload_tools":
-                # Clear agent's internal caches
+                # Clear agent's internal caches (both old and new cache names for compatibility)
                 assistant._ollama_tools_cache = None
+                assistant._llm_tools_cache = None
 
                 # Re-discover n8n workflows if MCP is available
                 n8n_mcp = assistant._caal_mcp_servers.get("n8n")

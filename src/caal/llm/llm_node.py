@@ -117,7 +117,10 @@ async def llm_node(
             response = await provider.chat(messages=messages, tools=tools)
 
             if response.tool_calls:
-                logger.info(f"LLM returned {len(response.tool_calls)} tool call(s)")
+                logger.info(
+                    f"LLM returned {len(response.tool_calls)} tool call(s): "
+                    f"{[tc.name for tc in response.tool_calls]}"
+                )
 
                 # Track tool usage for frontend indicator
                 tool_names = [tc.name for tc in response.tool_calls]
@@ -341,6 +344,17 @@ async def _discover_tools(agent) -> list[dict] | None:
     # Add Home Assistant tools (only if HASS is connected)
     if hasattr(agent, "_hass_tool_definitions") and agent._hass_tool_definitions:
         tools.extend(agent._hass_tool_definitions)
+        logger.info(f"Added {len(agent._hass_tool_definitions)} HASS tools")
+    else:
+        logger.debug(
+            f"No HASS tools: has_attr={hasattr(agent, '_hass_tool_definitions')}, "
+            f"value={getattr(agent, '_hass_tool_definitions', None)}"
+        )
+
+    # Log all discovered tools
+    if tools:
+        tool_names = [t["function"]["name"] for t in tools]
+        logger.info(f"Discovered {len(tools)} tools: {tool_names}")
 
     # Cache tools on agent and return
     result = tools if tools else None
@@ -407,6 +421,8 @@ async def _execute_tool_calls(
         provider: LLM provider (for formatting tool results)
         tool_data_cache: Optional cache to store structured tool response data
     """
+    logger.info(f"_execute_tool_calls: Starting with {len(tool_calls)} tool(s)")
+
     # Add assistant message with tool calls
     tool_call_message = provider.format_tool_call_message(
         content=response_content,
@@ -469,6 +485,11 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     3. n8n workflows (webhook-based execution)
     4. MCP servers (with server_name__tool_name prefix parsing)
     """
+    logger.debug(
+        f"Looking up tool '{tool_name}': "
+        f"hass_callables={list(getattr(agent, '_hass_tool_callables', {}).keys())}"
+    )
+
     # Check Home Assistant tools (callable functions stored in dict)
     if hasattr(agent, "_hass_tool_callables") and tool_name in agent._hass_tool_callables:
         logger.info(f"Calling HASS tool: {tool_name}")
