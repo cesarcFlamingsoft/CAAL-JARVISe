@@ -80,7 +80,7 @@ services:
       - caal-memory:/app/data
       - caal-config:/app/config  # Runtime config (mcp_servers.json)
       - ./prompt:/app/prompt  # Prompt files (custom.md is gitignored)
-      - ./settings.json:/app/settings.json:ro  # Home Assistant & n8n config
+      - ./settings.json:/app/settings.json  # Home Assistant & n8n config
     networks:
       - caal-network
     depends_on:
