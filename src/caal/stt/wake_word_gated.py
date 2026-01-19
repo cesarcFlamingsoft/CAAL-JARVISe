@@ -391,6 +391,9 @@ class WakeWordGatedStream(RecognizeStream):
             predictions = self._oww.predict(chunk)
 
             for model_name, score in predictions.items():
+                # Log scores periodically for debugging (every ~1 sec when score > 0.1)
+                if score > 0.1:
+                    logger.info(f"Wake word score: {model_name}={score:.3f} (threshold={self._threshold})")
                 if score >= self._threshold:
                     detect_time = time.time()
                     logger.info(

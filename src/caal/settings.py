@@ -74,7 +74,7 @@ DEFAULT_SETTINGS = {
     # Wake word detection (server-side OpenWakeWord)
     "wake_word_enabled": True,
     "wake_word_model": "models/hey_jarvis.onnx",
-    "wake_word_threshold": 0.6,  # Increased from 0.5 for better noise rejection
+    "wake_word_threshold": 0.5,  # Detection threshold (0.3-0.7, lower = more sensitive)
     "wake_word_timeout": 3.0,  # seconds of silence before returning to listening
     # Turn detection settings (advanced)
     "allow_interruptions": True,  # Whether user can interrupt agent mid-speech
