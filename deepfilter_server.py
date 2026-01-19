@@ -13,11 +13,27 @@ import argparse
 import io
 import logging
 import struct
+import sys
 import time
 from contextlib import asynccontextmanager
 
 import numpy as np
 import torch
+
+# Fix for torchaudio.backend deprecation in newer versions
+# DeepFilterNet uses an old API that references torchaudio.backend
+try:
+    import torchaudio
+    # Create a fake backend module if it doesn't exist (torchaudio >= 2.1)
+    if not hasattr(torchaudio, 'backend'):
+        import types
+        torchaudio.backend = types.ModuleType('torchaudio.backend')
+        torchaudio.backend.utils = types.ModuleType('torchaudio.backend.utils')
+        sys.modules['torchaudio.backend'] = torchaudio.backend
+        sys.modules['torchaudio.backend.utils'] = torchaudio.backend.utils
+except ImportError:
+    pass
+
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
