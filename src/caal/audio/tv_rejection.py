@@ -33,7 +33,9 @@ class TVRejectionConfig:
     energy_threshold_db: float = -35.0  # RMS threshold
 
     # Crest factor (peak-to-RMS ratio) - TV audio is compressed
-    min_crest_factor: float = 2.5  # Live speech typically > 3.0, TV < 2.5
+    # Note: Live speech typically 3-6, TV typically 1.5-2.5
+    # Using 1.8 to be permissive - only reject obviously compressed audio
+    min_crest_factor: float = 1.8
 
     # Spectral analysis
     min_spectral_rolloff_hz: float = 3000.0  # TV often bandwidth-limited
@@ -44,11 +46,15 @@ class TVRejectionConfig:
     silence_reset_sec: float = 1.0  # Reset continuity after silence
 
     # Liveness scoring thresholds
-    min_liveness_score: float = 0.5  # Minimum score to pass (0-1)
+    # Using 0.25 to be permissive - only reject obviously TV-like audio
+    min_liveness_score: float = 0.25  # Minimum score to pass (0-1)
 
     # Buffered detection (require multiple consecutive passes)
-    required_consecutive_passes: int = 2  # Frames that must pass
+    required_consecutive_passes: int = 3  # Frames that must pass
     analysis_window_sec: float = 0.5  # Window for spectral analysis
+
+    # Debug logging
+    debug_logging: bool = False  # Log every frame's features
 
 
 @dataclass
@@ -95,11 +101,13 @@ class TVRejectionFilter:
         self._recent_crest_factors: deque[float] = deque(maxlen=100)
         self._recent_liveness_scores: deque[float] = deque(maxlen=100)
 
+        self._frame_count = 0  # For periodic logging
         logger.info(
             f"TVRejectionFilter initialized: "
-            f"energy_threshold={config.energy_threshold_db}dB, "
-            f"min_crest_factor={config.min_crest_factor}, "
-            f"min_liveness={config.min_liveness_score}"
+            f"energy_threshold={self.config.energy_threshold_db}dB, "
+            f"min_crest_factor={self.config.min_crest_factor}, "
+            f"min_liveness={self.config.min_liveness_score}, "
+            f"consecutive_passes={self.config.required_consecutive_passes}"
         )
 
     def analyze(self, audio: np.ndarray) -> AudioFeatures:
@@ -238,6 +246,16 @@ class TVRejectionFilter:
             return True, AudioFeatures()
 
         features = self.analyze(audio)
+        self._frame_count += 1
+
+        # Debug logging every 50 frames (~1 sec at 50fps)
+        if self.config.debug_logging and self._frame_count % 50 == 0:
+            logger.info(
+                f"TV filter stats: rms={features.rms_db:.1f}dB, "
+                f"crest={features.crest_factor:.2f}, "
+                f"liveness={features.liveness_score:.2f}, "
+                f"passes={self._consecutive_passes}"
+            )
 
         # === Multi-layer filtering ===
 
@@ -267,7 +285,17 @@ class TVRejectionFilter:
         # Layer 4: Buffered detection (require consecutive passes)
         self._consecutive_passes += 1
         if self._consecutive_passes < self.config.required_consecutive_passes:
+            logger.debug(
+                f"TV filter: building passes {self._consecutive_passes}/{self.config.required_consecutive_passes}"
+            )
             return False, features
+
+        # Audio passed all filters
+        if self._consecutive_passes == self.config.required_consecutive_passes:
+            logger.info(
+                f"TV filter: PASSED (crest={features.crest_factor:.2f}, "
+                f"liveness={features.liveness_score:.2f})"
+            )
 
         return True, features
 
@@ -315,9 +343,10 @@ def create_tv_rejection_filter(settings: dict) -> TVRejectionFilter | None:
     config = TVRejectionConfig(
         enabled=True,
         energy_threshold_db=settings.get("energy_gate_threshold_db", -35.0),
-        min_crest_factor=settings.get("tv_rejection_min_crest_factor", 2.5),
-        min_liveness_score=settings.get("tv_rejection_min_liveness", 0.5),
-        required_consecutive_passes=settings.get("tv_rejection_consecutive_passes", 2),
+        min_crest_factor=settings.get("tv_rejection_min_crest_factor", 1.8),
+        min_liveness_score=settings.get("tv_rejection_min_liveness", 0.25),
+        required_consecutive_passes=settings.get("tv_rejection_consecutive_passes", 3),
+        debug_logging=settings.get("tv_rejection_debug", False),
     )
 
     return TVRejectionFilter(config)

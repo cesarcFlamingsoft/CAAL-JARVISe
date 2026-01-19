@@ -156,9 +156,9 @@ def get_runtime_settings() -> dict:
         "energy_gate_threshold_db": settings.get("energy_gate_threshold_db", -35.0),
         # TV rejection settings (advanced spectral/temporal analysis)
         "tv_rejection_enabled": settings.get("tv_rejection_enabled", True),  # On by default
-        "tv_rejection_min_crest_factor": settings.get("tv_rejection_min_crest_factor", 2.5),
-        "tv_rejection_min_liveness": settings.get("tv_rejection_min_liveness", 0.5),
-        "tv_rejection_consecutive_passes": settings.get("tv_rejection_consecutive_passes", 2),
+        "tv_rejection_min_crest_factor": settings.get("tv_rejection_min_crest_factor", 1.8),
+        "tv_rejection_min_liveness": settings.get("tv_rejection_min_liveness", 0.25),
+        "tv_rejection_consecutive_passes": settings.get("tv_rejection_consecutive_passes", 3),
     }
 
 
@@ -552,8 +552,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         tv_rejection_filter = create_tv_rejection_filter(runtime)
         if tv_rejection_filter:
             logger.info(
-                f"  TV rejection: ENABLED (crest_factor>={runtime.get('tv_rejection_min_crest_factor', 2.5)}, "
-                f"liveness>={runtime.get('tv_rejection_min_liveness', 0.5)})"
+                f"  TV rejection: ENABLED (crest>={runtime.get('tv_rejection_min_crest_factor', 1.8)}, "
+                f"liveness>={runtime.get('tv_rejection_min_liveness', 0.25)}, "
+                f"passes>={runtime.get('tv_rejection_consecutive_passes', 3)})"
             )
         else:
             logger.info("  TV rejection: disabled")

@@ -369,6 +369,7 @@ class WakeWordGatedStream(RecognizeStream):
             should_pass, features = self._tv_rejection_filter.should_pass(audio_data)
             if not should_pass:
                 # Audio has TV-like characteristics - skip wake word detection
+                # Note: if this happens too often, lower tv_rejection thresholds in settings
                 return
 
         # Accumulate audio until we have enough for OpenWakeWord
