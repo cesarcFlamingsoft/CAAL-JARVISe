@@ -135,7 +135,9 @@ async def llm_node(
                     )
 
                 # Execute tools and get results (cache structured data)
-                messages = await _execute_tool_calls(
+                # Also track hass_assist results for direct speech
+                hass_results = []
+                messages, hass_results = await _execute_tool_calls(
                     agent,
                     messages,
                     response.tool_calls,
@@ -143,6 +145,14 @@ async def llm_node(
                     provider=provider,
                     tool_data_cache=tool_data_cache,
                 )
+
+                # If hass_assist was called, speak its response directly
+                # (bypasses LLM follow-up which tends to summarize/paraphrase)
+                if hass_results:
+                    combined = " ".join(hass_results)
+                    logger.info(f"Speaking hass_assist response directly: {combined[:100]}...")
+                    yield strip_markdown_for_tts(combined)
+                    return
 
                 # Stream follow-up response with tool results
                 # Pass tools so Ollama can validate tool_calls in message history
@@ -416,7 +426,7 @@ async def _execute_tool_calls(
     response_content: str | None,
     provider: LLMProvider,
     tool_data_cache: ToolDataCache | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     """Execute tool calls and append results to messages.
 
     Args:
@@ -426,8 +436,12 @@ async def _execute_tool_calls(
         response_content: Original LLM response content (if any)
         provider: LLM provider (for formatting tool results)
         tool_data_cache: Optional cache to store structured tool response data
+
+    Returns:
+        tuple: (updated messages, list of hass_assist results for direct speech)
     """
     logger.info(f"_execute_tool_calls: Starting with {len(tool_calls)} tool(s)")
+    hass_results: list[str] = []
 
     # Add assistant message with tool calls
     tool_call_message = provider.format_tool_call_message(
@@ -445,6 +459,10 @@ async def _execute_tool_calls(
         try:
             tool_result = await _execute_single_tool(agent, tool_name, arguments)
             logger.info(f"Tool {tool_name} returned: {str(tool_result)[:200]}")
+
+            # Capture hass_assist results for direct speech
+            if tool_name == "hass_assist" and isinstance(tool_result, str):
+                hass_results.append(tool_result)
 
             # Cache structured data if present
             if tool_data_cache and isinstance(tool_result, dict):
@@ -480,7 +498,7 @@ async def _execute_tool_calls(
             )
             messages.append(result_message)
 
-    return messages
+    return messages, hass_results
 
 
 async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
