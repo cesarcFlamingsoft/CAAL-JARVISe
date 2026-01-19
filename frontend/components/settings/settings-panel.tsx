@@ -46,6 +46,9 @@ interface Settings {
   // Noise suppression
   noise_suppression_enabled: boolean;
   noise_suppression_atten_db: number;
+  // Energy gate
+  energy_gate_enabled: boolean;
+  energy_gate_threshold_db: number;
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
@@ -87,6 +90,8 @@ const DEFAULT_SETTINGS: Settings = {
   min_endpointing_delay: 0.5,
   noise_suppression_enabled: false,
   noise_suppression_atten_db: 100,
+  energy_gate_enabled: true,
+  energy_gate_threshold_db: -35,
 };
 
 const DEFAULT_PROMPT = `# Voice Assistant
@@ -972,6 +977,63 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
               <p className="text-muted-foreground text-xs">
                 Higher values remove more noise but may affect voice quality
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Energy Gate */}
+      <div className="overflow-hidden rounded-xl border">
+        <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <span className="font-semibold">Energy Gate</span>
+            <p className="text-muted-foreground text-xs">
+              Filter quiet/distant sounds (TV, background chatter)
+            </p>
+          </div>
+          <Toggle
+            enabled={settings.energy_gate_enabled}
+            onToggle={() =>
+              setSettings({ ...settings, energy_gate_enabled: !settings.energy_gate_enabled })
+            }
+          />
+        </div>
+
+        <div className="space-y-4 p-4">
+          <p className="text-muted-foreground text-sm">
+            Filters out audio below a volume threshold, preventing distant sounds like TV or
+            background conversations from triggering the wake word.
+          </p>
+
+          {settings.energy_gate_enabled && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Threshold</label>
+                <span className="text-muted-foreground text-sm">
+                  {settings.energy_gate_threshold_db}dB
+                </span>
+              </div>
+              <input
+                type="range"
+                min="-50"
+                max="-20"
+                step="1"
+                value={settings.energy_gate_threshold_db}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    energy_gate_threshold_db: parseFloat(e.target.value),
+                  })
+                }
+                className="bg-muted accent-primary h-2 w-full cursor-pointer appearance-none rounded-lg"
+              />
+              <div className="text-muted-foreground flex justify-between text-xs">
+                <span>More Sensitive (-50)</span>
+                <span>Less Sensitive (-20)</span>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                -40dB = quiet room, -35dB = normal speech, -30dB = loud speech
               </p>
             </div>
           )}

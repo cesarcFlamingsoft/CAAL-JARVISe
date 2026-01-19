@@ -35,6 +35,8 @@ from livekit.agents.vad import VADEvent, VADEventType
 from livekit.plugins import silero
 from openwakeword.model import Model as OWWModel
 
+from caal.audio import AudioEnergyGate
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +72,7 @@ class WakeWordGatedSTT(STT):
         silence_timeout: float = 3.0,
         on_wake_detected: Callable[[], Awaitable[None]] | None = None,
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None = None,
+        energy_gate: AudioEnergyGate | None = None,
     ) -> None:
         """Initialize the wake word gated STT.
 
@@ -80,6 +83,7 @@ class WakeWordGatedSTT(STT):
             silence_timeout: Seconds of silence before returning to listening mode.
             on_wake_detected: Callback when wake word is detected (e.g., trigger greeting).
             on_state_changed: Callback when state changes (for publishing to clients).
+            energy_gate: Optional energy gate to filter quiet/distant sounds (TV).
         """
         # Override capabilities to indicate we support streaming
         # Even though the inner STT may not support streaming, WE provide streaming
@@ -93,6 +97,7 @@ class WakeWordGatedSTT(STT):
         self._silence_timeout = silence_timeout
         self._on_wake_detected = on_wake_detected
         self._on_state_changed = on_state_changed
+        self._energy_gate = energy_gate
         self._oww: OWWModel | None = None
         self._active_stream: WakeWordGatedStream | None = None
 
@@ -146,6 +151,7 @@ class WakeWordGatedSTT(STT):
             silence_timeout=self._silence_timeout,
             on_wake_detected=self._on_wake_detected,
             on_state_changed=self._on_state_changed,
+            energy_gate=self._energy_gate,
             language=language,
             conn_options=conn_options,
         )
@@ -186,6 +192,7 @@ class WakeWordGatedStream(RecognizeStream):
         silence_timeout: float,
         on_wake_detected: Callable[[], Awaitable[None]] | None,
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None,
+        energy_gate: AudioEnergyGate | None,
         language: NotGivenOr[str],
         conn_options: APIConnectOptions,
     ) -> None:
@@ -201,6 +208,7 @@ class WakeWordGatedStream(RecognizeStream):
         self._silence_timeout = silence_timeout
         self._on_wake_detected = on_wake_detected
         self._on_state_changed = on_state_changed
+        self._energy_gate = energy_gate
         self._language = language
         self._conn_options = conn_options
 
@@ -337,6 +345,12 @@ class WakeWordGatedStream(RecognizeStream):
 
     async def _process_wake_word(self, frame: rtc.AudioFrame) -> None:
         """Process audio frame for wake word detection."""
+        # Energy gate: filter out quiet/distant sounds (TV, background noise)
+        if self._energy_gate is not None:
+            if not self._energy_gate.should_pass(frame):
+                # Frame is too quiet (likely TV or distant sound) - skip wake word detection
+                return
+
         # Convert frame to numpy array (int16)
         audio_data = np.frombuffer(frame.data, dtype=np.int16)
 

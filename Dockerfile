@@ -35,6 +35,10 @@ COPY src/ ./src/
 # Create virtual environment and install dependencies (non-editable)
 RUN uv sync --frozen --no-dev --no-editable
 
+# Install DeepFilterNet for noise suppression (optional but recommended)
+# This adds ~100MB but significantly improves voice recognition in noisy environments
+RUN /app/.venv/bin/pip install --no-cache-dir deepfilternet>=0.5.0
+
 # ============================================================================
 # Production image
 # ============================================================================

@@ -74,16 +74,16 @@ DEFAULT_SETTINGS = {
     # Wake word detection (server-side OpenWakeWord)
     "wake_word_enabled": True,
     "wake_word_model": "models/hey_jarvis.onnx",
-    "wake_word_threshold": 0.5,
+    "wake_word_threshold": 0.6,  # Increased from 0.5 for better noise rejection
     "wake_word_timeout": 3.0,  # seconds of silence before returning to listening
     # Turn detection settings (advanced)
     "allow_interruptions": True,  # Whether user can interrupt agent mid-speech
     "min_endpointing_delay": 0.5,  # Seconds to wait before considering turn complete
     # VAD tuning parameters (voice vs noise separation)
-    "vad_min_speech_duration": 0.08,  # Min duration to start speech chunk (filter noise bursts)
+    "vad_min_speech_duration": 0.1,  # Min duration to start speech chunk (filter noise bursts)
     "vad_min_silence_duration": 0.4,  # Wait before ending speech (lower = faster response)
     "vad_prefix_padding": 0.3,  # Padding before speech onset
-    "vad_activation_threshold": 0.6,  # Higher = less sensitive to noise (0.0-1.0)
+    "vad_activation_threshold": 0.7,  # Higher = less sensitive to noise (0.0-1.0)
     # Adaptive endpointing (natural conversation flow)
     "adaptive_endpointing_enabled": True,  # Enable context-aware endpointing delays
     "endpointing_delay_after_question": 0.25,  # Short delay after agent asks question
@@ -92,6 +92,9 @@ DEFAULT_SETTINGS = {
     # Noise suppression (DeepFilterNet)
     "noise_suppression_enabled": False,  # Off by default (requires deepfilternet package)
     "noise_suppression_atten_db": 100.0,  # Attenuation limit in dB (higher = more aggressive)
+    # Energy gate (filter quiet/distant sounds like TV)
+    "energy_gate_enabled": True,  # On by default - filters TV and distant sounds
+    "energy_gate_threshold_db": -35.0,  # RMS threshold in dB (-40=quiet room, -30=speech)
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }

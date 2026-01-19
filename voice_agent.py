@@ -55,7 +55,7 @@ from caal.integrations import (
 from caal.llm import llm_node, ToolDataCache
 from caal.stt import WakeWordGatedSTT
 from caal.conversation import AdaptiveEndpointer
-from caal.audio import NoiseSuppressedSTT
+from caal.audio import NoiseSuppressedSTT, AudioEnergyGate
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
 # so we use non-propagating loggers with our own handler to avoid duplicates
@@ -139,10 +139,10 @@ def get_runtime_settings() -> dict:
         "allow_interruptions": settings.get("allow_interruptions", True),
         "min_endpointing_delay": settings.get("min_endpointing_delay", 0.5),
         # VAD tuning parameters (noise rejection + responsiveness)
-        "vad_min_speech_duration": settings.get("vad_min_speech_duration", 0.08),
+        "vad_min_speech_duration": settings.get("vad_min_speech_duration", 0.1),
         "vad_min_silence_duration": settings.get("vad_min_silence_duration", 0.4),
         "vad_prefix_padding": settings.get("vad_prefix_padding", 0.3),
-        "vad_activation_threshold": settings.get("vad_activation_threshold", 0.6),
+        "vad_activation_threshold": settings.get("vad_activation_threshold", 0.7),
         # Adaptive endpointing settings
         "adaptive_endpointing_enabled": settings.get("adaptive_endpointing_enabled", True),
         "endpointing_delay_after_question": settings.get("endpointing_delay_after_question", 0.25),
@@ -151,6 +151,9 @@ def get_runtime_settings() -> dict:
         # Noise suppression settings (DeepFilterNet)
         "noise_suppression_enabled": settings.get("noise_suppression_enabled", False),  # Off by default (requires extra dep)
         "noise_suppression_atten_db": settings.get("noise_suppression_atten_db", 100.0),
+        # Energy gate settings (filter quiet/distant sounds like TV)
+        "energy_gate_enabled": settings.get("energy_gate_enabled", True),  # On by default
+        "energy_gate_threshold_db": settings.get("energy_gate_threshold_db", -35.0),
     }
 
 
@@ -530,6 +533,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             except Exception as e:
                 logger.warning(f"Failed to publish wake word state: {e}")
 
+        # Create energy gate for filtering TV/distant sounds
+        energy_gate = None
+        if runtime.get("energy_gate_enabled", True):
+            energy_gate = AudioEnergyGate.from_settings(runtime)
+            logger.info(
+                f"  Energy gate: ENABLED (threshold={runtime.get('energy_gate_threshold_db', -35)}dB)"
+            )
+        else:
+            logger.info("  Energy gate: disabled")
+
         stt_instance = WakeWordGatedSTT(
             inner_stt=base_stt,
             model_path=wake_word_model,
@@ -537,6 +550,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             silence_timeout=wake_word_timeout,
             on_wake_detected=on_wake_detected,
             on_state_changed=on_state_changed,
+            energy_gate=energy_gate,
         )
         logger.info(f"  Wake word: ENABLED (model={wake_word_model}, threshold={wake_word_threshold})")
     else:
@@ -566,10 +580,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     logger.info(f"  STT capabilities: streaming={stt_instance.capabilities.streaming}")
     # Load VAD with tuned parameters for better noise rejection and responsiveness
     vad_instance = silero.VAD.load(
-        min_speech_duration=runtime.get("vad_min_speech_duration", 0.08),  # Slightly higher than default 0.05 to filter noise bursts
+        min_speech_duration=runtime.get("vad_min_speech_duration", 0.1),  # Higher than default to filter noise/TV
         min_silence_duration=runtime.get("vad_min_silence_duration", 0.4),  # Lower than default 0.55 for faster response
         prefix_padding_duration=runtime.get("vad_prefix_padding", 0.3),  # Capture speech onset
-        activation_threshold=runtime.get("vad_activation_threshold", 0.6),  # Higher than default 0.5 to reject background noise
+        activation_threshold=runtime.get("vad_activation_threshold", 0.7),  # Higher than default 0.5 to reject TV/background
     )
 
     session = AgentSession(

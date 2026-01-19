@@ -62,6 +62,9 @@ class _SettingsModalState extends State<SettingsModal> {
   // Noise suppression
   bool _noiseSuppressionEnabled = false;
   double _noiseSuppressionAttenDb = 100.0;
+  // Energy gate
+  bool _energyGateEnabled = true;
+  double _energyGateThresholdDb = -35.0;
   // Visualization
   String _visualizationType = 'jarvis';
 
@@ -131,6 +134,8 @@ class _SettingsModalState extends State<SettingsModal> {
           _minEndpointingDelay = (settings['min_endpointing_delay'] ?? _minEndpointingDelay).toDouble();
           _noiseSuppressionEnabled = settings['noise_suppression_enabled'] ?? _noiseSuppressionEnabled;
           _noiseSuppressionAttenDb = (settings['noise_suppression_atten_db'] ?? _noiseSuppressionAttenDb).toDouble();
+          _energyGateEnabled = settings['energy_gate_enabled'] ?? _energyGateEnabled;
+          _energyGateThresholdDb = (settings['energy_gate_threshold_db'] ?? _energyGateThresholdDb).toDouble();
           _visualizationType = settings['visualization_type'] ?? _visualizationType;
           _wakeGreetingsController.text = _wakeGreetings.join('\n');
         });
@@ -195,6 +200,8 @@ class _SettingsModalState extends State<SettingsModal> {
         'min_endpointing_delay': _minEndpointingDelay,
         'noise_suppression_enabled': _noiseSuppressionEnabled,
         'noise_suppression_atten_db': _noiseSuppressionAttenDb,
+        'energy_gate_enabled': _energyGateEnabled,
+        'energy_gate_threshold_db': _energyGateThresholdDb,
         'visualization_type': _visualizationType,
       };
 
@@ -687,6 +694,86 @@ class _SettingsModalState extends State<SettingsModal> {
                                   children: [
                                     Text('Conservative', style: TextStyle(color: Colors.white38, fontSize: 11)),
                                     Text('Aggressive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
+                          const SizedBox(height: 16),
+                          // Energy Gate Toggle
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Energy Gate',
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Filter quiet/distant sounds (TV)',
+                                    style: TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Switch(
+                                value: _energyGateEnabled,
+                                onChanged: (v) => setState(() => _energyGateEnabled = v),
+                                activeTrackColor: const Color(0xFF45997C),
+                              ),
+                            ],
+                          ),
+                          if (_energyGateEnabled) ...[
+                            const SizedBox(height: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      'Threshold',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${_energyGateThresholdDb.toInt()}dB',
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    activeTrackColor: const Color(0xFF45997C),
+                                    thumbColor: const Color(0xFF45997C),
+                                    inactiveTrackColor: Colors.white24,
+                                  ),
+                                  child: Slider(
+                                    value: _energyGateThresholdDb,
+                                    min: -50,
+                                    max: -20,
+                                    divisions: 30,
+                                    onChanged: (v) => setState(() => _energyGateThresholdDb = v),
+                                  ),
+                                ),
+                                const Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text('More Sensitive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                                    Text('Less Sensitive', style: TextStyle(color: Colors.white38, fontSize: 11)),
                                   ],
                                 ),
                               ],

@@ -70,6 +70,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _noiseSuppressionEnabled = false;
   double _noiseSuppressionAttenDb = 100.0;
 
+  // Energy gate
+  bool _energyGateEnabled = true;
+  double _energyGateThresholdDb = -35.0;
+
   // Wake word
   bool _wakeWordEnabled = false;
   String _wakeWordModel = 'models/hey_cal.onnx';
@@ -238,6 +242,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Noise suppression
           _noiseSuppressionEnabled = settings['noise_suppression_enabled'] ?? _noiseSuppressionEnabled;
           _noiseSuppressionAttenDb = (settings['noise_suppression_atten_db'] ?? _noiseSuppressionAttenDb).toDouble();
+
+          // Energy gate
+          _energyGateEnabled = settings['energy_gate_enabled'] ?? _energyGateEnabled;
+          _energyGateThresholdDb = (settings['energy_gate_threshold_db'] ?? _energyGateThresholdDb).toDouble();
 
           // Wake word
           _wakeWordEnabled = settings['wake_word_enabled'] ?? _wakeWordEnabled;
@@ -561,6 +569,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Noise suppression
           'noise_suppression_enabled': _noiseSuppressionEnabled,
           'noise_suppression_atten_db': _noiseSuppressionAttenDb,
+
+          // Energy gate
+          'energy_gate_enabled': _energyGateEnabled,
+          'energy_gate_threshold_db': _energyGateThresholdDb,
 
           // Wake word
           'wake_word_enabled': _wakeWordEnabled,
@@ -1243,6 +1255,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const SizedBox(height: 4),
                         const Text(
                           'Higher values remove more noise but may affect voice quality',
+                          style: TextStyle(color: Colors.white38, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const Divider(color: Colors.white24, height: 24),
+                  // Energy Gate section
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Energy Gate',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          Text(
+                            'Filter quiet/distant sounds (TV)',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: _energyGateEnabled,
+                        onChanged: (v) => setState(() => _energyGateEnabled = v),
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_energyGateEnabled) ...[
+                    const SizedBox(height: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Threshold',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                            Text(
+                              '${_energyGateThresholdDb.toInt()}dB',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: const Color(0xFF45997C),
+                            thumbColor: const Color(0xFF45997C),
+                            inactiveTrackColor: Colors.white24,
+                          ),
+                          child: Slider(
+                            value: _energyGateThresholdDb,
+                            min: -50,
+                            max: -20,
+                            divisions: 30,
+                            onChanged: (v) => setState(() => _energyGateThresholdDb = v),
+                          ),
+                        ),
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('More Sensitive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                            Text('Less Sensitive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          '-40dB = quiet room, -35dB = speech, -30dB = loud speech',
                           style: TextStyle(color: Colors.white38, fontSize: 11),
                         ),
                       ],
