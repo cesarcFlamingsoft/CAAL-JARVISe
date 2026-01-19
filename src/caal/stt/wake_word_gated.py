@@ -35,7 +35,7 @@ from livekit.agents.vad import VADEvent, VADEventType
 from livekit.plugins import silero
 from openwakeword.model import Model as OWWModel
 
-from caal.audio import AudioEnergyGate
+from caal.audio import AudioEnergyGate, TVRejectionFilter
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class WakeWordGatedSTT(STT):
         on_wake_detected: Callable[[], Awaitable[None]] | None = None,
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None = None,
         energy_gate: AudioEnergyGate | None = None,
+        tv_rejection_filter: TVRejectionFilter | None = None,
     ) -> None:
         """Initialize the wake word gated STT.
 
@@ -84,6 +85,7 @@ class WakeWordGatedSTT(STT):
             on_wake_detected: Callback when wake word is detected (e.g., trigger greeting).
             on_state_changed: Callback when state changes (for publishing to clients).
             energy_gate: Optional energy gate to filter quiet/distant sounds (TV).
+            tv_rejection_filter: Optional TV rejection filter for advanced audio analysis.
         """
         # Override capabilities to indicate we support streaming
         # Even though the inner STT may not support streaming, WE provide streaming
@@ -98,6 +100,7 @@ class WakeWordGatedSTT(STT):
         self._on_wake_detected = on_wake_detected
         self._on_state_changed = on_state_changed
         self._energy_gate = energy_gate
+        self._tv_rejection_filter = tv_rejection_filter
         self._oww: OWWModel | None = None
         self._active_stream: WakeWordGatedStream | None = None
 
@@ -152,6 +155,7 @@ class WakeWordGatedSTT(STT):
             on_wake_detected=self._on_wake_detected,
             on_state_changed=self._on_state_changed,
             energy_gate=self._energy_gate,
+            tv_rejection_filter=self._tv_rejection_filter,
             language=language,
             conn_options=conn_options,
         )
@@ -193,6 +197,7 @@ class WakeWordGatedStream(RecognizeStream):
         on_wake_detected: Callable[[], Awaitable[None]] | None,
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None,
         energy_gate: AudioEnergyGate | None,
+        tv_rejection_filter: TVRejectionFilter | None,
         language: NotGivenOr[str],
         conn_options: APIConnectOptions,
     ) -> None:
@@ -209,6 +214,7 @@ class WakeWordGatedStream(RecognizeStream):
         self._on_wake_detected = on_wake_detected
         self._on_state_changed = on_state_changed
         self._energy_gate = energy_gate
+        self._tv_rejection_filter = tv_rejection_filter
         self._language = language
         self._conn_options = conn_options
 
@@ -358,6 +364,13 @@ class WakeWordGatedStream(RecognizeStream):
         if frame.num_channels > 1:
             audio_data = audio_data[::frame.num_channels]
 
+        # TV rejection filter: spectral/temporal analysis to reject TV audio
+        if self._tv_rejection_filter is not None:
+            should_pass, features = self._tv_rejection_filter.should_pass(audio_data)
+            if not should_pass:
+                # Audio has TV-like characteristics - skip wake word detection
+                return
+
         # Accumulate audio until we have enough for OpenWakeWord
         self._oww_buffer.append(audio_data)
         total_samples = sum(len(chunk) for chunk in self._oww_buffer)
@@ -393,5 +406,9 @@ class WakeWordGatedStream(RecognizeStream):
                     # Switch to active mode
                     await self._set_state(WakeWordState.ACTIVE)
                     self._last_speech_time = detect_time
+
+                    # Reset TV rejection filter state
+                    if self._tv_rejection_filter:
+                        self._tv_rejection_filter.reset()
 
                     return
