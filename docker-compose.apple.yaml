@@ -95,6 +95,8 @@ services:
       # Point to mlx-audio (single service for STT + TTS)
       - SPEACHES_URL=${MLX_AUDIO_URL:-http://host.docker.internal:8001}
       - KOKORO_URL=${MLX_AUDIO_URL:-http://host.docker.internal:8001}
+      # Point to native DeepFilter server (GPU-accelerated noise suppression)
+      - DEEPFILTER_URL=${DEEPFILTER_URL:-http://host.docker.internal:8002}
       # MLX models and voice - override in .env if needed
       - WHISPER_MODEL=${WHISPER_MODEL:-mlx-community/whisper-medium-mlx}
       - TTS_MODEL=${TTS_MODEL:-prince-canuma/Kokoro-82M}

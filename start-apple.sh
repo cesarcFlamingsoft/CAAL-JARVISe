@@ -2,8 +2,11 @@
 # CAAL Startup Script for Apple Silicon
 # Usage: ./start-apple.sh [--stop] [--build]
 #
-# Runs mlx-audio and agent natively on macOS for GPU acceleration (MPS)
-# Only livekit and frontend run in Docker
+# Runs native services for GPU acceleration:
+#   - mlx-audio: STT/TTS using MLX (Apple GPU)
+#   - deepfilter: Noise suppression using PyTorch MPS (Apple GPU)
+#
+# Docker services: livekit, agent, frontend
 
 set -e
 cd "$(dirname "$0")"
@@ -22,14 +25,12 @@ error() { echo -e "${RED}[CAAL]${NC} $1"; }
 # PID and log files
 MLX_PID_FILE="/tmp/caal-mlx-audio.pid"
 MLX_LOG_FILE="/tmp/caal-mlx-audio.log"
-AGENT_PID_FILE="/tmp/caal-agent.pid"
-AGENT_LOG_FILE="/tmp/caal-agent.log"
+DF_PID_FILE="/tmp/caal-deepfilter.pid"
+DF_LOG_FILE="/tmp/caal-deepfilter.log"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MLX_VENV="$SCRIPT_DIR/.mlx-audio-venv"
 MLX_PYTHON="$MLX_VENV/bin/python"
-AGENT_VENV="$SCRIPT_DIR/.agent-venv"
-AGENT_PYTHON="$AGENT_VENV/bin/python"
 
 # Load .env file if it exists
 if [ -f "$SCRIPT_DIR/.env" ]; then
@@ -55,7 +56,7 @@ banner() {
     ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝       ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
 EOF
     echo -e "${NC}"
-    echo -e "  ${BOLD}Voice Assistant for Apple Silicon (Native GPU)${NC}"
+    echo -e "  ${BOLD}Voice Assistant for Apple Silicon${NC}"
     echo ""
 }
 
@@ -84,18 +85,18 @@ stop_all() {
     echo ""
     log "Stopping CAAL..."
 
-    # Stop Docker (livekit, frontend)
+    # Stop Docker
     log "Stopping Docker containers..."
     docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE down || true
 
-    # Stop agent
-    if [ -f "$AGENT_PID_FILE" ]; then
-        PID=$(cat "$AGENT_PID_FILE")
+    # Stop deepfilter
+    if [ -f "$DF_PID_FILE" ]; then
+        PID=$(cat "$DF_PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
             kill "$PID" 2>/dev/null || true
-            log "Agent stopped (PID $PID)"
+            log "DeepFilter stopped (PID $PID)"
         fi
-        rm -f "$AGENT_PID_FILE"
+        rm -f "$DF_PID_FILE"
     fi
 
     # Stop mlx-audio
@@ -122,9 +123,7 @@ for arg in "$@"; do
             ;;
         --build)
             BUILD_FLAG="--build"
-            log "Will rebuild Docker images and agent venv..."
-            # Force rebuild of agent venv
-            rm -rf "$AGENT_VENV"
+            log "Will rebuild Docker images..."
             ;;
     esac
 done
@@ -167,7 +166,7 @@ setup_mlx_audio() {
         mlx-audio \
         soundfile fastapi uvicorn webrtcvad python-multipart \
         numba tiktoken scipy tqdm \
-        loguru misaki num2words spacy phonemizer-fork espeakng-loader torch
+        loguru misaki num2words spacy phonemizer-fork espeakng-loader
 
     log "✓ mlx-audio environment ready"
     echo ""
@@ -194,52 +193,25 @@ print('Done')
     log "✓ Models ready"
 }
 
-setup_agent() {
-    log "Setting up native agent environment (with MPS GPU support)..."
+setup_deepfilter() {
+    log "Setting up DeepFilterNet with MPS GPU support..."
 
-    # Check if venv exists but is corrupted
-    if [ -d "$AGENT_VENV" ] && ! "$AGENT_VENV/bin/python" -c "import pip" 2>/dev/null; then
-        warn "Agent virtual environment is corrupted. Recreating..."
-        rm -rf "$AGENT_VENV"
+    # Install PyTorch (for MPS) and DeepFilterNet into the mlx-audio venv
+    # This is efficient since we already have a venv with most dependencies
+    "$MLX_VENV/bin/pip" install -q torch deepfilternet httpx
+
+    # Verify MPS is available
+    if "$MLX_PYTHON" -c "import torch; exit(0 if torch.backends.mps.is_available() else 1)" 2>/dev/null; then
+        log "✓ MPS GPU acceleration available"
+    else
+        warn "MPS not available - DeepFilterNet will use CPU"
     fi
 
-    # Create virtual environment if it doesn't exist
-    if [ ! -d "$AGENT_VENV" ]; then
-        log "Creating virtual environment at $AGENT_VENV..."
-        if command -v python3.11 &> /dev/null; then
-            python3.11 -m venv "$AGENT_VENV"
-        else
-            warn "Python 3.11 not found, using default python3"
-            python3 -m venv "$AGENT_VENV"
-        fi
-    fi
-
-    # Verify pip is available
-    if ! "$AGENT_VENV/bin/python" -c "import pip" 2>/dev/null; then
-        error "Failed to create agent virtual environment with pip."
-        exit 1
-    fi
-
-    # Upgrade pip
-    "$AGENT_VENV/bin/pip" install --upgrade pip -q
-
-    log "Installing agent dependencies (this may take a few minutes)..."
-
-    # Install PyTorch with MPS support (Apple Silicon GPU)
-    "$AGENT_VENV/bin/pip" install -q torch torchvision torchaudio
-
-    # Install the CAAL package and dependencies
-    "$AGENT_VENV/bin/pip" install -q -e "$SCRIPT_DIR"
-
-    # Install DeepFilterNet for noise suppression (uses MPS!)
-    "$AGENT_VENV/bin/pip" install -q deepfilternet
-
-    log "✓ Agent environment ready (PyTorch MPS enabled)"
-    echo ""
+    log "✓ DeepFilterNet ready"
 }
 
 banner
-log "Starting CAAL (Native Apple Silicon mode)..."
+log "Starting CAAL..."
 echo ""
 
 # Check Ollama
@@ -253,6 +225,7 @@ fi
 echo -e "${GREEN}✓${NC}"
 
 # Check/setup mlx-audio environment
+# Verify: python exists, pip is available, and mlx_audio can be imported
 if [ ! -f "$MLX_PYTHON" ] || \
    ! "$MLX_PYTHON" -c "import pip" 2>/dev/null || \
    ! "$MLX_PYTHON" -c "import mlx_audio" 2>/dev/null; then
@@ -262,13 +235,11 @@ else
     echo -e "${GREEN}✓${NC}"
 fi
 
-# Check/setup agent environment
-if [ ! -f "$AGENT_PYTHON" ] || \
-   ! "$AGENT_PYTHON" -c "import pip" 2>/dev/null || \
-   ! "$AGENT_PYTHON" -c "import livekit.agents" 2>/dev/null; then
-    setup_agent
+# Check/setup DeepFilterNet (in same venv as mlx-audio)
+if ! "$MLX_PYTHON" -c "import df" 2>/dev/null; then
+    setup_deepfilter
 else
-    printf "${GREEN}[CAAL]${NC} Checking agent environment... "
+    printf "${GREEN}[CAAL]${NC} Checking DeepFilterNet... "
     echo -e "${GREEN}✓${NC}"
 fi
 
@@ -318,73 +289,50 @@ if [ "$MLX_RUNNING" = false ]; then
     echo ""
 fi
 
-# Start Docker services (livekit, frontend only - agent runs natively)
-# Add nginx if HTTPS is enabled
-DOCKER_SERVICES="livekit frontend"
-if [ -n "${HTTPS_DOMAIN}" ]; then
-    DOCKER_SERVICES="$DOCKER_SERVICES nginx"
-fi
-log "Starting Docker services ($DOCKER_SERVICES)..."
-docker compose -f docker-compose.apple.yaml up -d $BUILD_FLAG $DOCKER_SERVICES
-
-# Wait for livekit
-printf "${GREEN}[CAAL]${NC} Waiting for LiveKit"
-for i in {1..10}; do
-    if curl -s http://localhost:7880 > /dev/null 2>&1; then
-        break
-    fi
-    printf "."
-    sleep 1
-done
-echo -e " ${GREEN}✓${NC}"
-
-# Check if agent is already running
-AGENT_RUNNING=false
-if [ -f "$AGENT_PID_FILE" ]; then
-    PID=$(cat "$AGENT_PID_FILE")
+# Check if DeepFilter server is already running
+DF_RUNNING=false
+if [ -f "$DF_PID_FILE" ]; then
+    PID=$(cat "$DF_PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
-        AGENT_RUNNING=true
-        log "✓ Agent already running (PID $PID)"
+        DF_RUNNING=true
+        log "✓ DeepFilter already running (PID $PID)"
     fi
 fi
 
-# Start agent natively if not running
-if [ "$AGENT_RUNNING" = false ]; then
-    printf "${GREEN}[CAAL]${NC} Starting native agent (MPS GPU)... "
+# Start DeepFilter server if not running
+if [ "$DF_RUNNING" = false ]; then
+    printf "${GREEN}[CAAL]${NC} Starting DeepFilter server (MPS GPU)... "
 
-    # Set environment variables for the agent
-    export LIVEKIT_URL="${LIVEKIT_URL:-ws://localhost:7880}"
-    export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
-    export LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}"
-    export SPEACHES_URL="${MLX_AUDIO_URL:-http://localhost:8001}"
-    export KOKORO_URL="${MLX_AUDIO_URL:-http://localhost:8001}"
-    export WHISPER_MODEL="${WHISPER_MODEL:-mlx-community/whisper-medium-mlx}"
-    export TTS_MODEL="${TTS_MODEL:-prince-canuma/Kokoro-82M}"
-    export TTS_VOICE="${TTS_VOICE:-af_heart}"
-    export CAAL_SETTINGS_PATH="$SCRIPT_DIR/settings.json"
-    export CAAL_PROMPT_DIR="$SCRIPT_DIR/prompt"
+    # Start in background
+    nohup "$MLX_PYTHON" "$SCRIPT_DIR/deepfilter_server.py" --host 0.0.0.0 --port 8002 > "$DF_LOG_FILE" 2>&1 &
+    DF_PID=$!
+    echo $DF_PID > "$DF_PID_FILE"
 
-    # Start agent in background
-    nohup "$AGENT_PYTHON" "$SCRIPT_DIR/voice_agent.py" dev > "$AGENT_LOG_FILE" 2>&1 &
-    AGENT_PID=$!
-    echo $AGENT_PID > "$AGENT_PID_FILE"
+    # Wait for server to be ready
+    for i in {1..30}; do
+        if curl -s http://localhost:8002/health > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
 
-    # Wait for agent to initialize
-    sleep 3
-
-    if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+    if ! curl -s http://localhost:8002/health > /dev/null 2>&1; then
         echo ""
-        error "Agent failed to start. Logs: $AGENT_LOG_FILE"
-        tail -20 "$AGENT_LOG_FILE"
-        exit 1
+        warn "DeepFilter server failed to start (noise suppression will be disabled)"
+        warn "Logs: $DF_LOG_FILE"
+        rm -f "$DF_PID_FILE"
+    else
+        echo -e "${GREEN}✓${NC} (PID $DF_PID)"
     fi
-
-    echo -e "${GREEN}✓${NC} (PID $AGENT_PID)"
 fi
 
-# Wait for frontend
-printf "${GREEN}[CAAL]${NC} Waiting for frontend"
-for i in {1..15}; do
+# Start Docker services
+log "Starting Docker services..."
+docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE up -d $BUILD_FLAG
+
+# Wait for services
+printf "${GREEN}[CAAL]${NC} Waiting for services"
+for i in {1..10}; do
     if curl -s http://localhost:3000 > /dev/null 2>&1; then
         break
     fi
@@ -395,11 +343,12 @@ echo -e " ${GREEN}✓${NC}"
 
 echo ""
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  CAAL is ready! (Native Apple Silicon Mode)${NC}"
+echo -e "${BOLD}  CAAL is ready!${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  ${BOLD}GPU Acceleration:${NC}  PyTorch MPS (DeepFilterNet)"
-echo -e "  ${BOLD}                    ${NC}  MLX (Whisper STT, Kokoro TTS)"
+echo -e "  ${BOLD}Native GPU Services:${NC}"
+echo -e "    mlx-audio (STT/TTS):  http://localhost:8001"
+echo -e "    DeepFilter (noise):   http://localhost:8002"
 echo ""
 if [ -n "${HTTPS_DOMAIN}" ]; then
     echo -e "  ${BOLD}Web interface:${NC}  https://${HTTPS_DOMAIN}:3443"
@@ -409,6 +358,7 @@ fi
 echo -e "  ${BOLD}Stop command:${NC}   ./start-apple.sh --stop"
 echo ""
 echo -e "  ${BOLD}Logs:${NC}"
-echo -e "    mlx-audio:  tail -f $MLX_LOG_FILE"
-echo -e "    agent:      tail -f $AGENT_LOG_FILE"
+echo -e "    mlx-audio:   tail -f $MLX_LOG_FILE"
+echo -e "    deepfilter:  tail -f $DF_LOG_FILE"
+echo -e "    agent:       docker compose -f docker-compose.apple.yaml logs -f agent"
 echo ""
