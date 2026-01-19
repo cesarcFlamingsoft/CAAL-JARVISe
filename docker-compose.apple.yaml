@@ -15,7 +15,11 @@
 #      brew install ollama
 #      ollama pull ministral-3:8b
 #
-# Usage:
+# Usage (recommended - native GPU acceleration):
+#   ./start-apple.sh
+#   This runs agent natively with MPS GPU for DeepFilterNet noise suppression
+#
+# Usage (Docker-only mode - no GPU for noise suppression):
 #   docker compose -f docker-compose.apple.yaml up -d
 #   Access: http://localhost:3000
 #

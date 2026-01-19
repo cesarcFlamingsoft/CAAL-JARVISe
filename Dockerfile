@@ -36,8 +36,9 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev --no-editable
 
 # Install DeepFilterNet for noise suppression (optional but recommended)
-# This adds ~100MB but significantly improves voice recognition in noisy environments
-RUN uv pip install --no-cache deepfilternet>=0.5.0
+# This adds ~500MB (PyTorch CPU) but significantly improves voice recognition in noisy environments
+RUN uv pip install --no-cache torch --index-url https://download.pytorch.org/whl/cpu && \
+    uv pip install --no-cache deepfilternet>=0.5.0
 
 # ============================================================================
 # Production image
