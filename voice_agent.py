@@ -154,11 +154,11 @@ def get_runtime_settings() -> dict:
         # Energy gate settings (filter quiet/distant sounds like TV)
         "energy_gate_enabled": settings.get("energy_gate_enabled", True),  # On by default
         "energy_gate_threshold_db": settings.get("energy_gate_threshold_db", -35.0),
-        # TV rejection settings (advanced spectral/temporal analysis)
-        "tv_rejection_enabled": settings.get("tv_rejection_enabled", True),  # On by default
-        "tv_rejection_min_crest_factor": settings.get("tv_rejection_min_crest_factor", 1.8),
-        "tv_rejection_min_liveness": settings.get("tv_rejection_min_liveness", 0.25),
-        "tv_rejection_consecutive_passes": settings.get("tv_rejection_consecutive_passes", 3),
+        # TV rejection settings (advanced spectral/temporal analysis) - disabled by default
+        "tv_rejection_enabled": settings.get("tv_rejection_enabled", False),  # Off until tuned
+        "tv_rejection_min_crest_factor": settings.get("tv_rejection_min_crest_factor", 1.5),
+        "tv_rejection_min_liveness": settings.get("tv_rejection_min_liveness", 0.15),
+        "tv_rejection_consecutive_passes": settings.get("tv_rejection_consecutive_passes", 4),
     }
 
 
@@ -552,12 +552,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         tv_rejection_filter = create_tv_rejection_filter(runtime)
         if tv_rejection_filter:
             logger.info(
-                f"  TV rejection: ENABLED (crest>={runtime.get('tv_rejection_min_crest_factor', 1.8)}, "
-                f"liveness>={runtime.get('tv_rejection_min_liveness', 0.25)}, "
-                f"passes>={runtime.get('tv_rejection_consecutive_passes', 3)})"
+                f"  TV rejection: ENABLED (crest>={runtime.get('tv_rejection_min_crest_factor', 1.5)}, "
+                f"liveness>={runtime.get('tv_rejection_min_liveness', 0.15)}, "
+                f"passes>={runtime.get('tv_rejection_consecutive_passes', 4)})"
             )
         else:
-            logger.info("  TV rejection: disabled")
+            logger.info("  TV rejection: disabled (enable in settings to filter TV audio)")
 
         stt_instance = WakeWordGatedSTT(
             inner_stt=base_stt,

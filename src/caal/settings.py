@@ -95,11 +95,11 @@ DEFAULT_SETTINGS = {
     # Energy gate (filter quiet/distant sounds like TV)
     "energy_gate_enabled": True,  # On by default - filters TV and distant sounds
     "energy_gate_threshold_db": -35.0,  # RMS threshold in dB (-40=quiet room, -30=speech)
-    # TV rejection (advanced spectral/temporal analysis)
-    "tv_rejection_enabled": True,  # On by default - rejects TV audio patterns
-    "tv_rejection_min_crest_factor": 1.8,  # Min peak/RMS ratio (TV ~1.5-2.5, speech ~3-6, lowered for safety)
-    "tv_rejection_min_liveness": 0.25,  # Min liveness score (0-1, lower = more permissive)
-    "tv_rejection_consecutive_passes": 3,  # Require N consecutive passes (more = stricter)
+    # TV rejection (advanced spectral/temporal analysis) - DISABLED by default until tuned
+    "tv_rejection_enabled": False,  # Off by default - needs tuning per environment
+    "tv_rejection_min_crest_factor": 1.5,  # Min peak/RMS ratio (very permissive)
+    "tv_rejection_min_liveness": 0.15,  # Min liveness score (very permissive)
+    "tv_rejection_consecutive_passes": 4,  # Require N consecutive passes
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }

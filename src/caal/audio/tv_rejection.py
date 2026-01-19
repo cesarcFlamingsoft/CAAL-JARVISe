@@ -34,8 +34,8 @@ class TVRejectionConfig:
 
     # Crest factor (peak-to-RMS ratio) - TV audio is compressed
     # Note: Live speech typically 3-6, TV typically 1.5-2.5
-    # Using 1.8 to be permissive - only reject obviously compressed audio
-    min_crest_factor: float = 1.8
+    # Using 1.5 to be very permissive - only reject heavily compressed audio
+    min_crest_factor: float = 1.5
 
     # Spectral analysis
     min_spectral_rolloff_hz: float = 3000.0  # TV often bandwidth-limited
@@ -46,11 +46,11 @@ class TVRejectionConfig:
     silence_reset_sec: float = 1.0  # Reset continuity after silence
 
     # Liveness scoring thresholds
-    # Using 0.25 to be permissive - only reject obviously TV-like audio
-    min_liveness_score: float = 0.25  # Minimum score to pass (0-1)
+    # Using 0.15 to be very permissive - only reject obviously TV-like audio
+    min_liveness_score: float = 0.15  # Minimum score to pass (0-1)
 
     # Buffered detection (require multiple consecutive passes)
-    required_consecutive_passes: int = 3  # Frames that must pass
+    required_consecutive_passes: int = 4  # Frames that must pass
     analysis_window_sec: float = 0.5  # Window for spectral analysis
 
     # Debug logging
@@ -343,9 +343,9 @@ def create_tv_rejection_filter(settings: dict) -> TVRejectionFilter | None:
     config = TVRejectionConfig(
         enabled=True,
         energy_threshold_db=settings.get("energy_gate_threshold_db", -35.0),
-        min_crest_factor=settings.get("tv_rejection_min_crest_factor", 1.8),
-        min_liveness_score=settings.get("tv_rejection_min_liveness", 0.25),
-        required_consecutive_passes=settings.get("tv_rejection_consecutive_passes", 3),
+        min_crest_factor=settings.get("tv_rejection_min_crest_factor", 1.5),
+        min_liveness_score=settings.get("tv_rejection_min_liveness", 0.15),
+        required_consecutive_passes=settings.get("tv_rejection_consecutive_passes", 4),
         debug_logging=settings.get("tv_rejection_debug", False),
     )
 
