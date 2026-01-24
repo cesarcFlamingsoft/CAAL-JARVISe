@@ -95,11 +95,31 @@ DEFAULT_SETTINGS = {
     # Energy gate (filter quiet/distant sounds like TV)
     "energy_gate_enabled": True,  # On by default - filters TV and distant sounds
     "energy_gate_threshold_db": -35.0,  # RMS threshold in dB (-40=quiet room, -30=speech)
-    # TV rejection (advanced spectral/temporal analysis) - DISABLED by default until tuned
-    "tv_rejection_enabled": False,  # Off by default - needs tuning per environment
-    "tv_rejection_min_crest_factor": 1.5,  # Min peak/RMS ratio (very permissive)
-    "tv_rejection_min_liveness": 0.15,  # Min liveness score (very permissive)
-    "tv_rejection_consecutive_passes": 4,  # Require N consecutive passes
+    # TV/Media rejection (advanced spectral/temporal analysis)
+    "tv_rejection_enabled": True,  # Filters TV, radio, video playback
+    "tv_rejection_min_crest_factor": 1.8,  # Min peak/RMS ratio (stricter filtering)
+    "tv_rejection_min_liveness": 0.20,  # Min liveness score (stricter filtering)
+    "tv_rejection_consecutive_passes": 3,  # Require N consecutive passes
+    "tv_rejection_debug": False,  # Enable debug logging for tuning
+    # Media noise filter (music/radio/video detection)
+    "media_noise_filter_enabled": True,  # Master switch for media detection
+    "media_noise_music_detection": True,  # Detect and reject music (radio/video)
+    "media_noise_stereo_detection": True,  # Detect wide stereo (media vs live speech)
+    "media_noise_codec_detection": True,  # Detect codec compression artifacts
+    "media_noise_max_harmonic_ratio": 0.7,  # Max harmonic ratio before rejecting as music
+    "media_noise_max_rhythm_regularity": 0.8,  # Max rhythm regularity before rejecting
+    "media_noise_min_stereo_correlation": 0.3,  # Min correlation (live speech is mono-like)
+    # Playback voice detection (video with voice)
+    "media_noise_playback_voice_detection": True,  # Detect video/podcast voice content
+    "media_noise_min_room_reverb": 0.05,  # Min room acoustic ratio
+    "media_noise_max_spectral_consistency": 0.85,  # Max spectral consistency
+    "media_noise_min_pitch_variation": 0.02,  # Min natural pitch variation
+    # Speaker recognition (voice biometrics like Alexa/Google)
+    "speaker_recognition_enabled": False,  # Requires resemblyzer package
+    "speaker_recognition_threshold": 0.75,  # Verification threshold (0.7-0.85)
+    "speaker_recognition_min_duration": 1.0,  # Min audio duration for verification
+    "speaker_recognition_required": False,  # Only activate for recognized speakers
+    "speaker_recognition_profiles_path": "config/speaker_profiles.json",  # Path to store profiles
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
 }

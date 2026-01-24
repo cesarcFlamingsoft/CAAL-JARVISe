@@ -1183,3 +1183,224 @@ async def prewarm() -> PrewarmResponse:
         status="started",
         message="Model preloading started in background",
     )
+
+
+# =============================================================================
+# Speaker Recognition Endpoints
+# =============================================================================
+
+
+class SpeakerInfo(BaseModel):
+    """Information about an enrolled speaker."""
+
+    name: str
+    enrollment_samples: int
+    created_at: float
+
+
+class SpeakersListResponse(BaseModel):
+    """Response for GET /speakers endpoint."""
+
+    speakers: list[SpeakerInfo]
+
+
+class EnrollSpeakerRequest(BaseModel):
+    """Request body for POST /speakers endpoint."""
+
+    name: str
+    audio_data: list[str]  # List of base64-encoded WAV audio samples
+
+
+class EnrollSpeakerResponse(BaseModel):
+    """Response for POST /speakers endpoint."""
+
+    success: bool
+    message: str
+    name: str | None = None
+
+
+class RemoveSpeakerResponse(BaseModel):
+    """Response for DELETE /speakers endpoint."""
+
+    success: bool
+    message: str
+
+
+# Global speaker recognition instance (lazy-loaded)
+_speaker_recognition = None
+
+
+def get_speaker_recognition():
+    """Get or create the speaker recognition instance."""
+    global _speaker_recognition
+
+    if _speaker_recognition is None:
+        settings = settings_module.load_settings()
+        from .audio.speaker_recognition import create_speaker_recognition
+        _speaker_recognition = create_speaker_recognition(settings)
+
+    return _speaker_recognition
+
+
+@app.get("/speakers", response_model=SpeakersListResponse)
+async def list_speakers() -> SpeakersListResponse:
+    """List all enrolled speakers.
+
+    Returns:
+        SpeakersListResponse with list of enrolled speakers
+    """
+    recognition = get_speaker_recognition()
+
+    if recognition is None:
+        return SpeakersListResponse(speakers=[])
+
+    # Access internal profiles to get full info
+    speakers = []
+    for name, profile in recognition._profiles.items():
+        speakers.append(
+            SpeakerInfo(
+                name=name,
+                enrollment_samples=profile.enrollment_samples,
+                created_at=profile.created_at,
+            )
+        )
+
+    return SpeakersListResponse(speakers=speakers)
+
+
+@app.post("/speakers", response_model=EnrollSpeakerResponse)
+async def enroll_speaker(req: EnrollSpeakerRequest) -> EnrollSpeakerResponse:
+    """Enroll a new speaker with voice samples.
+
+    Args:
+        req: EnrollSpeakerRequest with name and base64 audio data
+
+    Returns:
+        EnrollSpeakerResponse with success status
+    """
+    import base64
+    import io
+    import wave
+
+    import numpy as np
+
+    recognition = get_speaker_recognition()
+
+    if recognition is None:
+        return EnrollSpeakerResponse(
+            success=False,
+            message="Speaker recognition is not enabled or resemblyzer is not installed",
+        )
+
+    if not req.name or not req.name.strip():
+        return EnrollSpeakerResponse(
+            success=False,
+            message="Speaker name is required",
+        )
+
+    if not req.audio_data or len(req.audio_data) == 0:
+        return EnrollSpeakerResponse(
+            success=False,
+            message="At least one audio sample is required",
+        )
+
+    # Decode audio samples
+    audio_samples = []
+    for i, b64_audio in enumerate(req.audio_data):
+        try:
+            # Remove data URL prefix if present
+            if "," in b64_audio:
+                b64_audio = b64_audio.split(",")[1]
+
+            audio_bytes = base64.b64decode(b64_audio)
+
+            # Parse WAV file
+            with io.BytesIO(audio_bytes) as wav_io:
+                with wave.open(wav_io, "rb") as wav_file:
+                    sample_rate = wav_file.getframerate()
+                    n_frames = wav_file.getnframes()
+                    audio_data = wav_file.readframes(n_frames)
+
+                    # Convert to numpy array
+                    if wav_file.getsampwidth() == 2:
+                        audio = np.frombuffer(audio_data, dtype=np.int16)
+                    else:
+                        audio = np.frombuffer(audio_data, dtype=np.uint8).astype(np.int16)
+
+                    # Convert to float32 and resample to 16kHz if needed
+                    audio = audio.astype(np.float32) / 32768.0
+
+                    # Handle stereo by averaging channels
+                    if wav_file.getnchannels() == 2:
+                        audio = audio.reshape(-1, 2).mean(axis=1)
+
+                    # Resample to 16kHz if needed
+                    if sample_rate != 16000:
+                        # Simple resampling using numpy
+                        ratio = 16000 / sample_rate
+                        new_length = int(len(audio) * ratio)
+                        indices = np.linspace(0, len(audio) - 1, new_length)
+                        audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+
+                    audio_samples.append(audio)
+                    logger.info(f"Decoded audio sample {i + 1}: {len(audio)} samples at 16kHz")
+
+        except Exception as e:
+            logger.warning(f"Failed to decode audio sample {i + 1}: {e}")
+            continue
+
+    if not audio_samples:
+        return EnrollSpeakerResponse(
+            success=False,
+            message="Failed to decode any audio samples",
+        )
+
+    # Enroll the speaker
+    name = req.name.strip()
+    success = recognition.enroll_speaker(name, audio_samples, update_existing=True)
+
+    if success:
+        logger.info(f"Enrolled speaker '{name}' with {len(audio_samples)} samples")
+        return EnrollSpeakerResponse(
+            success=True,
+            message=f"Enrolled '{name}' with {len(audio_samples)} sample(s)",
+            name=name,
+        )
+    else:
+        return EnrollSpeakerResponse(
+            success=False,
+            message="Failed to enroll speaker",
+        )
+
+
+@app.delete("/speakers/{name}", response_model=RemoveSpeakerResponse)
+async def remove_speaker(name: str) -> RemoveSpeakerResponse:
+    """Remove an enrolled speaker.
+
+    Args:
+        name: Speaker name to remove
+
+    Returns:
+        RemoveSpeakerResponse with success status
+    """
+    recognition = get_speaker_recognition()
+
+    if recognition is None:
+        return RemoveSpeakerResponse(
+            success=False,
+            message="Speaker recognition is not enabled",
+        )
+
+    success = recognition.remove_speaker(name)
+
+    if success:
+        logger.info(f"Removed speaker '{name}'")
+        return RemoveSpeakerResponse(
+            success=True,
+            message=f"Removed speaker '{name}'",
+        )
+    else:
+        return RemoveSpeakerResponse(
+            success=False,
+            message=f"Speaker '{name}' not found",
+        )

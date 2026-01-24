@@ -55,7 +55,7 @@ from caal.integrations import (
 from caal.llm import llm_node, ToolDataCache
 from caal.stt import WakeWordGatedSTT
 from caal.conversation import AdaptiveEndpointer
-from caal.audio import NoiseSuppressedSTT, AudioEnergyGate, create_tv_rejection_filter
+from caal.audio import NoiseSuppressedSTT, AudioEnergyGate, create_tv_rejection_filter, create_speaker_recognition
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
 # so we use non-propagating loggers with our own handler to avoid duplicates
@@ -559,6 +559,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         else:
             logger.info("  TV rejection: disabled (enable in settings to filter TV audio)")
 
+        # Create speaker recognition for voice biometrics
+        speaker_recognition = create_speaker_recognition(all_settings)
+        if speaker_recognition:
+            enrolled_count = len(speaker_recognition.list_speakers())
+            logger.info(
+                f"  Speaker recognition: ENABLED "
+                f"(threshold={speaker_recognition.config.verification_threshold}, "
+                f"enrolled={enrolled_count})"
+            )
+        else:
+            logger.info("  Speaker recognition: disabled (enable in settings)")
+
         stt_instance = WakeWordGatedSTT(
             inner_stt=base_stt,
             model_path=wake_word_model,
@@ -568,6 +580,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             on_state_changed=on_state_changed,
             energy_gate=energy_gate,
             tv_rejection_filter=tv_rejection_filter,
+            speaker_recognition=speaker_recognition,
         )
         logger.info(f"  Wake word: ENABLED (model={wake_word_model}, threshold={wake_word_threshold})")
     else:

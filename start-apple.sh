@@ -214,6 +214,21 @@ setup_deepfilter() {
     log "✓ Noise suppression ready"
 }
 
+setup_speaker_recognition() {
+    log "Setting up speaker recognition..."
+
+    # Install resemblyzer for voice biometrics (like Alexa/Google Voice Match)
+    if "$MLX_VENV/bin/pip" install -q resemblyzer 2>/dev/null; then
+        if "$MLX_PYTHON" -c "from resemblyzer import VoiceEncoder" 2>/dev/null; then
+            log "✓ Speaker recognition available (resemblyzer)"
+        else
+            warn "Resemblyzer import failed, speaker recognition disabled"
+        fi
+    else
+        warn "Resemblyzer installation failed, speaker recognition disabled"
+    fi
+}
+
 banner
 log "Starting CAAL..."
 echo ""
@@ -244,6 +259,14 @@ if ! "$MLX_PYTHON" -c "import df" 2>/dev/null; then
     setup_deepfilter
 else
     printf "${GREEN}[CAAL]${NC} Checking DeepFilterNet... "
+    echo -e "${GREEN}✓${NC}"
+fi
+
+# Check/setup Speaker Recognition (in same venv as mlx-audio)
+if ! "$MLX_PYTHON" -c "from resemblyzer import VoiceEncoder" 2>/dev/null; then
+    setup_speaker_recognition
+else
+    printf "${GREEN}[CAAL]${NC} Checking Speaker Recognition... "
     echo -e "${GREEN}✓${NC}"
 fi
 

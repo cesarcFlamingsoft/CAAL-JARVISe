@@ -36,6 +36,7 @@ from livekit.plugins import silero
 from openwakeword.model import Model as OWWModel
 
 from caal.audio import AudioEnergyGate, TVRejectionFilter
+from caal.audio.speaker_recognition import SpeakerRecognition, VerificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class WakeWordGatedSTT(STT):
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None = None,
         energy_gate: AudioEnergyGate | None = None,
         tv_rejection_filter: TVRejectionFilter | None = None,
+        speaker_recognition: SpeakerRecognition | None = None,
     ) -> None:
         """Initialize the wake word gated STT.
 
@@ -86,6 +88,7 @@ class WakeWordGatedSTT(STT):
             on_state_changed: Callback when state changes (for publishing to clients).
             energy_gate: Optional energy gate to filter quiet/distant sounds (TV).
             tv_rejection_filter: Optional TV rejection filter for advanced audio analysis.
+            speaker_recognition: Optional speaker recognition for voice biometrics.
         """
         # Override capabilities to indicate we support streaming
         # Even though the inner STT may not support streaming, WE provide streaming
@@ -101,6 +104,7 @@ class WakeWordGatedSTT(STT):
         self._on_state_changed = on_state_changed
         self._energy_gate = energy_gate
         self._tv_rejection_filter = tv_rejection_filter
+        self._speaker_recognition = speaker_recognition
         self._oww: OWWModel | None = None
         self._active_stream: WakeWordGatedStream | None = None
 
@@ -156,6 +160,7 @@ class WakeWordGatedSTT(STT):
             on_state_changed=self._on_state_changed,
             energy_gate=self._energy_gate,
             tv_rejection_filter=self._tv_rejection_filter,
+            speaker_recognition=self._speaker_recognition,
             language=language,
             conn_options=conn_options,
         )
@@ -198,6 +203,7 @@ class WakeWordGatedStream(RecognizeStream):
         on_state_changed: Callable[[WakeWordState], Awaitable[None]] | None,
         energy_gate: AudioEnergyGate | None,
         tv_rejection_filter: TVRejectionFilter | None,
+        speaker_recognition: SpeakerRecognition | None,
         language: NotGivenOr[str],
         conn_options: APIConnectOptions,
     ) -> None:
@@ -215,6 +221,7 @@ class WakeWordGatedStream(RecognizeStream):
         self._on_state_changed = on_state_changed
         self._energy_gate = energy_gate
         self._tv_rejection_filter = tv_rejection_filter
+        self._speaker_recognition = speaker_recognition
         self._language = language
         self._conn_options = conn_options
 
@@ -224,6 +231,9 @@ class WakeWordGatedStream(RecognizeStream):
         self._inner_stream: RecognizeStream | None = None
         self._agent_busy: bool = False  # True while agent is thinking/speaking
         self._speech_active: bool = False  # True while VAD detects speech
+
+        # Speaker recognition audio buffer (accumulates during speech)
+        self._speaker_audio_buffer: list[np.ndarray] = []
 
     def set_agent_busy(self, busy: bool) -> None:
         """Set agent busy state - pauses silence timer while busy, resets when done."""
@@ -285,6 +295,13 @@ class WakeWordGatedStream(RecognizeStream):
                     self._inner_stream.push_frame(frame)
                     vad_stream.push_frame(frame)
 
+                    # Accumulate audio for speaker recognition (if enabled)
+                    if self._speaker_recognition is not None and self._speech_active:
+                        audio_data = np.frombuffer(frame.data, dtype=np.int16)
+                        if frame.num_channels > 1:
+                            audio_data = audio_data[::frame.num_channels]
+                        self._speaker_audio_buffer.append(audio_data)
+
             # End input when done
             self._inner_stream.end_input()
             vad_stream.end_input()
@@ -307,11 +324,17 @@ class WakeWordGatedStream(RecognizeStream):
                 if event.type == VADEventType.START_OF_SPEECH:
                     self._speech_active = True
                     self._last_speech_time = time.time()
+                    # Clear speaker audio buffer for new utterance
+                    self._speaker_audio_buffer.clear()
                     logger.debug("VAD: speech started")
                 elif event.type == VADEventType.END_OF_SPEECH:
                     self._speech_active = False
                     self._last_speech_time = time.time()
                     logger.debug("VAD: speech ended")
+
+                    # Run speaker verification if enabled and we have audio
+                    if self._speaker_recognition is not None and self._speaker_audio_buffer:
+                        await self._verify_speaker()
 
         async def _monitor_silence() -> None:
             """Monitor for silence timeout to return to listening mode."""
@@ -416,3 +439,45 @@ class WakeWordGatedStream(RecognizeStream):
                         self._tv_rejection_filter.reset()
 
                     return
+
+    async def _verify_speaker(self) -> None:
+        """Run speaker verification on accumulated audio."""
+        if not self._speaker_audio_buffer:
+            return
+
+        try:
+            # Combine all audio chunks
+            audio = np.concatenate(self._speaker_audio_buffer)
+            self._speaker_audio_buffer.clear()
+
+            # Check minimum duration (need at least 1 second for reliable verification)
+            duration_sec = len(audio) / self.OWW_SAMPLE_RATE
+            if duration_sec < 1.0:
+                logger.debug(f"SPEAKER RECOGNITION: Audio too short ({duration_sec:.1f}s < 1s), skipping")
+                return
+
+            # Run verification
+            result = self._speaker_recognition.verify_speaker(audio)
+
+            # Log the result prominently
+            if result.is_recognized:
+                logger.info(
+                    f"🎤 SPEAKER RECOGNIZED: {result.speaker_name} "
+                    f"(confidence: {result.confidence:.2f})"
+                )
+            else:
+                # Log all scores if we have enrolled speakers
+                if result.all_scores:
+                    scores_str = ", ".join(
+                        f"{name}={score:.2f}" for name, score in result.all_scores.items()
+                    )
+                    logger.info(
+                        f"🎤 SPEAKER NOT RECOGNIZED: best match confidence {result.confidence:.2f} "
+                        f"(threshold: {self._speaker_recognition.config.verification_threshold}) | "
+                        f"Scores: {scores_str}"
+                    )
+                else:
+                    logger.info("🎤 SPEAKER RECOGNITION: No speakers enrolled")
+
+        except Exception as e:
+            logger.warning(f"Speaker verification failed: {e}")

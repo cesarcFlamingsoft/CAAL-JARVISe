@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     gosu \
+    gcc \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast dependency management
@@ -39,6 +41,10 @@ RUN uv sync --frozen --no-dev --no-editable
 # This adds ~500MB (PyTorch CPU) but significantly improves voice recognition in noisy environments
 RUN uv pip install --no-cache torch --index-url https://download.pytorch.org/whl/cpu && \
     uv pip install --no-cache deepfilternet>=0.5.0
+
+# Install resemblyzer for speaker recognition (voice biometrics like Alexa/Google Voice Match)
+# Also install setuptools for webrtcvad's pkg_resources dependency
+RUN uv pip install --no-cache setuptools resemblyzer>=0.1.3
 
 # ============================================================================
 # Production image

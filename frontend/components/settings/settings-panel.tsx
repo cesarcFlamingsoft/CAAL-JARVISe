@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, CircleNotch, FloppyDisk, X } from '@phosphor-icons/react/dist/ssr';
+import {
+  Check,
+  CircleNotch,
+  FloppyDisk,
+  Microphone,
+  MicrophoneSlash,
+  Trash,
+  UserPlus,
+  X,
+} from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 
 // =============================================================================
@@ -49,11 +58,27 @@ interface Settings {
   // Energy gate
   energy_gate_enabled: boolean;
   energy_gate_threshold_db: number;
+  // TV/Media rejection
+  tv_rejection_enabled: boolean;
+  tv_rejection_min_liveness: number;
+  media_noise_music_detection: boolean;
+  media_noise_stereo_detection: boolean;
+  media_noise_playback_voice_detection: boolean;
+  // Speaker recognition
+  speaker_recognition_enabled: boolean;
+  speaker_recognition_threshold: number;
+  speaker_recognition_required: boolean;
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
 
-type TabId = 'agent' | 'prompt' | 'providers' | 'llm' | 'integrations' | 'wake';
+type TabId = 'agent' | 'prompt' | 'providers' | 'llm' | 'audio' | 'integrations' | 'wake';
+
+interface SpeakerInfo {
+  name: string;
+  enrollment_samples: number;
+  created_at: number;
+}
 
 // =============================================================================
 // Constants
@@ -92,6 +117,16 @@ const DEFAULT_SETTINGS: Settings = {
   noise_suppression_atten_db: 100,
   energy_gate_enabled: true,
   energy_gate_threshold_db: -35,
+  // TV/Media rejection
+  tv_rejection_enabled: true,
+  tv_rejection_min_liveness: 0.2,
+  media_noise_music_detection: true,
+  media_noise_stereo_detection: true,
+  media_noise_playback_voice_detection: true,
+  // Speaker recognition
+  speaker_recognition_enabled: false,
+  speaker_recognition_threshold: 0.75,
+  speaker_recognition_required: false,
 };
 
 const DEFAULT_PROMPT = `# Voice Assistant
@@ -109,6 +144,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'prompt', label: 'Prompt' },
   { id: 'providers', label: 'Providers' },
   { id: 'llm', label: 'LLM Settings' },
+  { id: 'audio', label: 'Audio Filter' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'wake', label: 'Wake Word' },
 ];
@@ -164,6 +200,17 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   });
   const [hassAgents, setHassAgents] = useState<{ id: string; name: string }[]>([]);
 
+  // Speaker enrollment state
+  const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
+  const [speakersLoading, setSpeakersLoading] = useState(false);
+  const [newSpeakerName, setNewSpeakerName] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioSamples, setAudioSamples] = useState<string[]>([]);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+
   // ---------------------------------------------------------------------------
   // Load settings
   // ---------------------------------------------------------------------------
@@ -218,6 +265,231 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       loadSettings();
     }
   }, [isOpen, loadSettings]);
+
+  // ---------------------------------------------------------------------------
+  // Speaker Management
+  // ---------------------------------------------------------------------------
+
+  const loadSpeakers = useCallback(async () => {
+    if (!settings.speaker_recognition_enabled) return;
+
+    setSpeakersLoading(true);
+    try {
+      const res = await fetch('/api/speakers');
+      if (res.ok) {
+        const data = await res.json();
+        setSpeakers(data.speakers || []);
+      }
+    } catch (err) {
+      console.error('Failed to load speakers:', err);
+    } finally {
+      setSpeakersLoading(false);
+    }
+  }, [settings.speaker_recognition_enabled]);
+
+  useEffect(() => {
+    if (isOpen && settings.speaker_recognition_enabled) {
+      loadSpeakers();
+    }
+  }, [isOpen, settings.speaker_recognition_enabled, loadSpeakers]);
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+
+        // Convert WebM to WAV using AudioContext
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        const arrayBuffer = await audioBlob.arrayBuffer();
+
+        try {
+          const audioContext = new AudioContext({ sampleRate: 16000 });
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+          // Convert to WAV
+          const wavBuffer = audioBufferToWav(audioBuffer);
+          const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+
+          // Convert to base64
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result as string;
+            setAudioSamples((prev) => [...prev, base64]);
+          };
+          reader.readAsDataURL(wavBlob);
+
+          audioContext.close();
+        } catch (err) {
+          console.error('Failed to process audio:', err);
+          setEnrollmentError('Failed to process audio recording');
+        }
+      };
+
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+      setRecordingTime(0);
+      setEnrollmentError(null);
+      recorder.start();
+
+      // Update recording time every second
+      const interval = setInterval(() => {
+        setRecordingTime((t) => t + 1);
+      }, 1000);
+
+      // Auto-stop after 10 seconds
+      setTimeout(() => {
+        clearInterval(interval);
+        if (recorder.state === 'recording') {
+          recorder.stop();
+          setIsRecording(false);
+        }
+      }, 10000);
+
+      // Store interval for cleanup
+      (recorder as MediaRecorder & { _interval?: NodeJS.Timeout })._interval = interval;
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      setEnrollmentError('Microphone access denied');
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      const recorder = mediaRecorder as MediaRecorder & { _interval?: NodeJS.Timeout };
+      if (recorder._interval) {
+        clearInterval(recorder._interval);
+      }
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  }, [mediaRecorder]);
+
+  const enrollSpeaker = useCallback(async () => {
+    if (!newSpeakerName.trim()) {
+      setEnrollmentError('Please enter a speaker name');
+      return;
+    }
+    if (audioSamples.length === 0) {
+      setEnrollmentError('Please record at least one audio sample');
+      return;
+    }
+
+    setEnrolling(true);
+    setEnrollmentError(null);
+
+    try {
+      const res = await fetch('/api/speakers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newSpeakerName.trim(),
+          audio_data: audioSamples,
+        }),
+      });
+
+      const result = await res.json();
+
+      if (result.success) {
+        setNewSpeakerName('');
+        setAudioSamples([]);
+        loadSpeakers();
+      } else {
+        setEnrollmentError(result.message || 'Failed to enroll speaker');
+      }
+    } catch (err) {
+      console.error('Failed to enroll speaker:', err);
+      setEnrollmentError('Failed to connect to server');
+    } finally {
+      setEnrolling(false);
+    }
+  }, [newSpeakerName, audioSamples, loadSpeakers]);
+
+  const removeSpeaker = useCallback(
+    async (name: string) => {
+      try {
+        const res = await fetch(`/api/speakers/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        });
+
+        if (res.ok) {
+          loadSpeakers();
+        }
+      } catch (err) {
+        console.error('Failed to remove speaker:', err);
+      }
+    },
+    [loadSpeakers]
+  );
+
+  // Helper function to convert AudioBuffer to WAV
+  function audioBufferToWav(audioBuffer: AudioBuffer): ArrayBuffer {
+    const numChannels = 1; // Mono
+    const sampleRate = audioBuffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+
+    const bytesPerSample = bitDepth / 8;
+    const blockAlign = numChannels * bytesPerSample;
+
+    // Get audio data (mono - use first channel or average)
+    let samples: Float32Array;
+    if (audioBuffer.numberOfChannels === 1) {
+      samples = audioBuffer.getChannelData(0);
+    } else {
+      // Average channels for mono
+      const left = audioBuffer.getChannelData(0);
+      const right = audioBuffer.getChannelData(1);
+      samples = new Float32Array(left.length);
+      for (let i = 0; i < left.length; i++) {
+        samples[i] = (left[i] + right[i]) / 2;
+      }
+    }
+
+    const dataLength = samples.length * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataLength);
+    const view = new DataView(buffer);
+
+    // WAV header
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataLength, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // Subchunk1Size
+    view.setUint16(20, format, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataLength, true);
+
+    // Audio data
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+
+    return buffer;
+  }
 
   // ---------------------------------------------------------------------------
   // Test connections
@@ -1243,6 +1515,324 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     </div>
   );
 
+  const renderAudioTab = () => (
+    <div className="space-y-6">
+      {/* TV/Media Rejection */}
+      <div className="overflow-hidden rounded-xl border">
+        <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <span className="font-semibold">TV / Media Rejection</span>
+            <p className="text-muted-foreground text-xs">
+              Filter out TV, radio, and video playback
+            </p>
+          </div>
+          <Toggle
+            enabled={settings.tv_rejection_enabled}
+            onToggle={() =>
+              setSettings({ ...settings, tv_rejection_enabled: !settings.tv_rejection_enabled })
+            }
+          />
+        </div>
+
+        {settings.tv_rejection_enabled && (
+          <div className="space-y-4 p-4">
+            <p className="text-muted-foreground text-sm">
+              Uses AI-powered audio analysis to distinguish live speech from media playback,
+              preventing the assistant from responding to TV shows, music, or videos.
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Liveness Threshold</label>
+                <span className="text-muted-foreground text-sm">
+                  {settings.tv_rejection_min_liveness}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="0.5"
+                step="0.05"
+                value={settings.tv_rejection_min_liveness}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    tv_rejection_min_liveness: parseFloat(e.target.value),
+                  })
+                }
+                className="bg-muted accent-primary h-2 w-full cursor-pointer appearance-none rounded-lg"
+              />
+              <div className="text-muted-foreground flex justify-between text-xs">
+                <span>More Permissive</span>
+                <span>Stricter</span>
+              </div>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium">Music Detection</label>
+                  <p className="text-muted-foreground text-xs">Detect radio and video music</p>
+                </div>
+                <Toggle
+                  enabled={settings.media_noise_music_detection}
+                  onToggle={() =>
+                    setSettings({
+                      ...settings,
+                      media_noise_music_detection: !settings.media_noise_music_detection,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium">Stereo Detection</label>
+                  <p className="text-muted-foreground text-xs">
+                    Detect wide stereo (media vs live speech)
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.media_noise_stereo_detection}
+                  onToggle={() =>
+                    setSettings({
+                      ...settings,
+                      media_noise_stereo_detection: !settings.media_noise_stereo_detection,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium">Playback Voice Detection</label>
+                  <p className="text-muted-foreground text-xs">
+                    Detect voices from video/podcast playback
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.media_noise_playback_voice_detection}
+                  onToggle={() =>
+                    setSettings({
+                      ...settings,
+                      media_noise_playback_voice_detection:
+                        !settings.media_noise_playback_voice_detection,
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Speaker Recognition */}
+      <div className="overflow-hidden rounded-xl border">
+        <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <span className="font-semibold">Speaker Recognition</span>
+            <p className="text-muted-foreground text-xs">
+              Voice biometrics like Alexa/Google Voice Match
+            </p>
+          </div>
+          <Toggle
+            enabled={settings.speaker_recognition_enabled}
+            onToggle={() =>
+              setSettings({
+                ...settings,
+                speaker_recognition_enabled: !settings.speaker_recognition_enabled,
+              })
+            }
+          />
+        </div>
+
+        {settings.speaker_recognition_enabled && (
+          <div className="space-y-4 p-4">
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+              <p className="text-sm text-blue-200">
+                <span className="font-semibold">Requires:</span> resemblyzer package
+                <br />
+                <span className="text-xs opacity-70">
+                  Run ./start-apple.sh to auto-install, or: pip install resemblyzer
+                </span>
+              </p>
+            </div>
+
+            {/* Enrolled Speakers List */}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold">Enrolled Speakers</label>
+              {speakersLoading ? (
+                <div className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <CircleNotch className="h-4 w-4 animate-spin" />
+                  Loading speakers...
+                </div>
+              ) : speakers.length === 0 ? (
+                <p className="text-muted-foreground text-sm">
+                  No speakers enrolled yet. Add a speaker below.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {speakers.map((speaker) => (
+                    <div
+                      key={speaker.name}
+                      className="bg-muted/50 flex items-center justify-between rounded-lg px-3 py-2"
+                    >
+                      <div>
+                        <span className="font-medium">{speaker.name}</span>
+                        <span className="text-muted-foreground ml-2 text-xs">
+                          ({speaker.enrollment_samples} sample
+                          {speaker.enrollment_samples !== 1 ? 's' : ''})
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => removeSpeaker(speaker.name)}
+                        className="text-muted-foreground hover:text-red-400"
+                        title="Remove speaker"
+                      >
+                        <Trash className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Enroll New Speaker */}
+            <div className="border-t pt-4">
+              <label className="text-sm font-semibold">Enroll New Speaker</label>
+              <p className="text-muted-foreground mb-3 text-xs">
+                Record 3-10 seconds of speech to create a voice profile
+              </p>
+
+              {enrollmentError && (
+                <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-sm text-red-300">
+                  {enrollmentError}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Speaker name"
+                  value={newSpeakerName}
+                  onChange={(e) => setNewSpeakerName(e.target.value)}
+                  className="bg-muted border-input w-full rounded-lg border px-3 py-2 text-sm"
+                />
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={isRecording ? stopRecording : startRecording}
+                    disabled={enrolling}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                      isRecording
+                        ? 'bg-red-500 text-white hover:bg-red-600'
+                        : 'bg-primary text-primary-foreground hover:bg-primary/90'
+                    }`}
+                  >
+                    {isRecording ? (
+                      <>
+                        <MicrophoneSlash className="h-4 w-4" />
+                        Stop ({10 - recordingTime}s)
+                      </>
+                    ) : (
+                      <>
+                        <Microphone className="h-4 w-4" />
+                        Record Sample
+                      </>
+                    )}
+                  </button>
+
+                  {audioSamples.length > 0 && (
+                    <span className="text-muted-foreground text-sm">
+                      {audioSamples.length} sample{audioSamples.length !== 1 ? 's' : ''} recorded
+                    </span>
+                  )}
+                </div>
+
+                {audioSamples.length > 0 && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={enrollSpeaker}
+                      disabled={enrolling || !newSpeakerName.trim()}
+                      className="bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      {enrolling ? (
+                        <>
+                          <CircleNotch className="h-4 w-4 animate-spin" />
+                          Enrolling...
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="h-4 w-4" />
+                          Enroll Speaker
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setAudioSamples([])}
+                      disabled={enrolling}
+                      className="text-muted-foreground hover:text-foreground text-sm"
+                    >
+                      Clear samples
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Settings */}
+            <div className="space-y-4 border-t pt-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">Verification Threshold</label>
+                  <span className="text-muted-foreground text-sm">
+                    {settings.speaker_recognition_threshold}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="0.9"
+                  step="0.05"
+                  value={settings.speaker_recognition_threshold}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      speaker_recognition_threshold: parseFloat(e.target.value),
+                    })
+                  }
+                  className="bg-muted accent-primary h-2 w-full cursor-pointer appearance-none rounded-lg"
+                />
+                <div className="text-muted-foreground flex justify-between text-xs">
+                  <span>More Lenient (0.5)</span>
+                  <span>Stricter (0.9)</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium">Require Recognized Speaker</label>
+                  <p className="text-muted-foreground text-xs">
+                    Only respond to enrolled speakers
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.speaker_recognition_required}
+                  onToggle={() =>
+                    setSettings({
+                      ...settings,
+                      speaker_recognition_required: !settings.speaker_recognition_required,
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // ---------------------------------------------------------------------------
   // Main render
   // ---------------------------------------------------------------------------
@@ -1303,6 +1893,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 {activeTab === 'prompt' && renderPromptTab()}
                 {activeTab === 'providers' && renderProvidersTab()}
                 {activeTab === 'llm' && renderLLMTab()}
+                {activeTab === 'audio' && renderAudioTab()}
                 {activeTab === 'integrations' && renderIntegrationsTab()}
                 {activeTab === 'wake' && renderWakeWordTab()}
               </>
