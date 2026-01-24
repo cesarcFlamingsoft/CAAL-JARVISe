@@ -106,3 +106,5 @@ mobile/.pub-cache/
 mobile/.pub/
 /.mlx-audio-venv
 mobile/releases/*.apk
+.agent-venv/bin/activate
+/.agent-venv

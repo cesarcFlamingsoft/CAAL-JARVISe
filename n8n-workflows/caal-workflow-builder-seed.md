@@ -224,7 +224,7 @@ Webhook (POST) → Respond Immediately ("On it, I'll let you know when ready")
 {
   "parameters": {
     "method": "POST",
-    "url": "http://{{CAAL_HOST}}/announce",
+    "url": "http://10.0.0.2:8889/announce",
     "sendBody": true,
     "specifyBody": "json",
     "jsonBody": "={\"message\": \"Your task is complete.\"}"
@@ -251,8 +251,8 @@ Webhook (POST) → [Gather data] → Build Context (Code) → SSH gemini-cli →
   "type": "n8n-nodes-base.ssh",
   "credentials": {
     "sshPassword": {
-      "id": "{{SSH_CREDENTIAL_ID}}",
-      "name": "{{SSH_CREDENTIAL_NAME}}"
+      "id": "pYIWOPIdDzyYFIkK",
+      "name": "SSH N8NSERVER"
     }
   }
 }

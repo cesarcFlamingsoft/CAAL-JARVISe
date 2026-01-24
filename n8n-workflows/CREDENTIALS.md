@@ -35,4 +35,7 @@ This file tells the workflow builder (Claude/Gemini) what credentials are availa
 <!-- Update the list below with your actual n8n credential names -->
 
 - **home_assistant** - Home Assistant API
-- **n8n** - n8n API key
+- **n8n** - JARVIS
+- **ssh_server** - 10.0.0.147
+- **google_calendar** - Google Calendar OAuth2
+- **gmail** - Gmail OAuth2

@@ -21,5 +21,9 @@
   "wake_word_model": "models/hey_cal.onnx",
   "wake_word_threshold": 0.5,
   "wake_word_timeout": 3.0,
-  "visualization_type": "jarvis"
+  "visualization_type": "jarvis",
+  "hass_enabled": true,
+  "hass_host": "http://10.0.0.50:8123",
+  "hass_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmNTJlNGIyMWZkMzk0ZGQ4OTNiYTZmOTZiYjk3MmY0OSIsImlhdCI6MTc2ODYxNDk2MCwiZXhwIjoyMDgzOTc0OTYwfQ.mHnHhlxJVzUB6bchUr4kUPrRvc94tYL1RFy4DKWwmyc",
+  "n8n_enabled": true
 }
