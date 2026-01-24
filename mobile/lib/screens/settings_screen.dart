@@ -59,6 +59,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _n8nEnabled = false;
   String _n8nUrl = '';
   String _n8nToken = '';
+  bool _fridayEnabled = false;
+  String _fridayHost = '';
+  String _fridayToken = '';
 
   // LLM settings
   double _temperature = 0.7;
@@ -118,6 +121,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _testingN8n = false;
   bool _n8nConnected = false;
   String? _n8nError;
+  bool _testingFriday = false;
+  bool _fridayConnected = false;
+  String? _fridayError;
 
   // Text controllers
   final _wakeGreetingsController = TextEditingController();
@@ -254,6 +260,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _n8nEnabled = settings['n8n_enabled'] ?? _n8nEnabled;
           _n8nUrl = settings['n8n_url'] ?? _n8nUrl;
           _n8nToken = settings['n8n_token'] ?? _n8nToken;
+          _fridayEnabled = settings['friday_enabled'] ?? _fridayEnabled;
+          _fridayHost = settings['friday_host'] ?? _fridayHost;
+          _fridayToken = settings['friday_token'] ?? _fridayToken;
 
           // LLM settings
           _temperature = (settings['temperature'] ?? _temperature).toDouble();
@@ -564,6 +573,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _testFriday() async {
+    if (_fridayHost.isEmpty || _fridayToken.isEmpty) return;
+    setState(() {
+      _testingFriday = true;
+      _fridayError = null;
+    });
+
+    try {
+      final res = await http.post(
+        Uri.parse('$_webhookUrl/setup/test-friday'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'host': _fridayHost, 'token': _fridayToken}),
+      );
+      final result = jsonDecode(res.body);
+
+      if (result['success'] == true) {
+        setState(() {
+          _fridayConnected = true;
+        });
+      } else {
+        setState(() {
+          _fridayConnected = false;
+          _fridayError = result['error'] ?? 'Connection failed';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _fridayConnected = false;
+        _fridayError = 'Failed to connect';
+      });
+    } finally {
+      setState(() {
+        _testingFriday = false;
+      });
+    }
+  }
+
   String get _currentVoice {
     return _ttsProvider == 'piper' ? _ttsVoicePiper : _ttsVoiceKokoro;
   }
@@ -619,6 +665,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'n8n_enabled': _n8nEnabled,
           'n8n_url': _n8nEnabled ? _getN8nMcpUrl(_n8nUrl) : _n8nUrl,
           'n8n_token': _n8nToken,
+          'friday_enabled': _fridayEnabled,
+          'friday_host': _fridayHost,
+          'friday_token': _fridayToken,
 
           // LLM settings
           'temperature': _temperature,
@@ -1264,6 +1313,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: Text(_n8nError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
                       ),
                     if (_n8nConnected)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4),
+                        child: Text('Connected', style: TextStyle(color: Color(0xFF45997C), fontSize: 12)),
+                      ),
+                  ],
+                ]),
+
+                const SizedBox(height: 12),
+
+                // Friday Assistant
+                _buildCard([
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Friday Assistant', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                      Switch(
+                        value: _fridayEnabled,
+                        onChanged: (v) => setState(() => _fridayEnabled = v),
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_fridayEnabled) ...[
+                    const SizedBox(height: 12),
+                    _buildLabel('Host URL'),
+                    TextFormField(
+                      initialValue: _fridayHost,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _inputDecoration(hint: 'http://10.0.0.55:18789'),
+                      onChanged: (v) => setState(() => _fridayHost = v),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('Clawdbot API endpoint for advanced AI assistance',
+                          style: TextStyle(color: Colors.white38, fontSize: 11)),
+                    ),
+                    const SizedBox(height: 12),
+                    _buildLabel('API Token'),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            initialValue: _fridayToken,
+                            obscureText: true,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: _inputDecoration(hint: 'your_api_token'),
+                            onChanged: (v) => setState(() => _fridayToken = v),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildTestButton(
+                          testing: _testingFriday,
+                          connected: _fridayConnected,
+                          onPressed: _testFriday,
+                        ),
+                      ],
+                    ),
+                    if (_fridayError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_fridayError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                      ),
+                    if (_fridayConnected)
                       const Padding(
                         padding: EdgeInsets.only(top: 4),
                         child: Text('Connected', style: TextStyle(color: Color(0xFF45997C), fontSize: 12)),
