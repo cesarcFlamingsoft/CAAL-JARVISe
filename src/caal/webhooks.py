@@ -1129,6 +1129,61 @@ async def test_n8n(req: TestN8nRequest) -> TestConnectionResponse:
         return TestConnectionResponse(success=False, error=str(e))
 
 
+class TestFridayRequest(BaseModel):
+    """Request body for /setup/test-friday endpoint."""
+
+    host: str
+    token: str
+
+
+@app.post("/setup/test-friday", response_model=TestConnectionResponse)
+async def test_friday(req: TestFridayRequest) -> TestConnectionResponse:
+    """Test Friday (Clawdbot) API connection.
+
+    Args:
+        req: TestFridayRequest with host URL and token
+
+    Returns:
+        TestConnectionResponse with success status
+    """
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {req.token}",
+        }
+
+        async with httpx.AsyncClient() as client:
+            # Test connection by hitting the chat completions endpoint with a simple request
+            response = await client.post(
+                f"{req.host.rstrip('/')}/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": "gpt-4",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+                timeout=10.0,
+            )
+
+            if response.status_code == 401:
+                return TestConnectionResponse(
+                    success=False, error="Invalid API token"
+                )
+            if response.status_code == 403:
+                return TestConnectionResponse(
+                    success=False, error="Access denied"
+                )
+            response.raise_for_status()
+
+            return TestConnectionResponse(success=True)
+    except httpx.ConnectError:
+        return TestConnectionResponse(
+            success=False, error=f"Cannot connect to Friday at {req.host}"
+        )
+    except Exception as e:
+        return TestConnectionResponse(success=False, error=str(e))
+
+
 # =============================================================================
 # Prewarm Endpoint
 # =============================================================================

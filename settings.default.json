@@ -25,5 +25,14 @@
   "hass_enabled": true,
   "hass_host": "http://10.0.0.50:8123",
   "hass_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmNTJlNGIyMWZkMzk0ZGQ4OTNiYTZmOTZiYjk3MmY0OSIsImlhdCI6MTc2ODYxNDk2MCwiZXhwIjoyMDgzOTc0OTYwfQ.mHnHhlxJVzUB6bchUr4kUPrRvc94tYL1RFy4DKWwmyc",
-  "n8n_enabled": true
+  "n8n_enabled": true,
+  "speaker_recognition_enabled": true,
+  "speaker_recognition_threshold": 0.75,
+  "speaker_recognition_min_duration": 1.0,
+  "speaker_recognition_required": false,
+  "speaker_recognition_profiles_path": "config/speaker_profiles.json",
+  "friday_enabled": true,
+  "friday_host": "http://10.0.0.55:18789",
+  "friday_token": "07fb0a62b618f3b6aa8909fd37940fb2fc2bb2353d5da78a",
+  "friday_agent_id": "main"
 }

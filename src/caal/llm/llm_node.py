@@ -367,6 +367,11 @@ async def _discover_tools(agent) -> list[dict] | None:
             f"value={getattr(agent, '_hass_tool_definitions', None)}"
         )
 
+    # Add Friday assistant tools (Clawdbot)
+    if hasattr(agent, "_friday_tool_definitions") and agent._friday_tool_definitions:
+        tools.extend(agent._friday_tool_definitions)
+        logger.info(f"Added {len(agent._friday_tool_definitions)} Friday tools")
+
     # Log all discovered tools
     if tools:
         tool_names = [t["function"]["name"] for t in tools]
@@ -520,6 +525,13 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         logger.info(f"Calling HASS tool: {tool_name}")
         result = await agent._hass_tool_callables[tool_name](**arguments)
         logger.info(f"HASS tool {tool_name} completed")
+        return result
+
+    # Check Friday assistant tools (Clawdbot)
+    if hasattr(agent, "_friday_tool_callables") and tool_name in agent._friday_tool_callables:
+        logger.info(f"Calling Friday tool: {tool_name}")
+        result = await agent._friday_tool_callables[tool_name](**arguments)
+        logger.info(f"Friday tool {tool_name} completed")
         return result
 
     # Check if it's an agent method (decorated on class)

@@ -33,6 +33,11 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
     error: null,
     info: null,
   });
+  const [fridayTest, setFridayTest] = useState<IntegrationTestState>({
+    status: 'idle',
+    error: null,
+    info: null,
+  });
   const [hassAgents, setHassAgents] = useState<HassAgent[]>([]);
 
   // Fetch available Home Assistant agents
@@ -150,6 +155,43 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
       });
     }
   }, [data.n8n_url, data.n8n_token]);
+
+  // Test Friday connection
+  const testFriday = useCallback(async () => {
+    if (!data.friday_host || !data.friday_token) return;
+
+    setFridayTest({ status: 'testing', error: null, info: null });
+
+    try {
+      const response = await fetch('/api/setup/test-friday', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: data.friday_host, token: data.friday_token }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setFridayTest({
+          status: 'success',
+          error: null,
+          info: 'Connected',
+        });
+      } else {
+        setFridayTest({
+          status: 'error',
+          error: result.error || 'Connection failed',
+          info: null,
+        });
+      }
+    } catch {
+      setFridayTest({
+        status: 'error',
+        error: 'Failed to connect',
+        info: null,
+      });
+    }
+  }, [data.friday_host, data.friday_token]);
 
   const StatusIcon = ({ status }: { status: TestStatus }) => {
     switch (status) {
@@ -307,6 +349,57 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
               </div>
               {n8nTest.error && <p className="text-xs text-red-500">{n8nTest.error}</p>}
               {n8nTest.info && <p className="text-xs text-green-500">{n8nTest.info}</p>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Friday Assistant */}
+      <div className="border-input dark:border-muted space-y-3 rounded-lg border p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-medium">Friday Assistant</div>
+            <div className="text-muted-foreground text-xs">Advanced AI assistance via Clawdbot</div>
+          </div>
+          <Toggle
+            enabled={data.friday_enabled}
+            onToggle={() => updateData({ friday_enabled: !data.friday_enabled })}
+          />
+        </div>
+
+        {data.friday_enabled && (
+          <div className="space-y-3 pt-2">
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Host URL</label>
+              <input
+                type="text"
+                value={data.friday_host}
+                onChange={(e) => updateData({ friday_host: e.target.value })}
+                placeholder="http://10.0.0.55:18789"
+                className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">API Token</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={data.friday_token}
+                  onChange={(e) => updateData({ friday_token: e.target.value })}
+                  placeholder="your_api_token"
+                  className="border-input bg-background flex-1 rounded-md border px-3 py-2 text-sm"
+                />
+                <button
+                  onClick={testFriday}
+                  disabled={!data.friday_host || !data.friday_token || fridayTest.status === 'testing'}
+                  className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-md px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  <StatusIcon status={fridayTest.status} />
+                  Test
+                </button>
+              </div>
+              {fridayTest.error && <p className="text-xs text-red-500">{fridayTest.error}</p>}
+              {fridayTest.info && <p className="text-xs text-green-500">{fridayTest.info}</p>}
             </div>
           </div>
         )}

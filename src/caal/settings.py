@@ -122,6 +122,11 @@ DEFAULT_SETTINGS = {
     "speaker_recognition_profiles_path": "config/speaker_profiles.json",  # Path to store profiles
     # Visualization type for frontend
     "visualization_type": "jarvis",  # "jarvis" or "soundbars"
+    # Friday assistant (Clawdbot) integration
+    "friday_enabled": False,
+    "friday_host": "",
+    "friday_token": "",
+    "friday_agent_id": "main",
 }
 
 # Keys that should never be returned via API (security)

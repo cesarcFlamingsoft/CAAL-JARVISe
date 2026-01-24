@@ -221,6 +221,22 @@ setup_speaker_recognition() {
     if "$MLX_VENV/bin/pip" install -q resemblyzer 2>/dev/null; then
         if "$MLX_PYTHON" -c "from resemblyzer import VoiceEncoder" 2>/dev/null; then
             log "✓ Speaker recognition available (resemblyzer)"
+            # Enable speaker recognition in settings.json
+            if [ -f "$SCRIPT_DIR/settings.json" ]; then
+                # Update existing settings.json to enable speaker recognition
+                "$MLX_PYTHON" -c "
+import json
+with open('$SCRIPT_DIR/settings.json', 'r') as f:
+    settings = json.load(f)
+settings['speaker_recognition_enabled'] = True
+with open('$SCRIPT_DIR/settings.json', 'w') as f:
+    json.dump(settings, f, indent=2)
+" 2>/dev/null && log "✓ Speaker recognition enabled in settings"
+            else
+                # Create settings.json with speaker recognition enabled
+                echo '{"speaker_recognition_enabled": true}' > "$SCRIPT_DIR/settings.json"
+                log "✓ Created settings.json with speaker recognition enabled"
+            fi
         else
             warn "Resemblyzer import failed, speaker recognition disabled"
         fi
@@ -268,6 +284,21 @@ if ! "$MLX_PYTHON" -c "from resemblyzer import VoiceEncoder" 2>/dev/null; then
 else
     printf "${GREEN}[CAAL]${NC} Checking Speaker Recognition... "
     echo -e "${GREEN}✓${NC}"
+    # Ensure speaker recognition is enabled in settings.json
+    if [ -f "$SCRIPT_DIR/settings.json" ]; then
+        if ! grep -q '"speaker_recognition_enabled": true' "$SCRIPT_DIR/settings.json" 2>/dev/null; then
+            "$MLX_PYTHON" -c "
+import json
+with open('$SCRIPT_DIR/settings.json', 'r') as f:
+    settings = json.load(f)
+if not settings.get('speaker_recognition_enabled', False):
+    settings['speaker_recognition_enabled'] = True
+    with open('$SCRIPT_DIR/settings.json', 'w') as f:
+        json.dump(settings, f, indent=2)
+    print('Enabled speaker recognition in settings')
+" 2>/dev/null
+        fi
+    fi
 fi
 
 # Check if mlx-audio is already running

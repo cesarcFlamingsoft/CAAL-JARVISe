@@ -26,6 +26,10 @@ export interface SetupData {
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
+  // Friday assistant
+  friday_enabled: boolean;
+  friday_host: string;
+  friday_token: string;
 }
 
 interface SetupWizardProps {
@@ -48,6 +52,9 @@ const INITIAL_DATA: SetupData = {
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',
+  friday_enabled: false,
+  friday_host: '',
+  friday_token: '',
 };
 
 const TOTAL_STEPS = 3;

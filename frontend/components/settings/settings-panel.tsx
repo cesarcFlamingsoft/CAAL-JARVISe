@@ -44,6 +44,10 @@ interface Settings {
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
+  // Friday assistant
+  friday_enabled: boolean;
+  friday_host: string;
+  friday_token: string;
   // Wake word
   wake_word_enabled: boolean;
   wake_word_model: string;
@@ -107,6 +111,9 @@ const DEFAULT_SETTINGS: Settings = {
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',
+  friday_enabled: false,
+  friday_host: '',
+  friday_token: '',
   wake_word_enabled: false,
   wake_word_model: 'models/hey_cal.onnx',
   wake_word_threshold: 0.5,
@@ -190,6 +197,15 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     info: null,
   });
   const [n8nTest, setN8nTest] = useState<{
+    status: TestStatus;
+    error: string | null;
+    info: string | null;
+  }>({
+    status: 'idle',
+    error: null,
+    info: null,
+  });
+  const [fridayTest, setFridayTest] = useState<{
     status: TestStatus;
     error: string | null;
     info: string | null;
@@ -632,6 +648,28 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setN8nTest({ status: 'error', error: 'Failed to connect', info: null });
     }
   }, [settings.n8n_url, settings.n8n_token]);
+
+  const testFriday = useCallback(async () => {
+    if (!settings.friday_host || !settings.friday_token) return;
+    setFridayTest({ status: 'testing', error: null, info: null });
+
+    try {
+      const res = await fetch('/api/setup/test-friday', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: settings.friday_host, token: settings.friday_token }),
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        setFridayTest({ status: 'success', error: null, info: 'Connected' });
+      } else {
+        setFridayTest({ status: 'error', error: result.error || 'Connection failed', info: null });
+      }
+    } catch {
+      setFridayTest({ status: 'error', error: 'Failed to connect', info: null });
+    }
+  }, [settings.friday_host, settings.friday_token]);
 
   // ---------------------------------------------------------------------------
   // Save
@@ -1435,6 +1473,61 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
               {n8nTest.error && <p className="text-xs text-red-500">{n8nTest.error}</p>}
               {n8nTest.info && <p className="text-xs text-green-500">{n8nTest.info}</p>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Friday Assistant */}
+      <div
+        className={`overflow-hidden rounded-xl border ${!settings.friday_enabled ? 'opacity-60' : ''}`}
+      >
+        <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
+          <span className="font-semibold">Friday Assistant</span>
+          <Toggle
+            enabled={settings.friday_enabled}
+            onToggle={() => setSettings({ ...settings, friday_enabled: !settings.friday_enabled })}
+          />
+        </div>
+
+        {settings.friday_enabled && (
+          <div className="space-y-4 p-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Host URL</label>
+              <input
+                type="text"
+                value={settings.friday_host}
+                onChange={(e) => setSettings({ ...settings, friday_host: e.target.value })}
+                placeholder="http://10.0.0.55:18789"
+                className="border-input bg-background w-full rounded-lg border px-4 py-3 text-sm"
+              />
+              <p className="text-muted-foreground text-xs">
+                Clawdbot API endpoint for advanced AI assistance
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">API Token</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={settings.friday_token}
+                  onChange={(e) => setSettings({ ...settings, friday_token: e.target.value })}
+                  placeholder="your_api_token"
+                  className="border-input bg-background flex-1 rounded-lg border px-4 py-3 text-sm"
+                />
+                <button
+                  onClick={testFriday}
+                  disabled={
+                    !settings.friday_host || !settings.friday_token || fridayTest.status === 'testing'
+                  }
+                  className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
+                >
+                  <TestStatusIcon status={fridayTest.status} />
+                  Test
+                </button>
+              </div>
+              {fridayTest.error && <p className="text-xs text-red-500">{fridayTest.error}</p>}
+              {fridayTest.info && <p className="text-xs text-green-500">{fridayTest.info}</p>}
             </div>
           </div>
         )}

@@ -284,6 +284,110 @@ def create_hass_tools(hass_host: str, hass_token: str, hass_agent_id: str) -> tu
     return tool_definitions, tool_callables
 
 
+# =========================================================================
+# Friday Assistant (Clawdbot) Integration
+# =========================================================================
+# Calls the Friday assistant (Clawdbot) for advanced AI assistance.
+
+
+def create_friday_tools(friday_host: str, friday_token: str, friday_agent_id: str) -> tuple[list[dict], dict]:
+    """Create Friday assistant (Clawdbot) tool.
+
+    Args:
+        friday_host: Clawdbot host URL (e.g., http://10.0.0.55:18789)
+        friday_token: Clawdbot API token
+        friday_agent_id: Agent ID for x-clawdbot-agent-id header
+
+    Returns:
+        tuple: (tool_definitions, tool_callables)
+        - tool_definitions: List of tool definitions in OpenAI format for LLM
+        - tool_callables: Dict mapping tool name to callable function
+    """
+    import httpx
+
+    # Track conversation messages for context continuity
+    conversation_state = {"messages": []}
+
+    async def friday(message: str) -> str:
+        """Send a message to the Friday assistant and get a response.
+        Use this when the user asks to 'call Friday', 'ask Friday', 'talk to Friday assistant', or similar.
+        Parameters: message (required: what you want to ask or say to Friday).
+        """
+        if not friday_host or not friday_token:
+            return "Friday assistant is not configured"
+
+        url = f"{friday_host.rstrip('/')}/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {friday_token}",
+            "Content-Type": "application/json",
+            "x-clawdbot-agent-id": friday_agent_id,
+        }
+
+        # Add the new user message to conversation history
+        conversation_state["messages"].append({"role": "user", "content": message})
+
+        payload = {
+            "model": "clawdbot",
+            "messages": conversation_state["messages"],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+
+            logger.info(f"Friday API response: {data}")
+
+            # Extract assistant response
+            choices = data.get("choices", [])
+            if choices and len(choices) > 0:
+                assistant_message = choices[0].get("message", {})
+                content = assistant_message.get("content", "")
+                if content:
+                    # Add assistant response to conversation history
+                    conversation_state["messages"].append({"role": "assistant", "content": content})
+                    logger.info(f"friday returning: {content[:100]}...")
+                    return content
+
+            return "Friday did not provide a response"
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"friday HTTP error: {e}")
+            return f"Friday assistant error: {e.response.status_code}"
+        except Exception as e:
+            logger.error(f"friday error: {e}")
+            return f"Failed to communicate with Friday assistant: {e}"
+
+    # Tool definitions in OpenAI format for LLM
+    tool_definitions = [
+        {
+            "type": "function",
+            "function": {
+                "name": "friday",
+                "description": "Call the Friday assistant for help with complex questions, research, coding, analysis, or any advanced AI assistance. Use this when the user explicitly asks to 'call Friday', 'ask Friday', 'talk to Friday assistant', 'get Friday', or similar requests for Friday's help.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "The message, question, or request to send to the Friday assistant",
+                        },
+                    },
+                    "required": ["message"],
+                },
+            },
+        },
+    ]
+
+    # Callable functions for tool execution
+    tool_callables = {
+        "friday": friday,
+    }
+
+    return tool_definitions, tool_callables
+
+
 class VoiceAssistant(WebSearchTools, Agent):
     """Voice assistant with MCP tools and web search."""
 
@@ -299,6 +403,8 @@ class VoiceAssistant(WebSearchTools, Agent):
         max_turns: int = 20,
         hass_tool_definitions: list[dict] | None = None,
         hass_tool_callables: dict | None = None,
+        friday_tool_definitions: list[dict] | None = None,
+        friday_tool_callables: dict | None = None,
     ) -> None:
         super().__init__(
             instructions=load_prompt(),
@@ -320,6 +426,10 @@ class VoiceAssistant(WebSearchTools, Agent):
         # Home Assistant tools (only if HASS is connected)
         self._hass_tool_definitions = hass_tool_definitions or []
         self._hass_tool_callables = hass_tool_callables or {}
+
+        # Friday assistant tools (Clawdbot)
+        self._friday_tool_definitions = friday_tool_definitions or []
+        self._friday_tool_callables = friday_tool_callables or {}
 
         # Callback for publishing tool status to frontend
         self._on_tool_status = on_tool_status
@@ -752,6 +862,21 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             )
             logger.info(f"Home Assistant Assist enabled: agent={hass_agent_id}")
 
+    # Create Friday tools if Friday assistant is enabled
+    friday_tool_definitions = []
+    friday_tool_callables = {}
+    if all_settings.get("friday_enabled", False):
+        friday_host = all_settings.get("friday_host", "")
+        friday_token = all_settings.get("friday_token", "")
+        friday_agent_id = all_settings.get("friday_agent_id", "main")
+        if friday_host and friday_token:
+            friday_tool_definitions, friday_tool_callables = create_friday_tools(
+                friday_host=friday_host,
+                friday_token=friday_token,
+                friday_agent_id=friday_agent_id,
+            )
+            logger.info(f"Friday assistant enabled: host={friday_host}, agent={friday_agent_id}")
+
     # Create agent with CAALLLM and all MCP servers
     assistant = VoiceAssistant(
         caal_llm=caal_llm,
@@ -764,6 +889,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         max_turns=runtime["max_turns"],
         hass_tool_definitions=hass_tool_definitions,
         hass_tool_callables=hass_tool_callables,
+        friday_tool_definitions=friday_tool_definitions,
+        friday_tool_callables=friday_tool_callables,
     )
 
     # Create event to wait for session close (BEFORE session.start to avoid race condition)
