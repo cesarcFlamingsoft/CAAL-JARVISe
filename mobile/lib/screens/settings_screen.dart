@@ -36,6 +36,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _agentName = 'Cal';
   List<String> _wakeGreetings = ["Hey, what's up?", "What's up?", 'How can I help?'];
 
+  // Prompt settings
+  String _promptMode = 'default';
+  final _promptController = TextEditingController();
+
   // Provider settings
   String _llmProvider = 'ollama';
   String _ollamaHost = 'http://localhost:11434';
@@ -79,6 +83,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _wakeWordModel = 'models/hey_cal.onnx';
   double _wakeWordThreshold = 0.5;
   double _wakeWordTimeout = 3.0;
+
+  // TV/Media rejection
+  bool _tvRejectionEnabled = true;
+  double _tvRejectionMinLiveness = 0.2;
+  bool _mediaNoiseMusicDetection = true;
+  bool _mediaNoiseStereoDetection = true;
+  bool _mediaNoisePlaybackVoiceDetection = true;
+
+  // Speaker recognition
+  bool _speakerRecognitionEnabled = false;
+  double _speakerRecognitionThreshold = 0.75;
+  bool _speakerRecognitionRequired = false;
+  List<Map<String, dynamic>> _speakers = [];
+  bool _speakersLoading = false;
 
   // Available options
   List<String> _voices = [];
@@ -126,6 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _serverUrlController.dispose();
     _wakeGreetingsController.dispose();
+    _promptController.dispose();
     super.dispose();
   }
 
@@ -204,12 +223,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final data = jsonDecode(settingsRes.body);
         final settings = data['settings'] ?? {};
 
+        // Load prompt content
+        final promptContent = data['prompt_content'] ?? '';
+
         setState(() {
           _serverConnected = true;
           // Agent
           _agentName = settings['agent_name'] ?? _agentName;
           _wakeGreetings = List<String>.from(settings['wake_greetings'] ?? _wakeGreetings);
           _wakeGreetingsController.text = _wakeGreetings.join('\n');
+
+          // Prompt
+          _promptMode = settings['prompt'] ?? 'default';
+          _promptController.text = promptContent;
 
           // Providers
           _llmProvider = settings['llm_provider'] ?? _llmProvider;
@@ -252,6 +278,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _wakeWordModel = settings['wake_word_model'] ?? _wakeWordModel;
           _wakeWordThreshold = (settings['wake_word_threshold'] ?? _wakeWordThreshold).toDouble();
           _wakeWordTimeout = (settings['wake_word_timeout'] ?? _wakeWordTimeout).toDouble();
+
+          // TV/Media rejection
+          _tvRejectionEnabled = settings['tv_rejection_enabled'] ?? _tvRejectionEnabled;
+          _tvRejectionMinLiveness = (settings['tv_rejection_min_liveness'] ?? _tvRejectionMinLiveness).toDouble();
+          _mediaNoiseMusicDetection = settings['media_noise_music_detection'] ?? _mediaNoiseMusicDetection;
+          _mediaNoiseStereoDetection = settings['media_noise_stereo_detection'] ?? _mediaNoiseStereoDetection;
+          _mediaNoisePlaybackVoiceDetection = settings['media_noise_playback_voice_detection'] ?? _mediaNoisePlaybackVoiceDetection;
+
+          // Speaker recognition
+          _speakerRecognitionEnabled = settings['speaker_recognition_enabled'] ?? _speakerRecognitionEnabled;
+          _speakerRecognitionThreshold = (settings['speaker_recognition_threshold'] ?? _speakerRecognitionThreshold).toDouble();
+          _speakerRecognitionRequired = settings['speaker_recognition_required'] ?? _speakerRecognitionRequired;
         });
       }
 
@@ -293,6 +331,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       // Silently fail - voices list will remain as-is
+    }
+  }
+
+  Future<void> _loadSpeakers() async {
+    final webhookUrl = _webhookUrl;
+    if (webhookUrl.isEmpty || !_speakerRecognitionEnabled) return;
+
+    setState(() {
+      _speakersLoading = true;
+    });
+
+    try {
+      final res = await http.get(Uri.parse('$webhookUrl/speakers'));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        setState(() {
+          _speakers = List<Map<String, dynamic>>.from(data['speakers'] ?? []);
+        });
+      }
+    } catch (e) {
+      // Silently fail
+    } finally {
+      setState(() {
+        _speakersLoading = false;
+      });
     }
   }
 
@@ -435,7 +498,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _hassInfo = 'Connected - ${result['device_count']} entities';
         });
         // Fetch available agents on successful connection
-        _fetchHassAgents();
+        unawaited(_fetchHassAgents());
       } else {
         setState(() {
           _hassConnected = false;
@@ -537,6 +600,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Agent
           'agent_name': _agentName,
           'wake_greetings': greetings,
+          'prompt': _promptMode,
 
           // Providers
           'llm_provider': _llmProvider,
@@ -579,6 +643,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'wake_word_model': _wakeWordModel,
           'wake_word_threshold': _wakeWordThreshold,
           'wake_word_timeout': _wakeWordTimeout,
+
+          // TV/Media rejection
+          'tv_rejection_enabled': _tvRejectionEnabled,
+          'tv_rejection_min_liveness': _tvRejectionMinLiveness,
+          'media_noise_music_detection': _mediaNoiseMusicDetection,
+          'media_noise_stereo_detection': _mediaNoiseStereoDetection,
+          'media_noise_playback_voice_detection': _mediaNoisePlaybackVoiceDetection,
+
+          // Speaker recognition
+          'speaker_recognition_enabled': _speakerRecognitionEnabled,
+          'speaker_recognition_threshold': _speakerRecognitionThreshold,
+          'speaker_recognition_required': _speakerRecognitionRequired,
         };
 
         final res = await http.post(
@@ -604,6 +680,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'groq_api_key': _groqApiKey,
               'groq_model': _groqModel,
             }),
+          );
+        }
+
+        // Save custom prompt if using custom mode
+        if (_promptMode == 'custom' && _promptController.text.isNotEmpty) {
+          await http.post(
+            Uri.parse('$_webhookUrl/prompt'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'content': _promptController.text}),
           );
         }
 
@@ -792,6 +877,114 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: const TextStyle(color: Colors.white),
                     decoration: _inputDecoration(hint: 'One greeting per line'),
                   ),
+                ]),
+
+                // Prompt Section
+                const SizedBox(height: 24),
+                _buildSectionHeader('System Prompt', Icons.description_outlined),
+                _buildCard([
+                  _buildLabel('Prompt Mode'),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _promptMode = 'default'),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            decoration: BoxDecoration(
+                              color: _promptMode == 'default'
+                                  ? const Color(0xFF45997C).withValues(alpha: 0.2)
+                                  : const Color(0xFF2A2A2A),
+                              border: Border.all(
+                                color: _promptMode == 'default'
+                                    ? const Color(0xFF45997C)
+                                    : Colors.white.withValues(alpha: 0.1),
+                              ),
+                              borderRadius: const BorderRadius.only(
+                                topLeft: Radius.circular(8),
+                                bottomLeft: Radius.circular(8),
+                              ),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Default',
+                                style: TextStyle(
+                                  color: _promptMode == 'default' ? Colors.white : Colors.white70,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _promptMode = 'custom'),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            decoration: BoxDecoration(
+                              color: _promptMode == 'custom'
+                                  ? const Color(0xFF45997C).withValues(alpha: 0.2)
+                                  : const Color(0xFF2A2A2A),
+                              border: Border.all(
+                                color: _promptMode == 'custom'
+                                    ? const Color(0xFF45997C)
+                                    : Colors.white.withValues(alpha: 0.1),
+                              ),
+                              borderRadius: const BorderRadius.only(
+                                topRight: Radius.circular(8),
+                                bottomRight: Radius.circular(8),
+                              ),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Custom',
+                                style: TextStyle(
+                                  color: _promptMode == 'custom' ? Colors.white : Colors.white70,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  _buildLabel('Prompt Content'),
+                  TextFormField(
+                    controller: _promptController,
+                    maxLines: 8,
+                    enabled: _promptMode == 'custom',
+                    style: TextStyle(
+                      color: _promptMode == 'custom' ? Colors.white : Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: _promptMode == 'default'
+                          ? 'Using default system prompt'
+                          : 'Enter custom system prompt...',
+                      hintStyle: const TextStyle(color: Colors.white38),
+                      filled: true,
+                      fillColor: _promptMode == 'custom'
+                          ? const Color(0xFF2A2A2A)
+                          : const Color(0xFF1E1E1E),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: const EdgeInsets.all(12),
+                    ),
+                  ),
+                  if (_promptMode == 'default')
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Select "Custom" to edit the system prompt',
+                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                    ),
                 ]),
 
                 // Providers Section
@@ -1406,6 +1599,354 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             decimals: 1,
                             onChanged: (v) => setState(() => _wakeWordTimeout = v),
                           ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ]),
+
+                // TV/Media Rejection Section
+                const SizedBox(height: 24),
+                _buildSectionHeader('Audio Filter', Icons.filter_alt_outlined),
+                _buildCard([
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'TV / Media Rejection',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          Text(
+                            'Filter TV, radio, and video playback',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: _tvRejectionEnabled,
+                        onChanged: (v) => setState(() => _tvRejectionEnabled = v),
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_tvRejectionEnabled) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Uses AI-powered audio analysis to distinguish live speech from media playback.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Liveness Threshold',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                            Text(
+                              _tvRejectionMinLiveness.toStringAsFixed(2),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: const Color(0xFF45997C),
+                            thumbColor: const Color(0xFF45997C),
+                            inactiveTrackColor: Colors.white24,
+                          ),
+                          child: Slider(
+                            value: _tvRejectionMinLiveness,
+                            min: 0.1,
+                            max: 0.5,
+                            divisions: 8,
+                            onChanged: (v) => setState(() => _tvRejectionMinLiveness = v),
+                          ),
+                        ),
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('More Permissive', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                            Text('Stricter', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const Divider(color: Colors.white24, height: 24),
+                    // Music Detection
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Music Detection',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            Text(
+                              'Detect radio and video music',
+                              style: TextStyle(color: Colors.white38, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                        Switch(
+                          value: _mediaNoiseMusicDetection,
+                          onChanged: (v) => setState(() => _mediaNoiseMusicDetection = v),
+                          activeTrackColor: const Color(0xFF45997C),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // Stereo Detection
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Stereo Detection',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            Text(
+                              'Detect wide stereo (media vs live)',
+                              style: TextStyle(color: Colors.white38, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                        Switch(
+                          value: _mediaNoiseStereoDetection,
+                          onChanged: (v) => setState(() => _mediaNoiseStereoDetection = v),
+                          activeTrackColor: const Color(0xFF45997C),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // Playback Voice Detection
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Playback Voice Detection',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            Text(
+                              'Detect voices from video/podcast',
+                              style: TextStyle(color: Colors.white38, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                        Switch(
+                          value: _mediaNoisePlaybackVoiceDetection,
+                          onChanged: (v) => setState(() => _mediaNoisePlaybackVoiceDetection = v),
+                          activeTrackColor: const Color(0xFF45997C),
+                        ),
+                      ],
+                    ),
+                  ],
+                ]),
+
+                // Speaker Recognition Section
+                const SizedBox(height: 12),
+                _buildCard([
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Speaker Recognition',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          Text(
+                            'Voice biometrics like Voice Match',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: _speakerRecognitionEnabled,
+                        onChanged: (v) {
+                          setState(() => _speakerRecognitionEnabled = v);
+                          if (v) unawaited(_loadSpeakers());
+                        },
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_speakerRecognitionEnabled) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                      ),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Requires: resemblyzer package',
+                            style: TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.w500),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'pip install resemblyzer',
+                            style: TextStyle(color: Colors.blue, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Enrolled Speakers
+                    const Text(
+                      'Enrolled Speakers',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_speakersLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+                            ),
+                            SizedBox(width: 8),
+                            Text('Loading speakers...', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          ],
+                        ),
+                      )
+                    else if (_speakers.isEmpty)
+                      const Text(
+                        'No speakers enrolled. Enroll speakers via web UI.',
+                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                      )
+                    else
+                      Column(
+                        children: _speakers.map((speaker) {
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2A2A2A),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  speaker['name'] ?? 'Unknown',
+                                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                                ),
+                                Text(
+                                  '${speaker['enrollment_samples'] ?? 0} samples',
+                                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    const Divider(color: Colors.white24, height: 24),
+                    // Threshold
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Verification Threshold',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            Text(
+                              _speakerRecognitionThreshold.toStringAsFixed(2),
+                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: const Color(0xFF45997C),
+                            thumbColor: const Color(0xFF45997C),
+                            inactiveTrackColor: Colors.white24,
+                          ),
+                          child: Slider(
+                            value: _speakerRecognitionThreshold,
+                            min: 0.5,
+                            max: 0.9,
+                            divisions: 8,
+                            onChanged: (v) => setState(() => _speakerRecognitionThreshold = v),
+                          ),
+                        ),
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('More Lenient', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                            Text('Stricter', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // Require Recognized Speaker
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Require Recognized Speaker',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                            Text(
+                              'Only respond to enrolled speakers',
+                              style: TextStyle(color: Colors.white38, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                        Switch(
+                          value: _speakerRecognitionRequired,
+                          onChanged: (v) => setState(() => _speakerRecognitionRequired = v),
+                          activeTrackColor: const Color(0xFF45997C),
                         ),
                       ],
                     ),
