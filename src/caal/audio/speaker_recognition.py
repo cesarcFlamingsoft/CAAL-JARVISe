@@ -186,7 +186,13 @@ class SpeakerRecognition:
             wav = preprocess_wav(audio, self.config.sample_rate)
 
             if len(wav) < self.config.sample_rate * self.config.min_audio_duration:
-                logger.debug("Audio too short for speaker embedding")
+                original_duration = len(audio) / self.config.sample_rate
+                processed_duration = len(wav) / self.config.sample_rate
+                logger.info(
+                    f"Audio too short for speaker embedding after preprocessing: "
+                    f"original={original_duration:.2f}s → processed={processed_duration:.2f}s "
+                    f"(need {self.config.min_audio_duration}s)"
+                )
                 return None
 
             # Generate embedding

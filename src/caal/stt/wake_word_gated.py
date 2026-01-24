@@ -477,7 +477,15 @@ class WakeWordGatedStream(RecognizeStream):
                         f"Scores: {scores_str}"
                     )
                 else:
-                    logger.info("🎤 SPEAKER RECOGNITION: No speakers enrolled")
+                    # Check if there are actually no speakers enrolled vs embedding failed
+                    enrolled_speakers = self._speaker_recognition.list_speakers()
+                    if not enrolled_speakers:
+                        logger.info("🎤 SPEAKER RECOGNITION: No speakers enrolled")
+                    else:
+                        logger.info(
+                            f"🎤 SPEAKER RECOGNITION: Embedding failed (audio may be too short after "
+                            f"voice activity detection). {len(enrolled_speakers)} speaker(s) enrolled."
+                        )
 
         except Exception as e:
             logger.warning(f"Speaker verification failed: {e}")
