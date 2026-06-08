@@ -1,0 +1,17 @@
+# CAAL LiveKit telephony config (draft)
+# Based on current livekit.yaml plus Redis for SIP support.
+
+port: 7880
+log_level: info
+
+keys:
+  devkey: secret
+
+redis:
+  address: host.docker.internal:6379
+
+rtc:
+  use_external_ip: false
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100

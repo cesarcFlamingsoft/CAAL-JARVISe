@@ -27,6 +27,9 @@ import time
 from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Any
 
+from caal import settings as settings_module
+from caal.tools import create_default_registry
+
 from ..integrations.n8n import execute_n8n_workflow
 from ..utils.formatting import strip_markdown_for_tts
 from .providers import LLMProvider
@@ -130,9 +133,7 @@ async def llm_node(
                 if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
                     import asyncio
 
-                    asyncio.create_task(
-                        agent._on_tool_status(True, tool_names, tool_params)
-                    )
+                    asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
 
                 # Execute tools and get results (cache structured data)
                 # Also track hass_assist results for direct speech
@@ -163,7 +164,9 @@ async def llm_node(
                     chunk_count += 1
                     full_response.append(chunk)
                     yield strip_markdown_for_tts(chunk)
-                logger.info(f"Follow-up complete: {chunk_count} chunks, content: {''.join(full_response)}")
+                logger.info(
+                    f"Follow-up complete: {chunk_count} chunks, content: {''.join(full_response)}"
+                )
                 return
 
             # No tool calls - return content directly
@@ -291,6 +294,22 @@ async def _discover_tools(agent) -> list[dict] | None:
         return agent._llm_tools_cache
 
     tools = []
+
+    if settings_module.get_setting("native_tools_enabled", True):
+        native_registry = create_default_registry()
+        tools.extend(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in native_registry.list()
+        )
+        agent._native_tool_registry = native_registry
+        logger.info(f"Added {len(native_registry.names())} native assistant tools")
 
     # Get @function_tool decorated methods from agent (bound methods on class)
     if hasattr(agent, "_tools") and agent._tools:
@@ -472,11 +491,7 @@ async def _execute_tool_calls(
             # Cache structured data if present
             if tool_data_cache and isinstance(tool_result, dict):
                 # Look for common data fields, otherwise cache the whole result
-                data = (
-                    tool_result.get("data")
-                    or tool_result.get("results")
-                    or tool_result
-                )
+                data = tool_result.get("data") or tool_result.get("results") or tool_result
                 tool_data_cache.add(tool_name, data)
                 logger.debug(f"Cached tool data for {tool_name}")
 
@@ -520,6 +535,18 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         f"hass_callables={list(getattr(agent, '_hass_tool_callables', {}).keys())}"
     )
 
+    # Check native assistant tools first (email/calendar/reminders/alarms registry)
+    native_registry = getattr(agent, "_native_tool_registry", None)
+    if native_registry is None and settings_module.get_setting("native_tools_enabled", True):
+        native_registry = create_default_registry()
+        agent._native_tool_registry = native_registry
+    if native_registry is not None and tool_name in native_registry.names():
+        logger.info(f"Calling native tool: {tool_name}")
+        tool = native_registry.get(tool_name)
+        result = tool.handler(**arguments)
+        logger.info(f"Native tool {tool_name} completed")
+        return result
+
     # Check Home Assistant tools (callable functions stored in dict)
     if hasattr(agent, "_hass_tool_callables") and tool_name in agent._hass_tool_callables:
         logger.info(f"Calling HASS tool: {tool_name}")
@@ -550,9 +577,7 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     ):
         logger.info(f"Calling n8n workflow: {tool_name}")
         workflow_name = agent._n8n_workflow_name_map[tool_name]
-        result = await execute_n8n_workflow(
-            agent._n8n_base_url, workflow_name, arguments
-        )
+        result = await execute_n8n_workflow(agent._n8n_base_url, workflow_name, arguments)
         logger.info(f"n8n workflow {tool_name} completed")
         return result
 

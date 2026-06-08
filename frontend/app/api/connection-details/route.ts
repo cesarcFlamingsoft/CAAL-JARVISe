@@ -34,13 +34,22 @@ export async function POST(req: Request) {
 
     // Parse agent configuration from request body
     const body = await req.json();
-    const agentName: string = body?.room_config?.agents?.[0]?.agent_name;
-    const clientId: string = body?.client_id; // Optional client ID for unique rooms
+    const agentName: string =
+      body?.room_config?.agents?.[0]?.agent_name ??
+      body?.roomConfiguration?.agents?.[0]?.agentName ??
+      body?.roomConfiguration?.agents?.[0]?.agent_name;
+    const clientId: string =
+      body?.client_id ??
+      body?.participant_identity ??
+      body?.participantIdentity; // Optional client ID for unique rooms
 
     // Generate participant token
     // Use client-specific room if clientId provided, otherwise use shared room
-    const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const participantName = body?.participant_name ?? body?.participantName ?? 'user';
+    const participantIdentity =
+      body?.participant_identity ??
+      body?.participantIdentity ??
+      `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = clientId ? `voice_assistant_room_${clientId}` : 'voice_assistant_room';
 
     const participantToken = await createParticipantToken(

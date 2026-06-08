@@ -59,6 +59,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _n8nEnabled = false;
   String _n8nUrl = '';
   String _n8nToken = '';
+  bool _nativeToolsEnabled = true;
+  String _remindersProvider = 'local';
+  bool _alarmsEnabled = true;
+  bool _nativeToolsExpanded = false;
+  bool _emailJsonValid = true;
+  bool _calendarJsonValid = true;
+  bool _testingEmail = false;
+  bool _emailConnected = false;
+  String? _emailTestError;
+  String? _emailTestInfo;
+  bool _testingCalendar = false;
+  bool _calendarConnected = false;
+  String? _calendarTestError;
+  String? _calendarTestInfo;
   bool _fridayEnabled = false;
   String _fridayHost = '';
   String _fridayToken = '';
@@ -127,6 +141,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Text controllers
   final _wakeGreetingsController = TextEditingController();
+  final _emailAccountsController = TextEditingController();
+  final _calendarSourcesController = TextEditingController();
 
   String get _webhookUrl {
     final serverUrl = _serverUrlController.text.trim();
@@ -150,8 +166,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _serverUrlController.dispose();
     _wakeGreetingsController.dispose();
+    _emailAccountsController.dispose();
+    _calendarSourcesController.dispose();
     _promptController.dispose();
     super.dispose();
+  }
+
+  String _prettyJson(dynamic value) {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(value ?? []);
+  }
+
+  List<dynamic>? _parseJsonArrayController(TextEditingController controller) {
+    final text = controller.text.trim();
+    if (text.isEmpty) return [];
+    final parsed = jsonDecode(text);
+    if (parsed is! List) {
+      throw const FormatException('Expected a JSON array');
+    }
+    return parsed;
+  }
+
+  String? _firstConfiguredId(TextEditingController controller) {
+    try {
+      final items = _parseJsonArrayController(controller) ?? [];
+      for (final item in items) {
+        if (item is Map && item['id'] != null && item['id'].toString().trim().isNotEmpty) {
+          return item['id'].toString().trim();
+        }
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  void _syncNativeToolControllers(Map<String, dynamic> settings) {
+    _emailAccountsController.text = _prettyJson(settings['email_accounts'] ?? []);
+    _calendarSourcesController.text = _prettyJson(settings['calendar_sources'] ?? []);
+    _emailJsonValid = true;
+    _calendarJsonValid = true;
+  }
+
+  Future<void> _testConfiguredProvider({required String endpoint, required String? id}) async {
+    if (id == null || id.trim().isEmpty) return;
+
+    final isEmail = endpoint == 'test-email';
+    setState(() {
+      if (isEmail) {
+        _testingEmail = true;
+        _emailTestError = null;
+        _emailTestInfo = null;
+      } else {
+        _testingCalendar = true;
+        _calendarTestError = null;
+        _calendarTestInfo = null;
+      }
+    });
+
+    try {
+      final res = await http.post(
+        Uri.parse('$_webhookUrl/setup/$endpoint'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'id': id.trim()}),
+      );
+      final result = jsonDecode(res.body);
+      final success = result['success'] == true;
+      final message = (result['message'] ?? result['error'] ?? (success ? 'Connected' : 'Connection failed')).toString();
+
+      setState(() {
+        if (isEmail) {
+          _emailConnected = success;
+          _emailTestInfo = success ? message : null;
+          _emailTestError = success ? null : message;
+        } else {
+          _calendarConnected = success;
+          _calendarTestInfo = success ? message : null;
+          _calendarTestError = success ? null : message;
+        }
+      });
+    } catch (e) {
+      setState(() {
+        if (isEmail) {
+          _emailConnected = false;
+          _emailTestError = 'Failed to test email provider';
+        } else {
+          _calendarConnected = false;
+          _calendarTestError = 'Failed to test calendar provider';
+        }
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          if (isEmail) {
+            _testingEmail = false;
+          } else {
+            _testingCalendar = false;
+          }
+        });
+      }
+    }
   }
 
   Future<void> _testConnection() async {
@@ -260,6 +374,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _n8nEnabled = settings['n8n_enabled'] ?? _n8nEnabled;
           _n8nUrl = settings['n8n_url'] ?? _n8nUrl;
           _n8nToken = settings['n8n_token'] ?? _n8nToken;
+          _nativeToolsEnabled = settings['native_tools_enabled'] ?? _nativeToolsEnabled;
+          _remindersProvider = settings['reminders_provider'] ?? _remindersProvider;
+          _alarmsEnabled = settings['alarms_enabled'] ?? _alarmsEnabled;
+          _syncNativeToolControllers(Map<String, dynamic>.from(settings));
           _fridayEnabled = settings['friday_enabled'] ?? _fridayEnabled;
           _fridayHost = settings['friday_host'] ?? _fridayHost;
           _fridayToken = settings['friday_token'] ?? _fridayToken;
@@ -642,6 +760,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final greetings =
             _wakeGreetingsController.text.split('\n').where((g) => g.trim().isNotEmpty).toList();
 
+        List<dynamic> emailAccounts;
+        List<dynamic> calendarSources;
+        try {
+          emailAccounts = _parseJsonArrayController(_emailAccountsController) ?? [];
+          calendarSources = _parseJsonArrayController(_calendarSourcesController) ?? [];
+          _emailJsonValid = true;
+          _calendarJsonValid = true;
+        } catch (e) {
+          setState(() {
+            _emailJsonValid = false;
+            _calendarJsonValid = false;
+            _error = 'Native tools JSON must be valid arrays: $e';
+          });
+          return;
+        }
+
         final settings = {
           // Agent
           'agent_name': _agentName,
@@ -665,6 +799,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'n8n_enabled': _n8nEnabled,
           'n8n_url': _n8nEnabled ? _getN8nMcpUrl(_n8nUrl) : _n8nUrl,
           'n8n_token': _n8nToken,
+          'native_tools_enabled': _nativeToolsEnabled,
+          'email_accounts': emailAccounts,
+          'calendar_sources': calendarSources,
+          'reminders_provider': _remindersProvider,
+          'alarms_enabled': _alarmsEnabled,
           'friday_enabled': _fridayEnabled,
           'friday_host': _fridayHost,
           'friday_token': _fridayToken,
@@ -1165,6 +1304,200 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // Integrations Section
                 const SizedBox(height: 24),
                 _buildSectionHeader('Integrations', Icons.extension_outlined),
+
+                // Native Assistant Tools
+                _buildCard([
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Native Assistant Tools',
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                            SizedBox(height: 2),
+                            Text(
+                              'Email, calendar, reminders, alarms',
+                              style: TextStyle(color: Colors.white54, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        value: _nativeToolsEnabled,
+                        onChanged: (v) => setState(() => _nativeToolsEnabled = v),
+                        activeTrackColor: const Color(0xFF45997C),
+                      ),
+                    ],
+                  ),
+                  if (_nativeToolsEnabled) ...[
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: () => setState(() => _nativeToolsExpanded = !_nativeToolsExpanded),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _nativeToolsExpanded ? Icons.expand_less : Icons.expand_more,
+                            color: const Color(0xFF45997C),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _nativeToolsExpanded ? 'Hide native config' : 'Edit native config',
+                            style: const TextStyle(color: Color(0xFF45997C), fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_nativeToolsExpanded) ...[
+                      const SizedBox(height: 12),
+                      _buildDropdown(
+                        label: 'Reminders Provider',
+                        value: _remindersProvider,
+                        options: const ['local', 'apple'],
+                        onChanged: (v) => setState(() => _remindersProvider = v ?? _remindersProvider),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Alarms and Timers', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                                Text('Let JARVIS schedule audible alarms',
+                                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: _alarmsEnabled,
+                            onChanged: (v) => setState(() => _alarmsEnabled = v),
+                            activeTrackColor: const Color(0xFF45997C),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _buildLabel('Email Accounts JSON'),
+                      TextFormField(
+                        controller: _emailAccountsController,
+                        minLines: 5,
+                        maxLines: 10,
+                        style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12),
+                        decoration: _inputDecoration(
+                          hint:
+                              '[{"id":"personal","provider":"zoho","email":"you@example.com","imap_password":"app-password","smtp_password":"app-password","default":true}]',
+                        ),
+                        onChanged: (_) => setState(() {
+                          try {
+                            _parseJsonArrayController(_emailAccountsController);
+                            _emailJsonValid = true;
+                          } catch (_) {
+                            _emailJsonValid = false;
+                          }
+                        }),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          _emailJsonValid
+                              ? 'Secrets can be left as ******** to keep existing values.'
+                              : 'Invalid JSON array',
+                          style: TextStyle(color: _emailJsonValid ? Colors.white38 : Colors.red, fontSize: 11),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          _buildTestButton(
+                            testing: _testingEmail,
+                            connected: _emailConnected,
+                            onPressed: () => _testConfiguredProvider(
+                              endpoint: 'test-email',
+                              id: _firstConfiguredId(_emailAccountsController),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text('Tests the first configured email id after saving.',
+                                style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ),
+                        ],
+                      ),
+                      if (_emailTestError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(_emailTestError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                        ),
+                      if (_emailTestInfo != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(_emailTestInfo!, style: const TextStyle(color: Color(0xFF45997C), fontSize: 12)),
+                        ),
+                      const SizedBox(height: 12),
+                      _buildLabel('Calendar Sources JSON'),
+                      TextFormField(
+                        controller: _calendarSourcesController,
+                        minLines: 5,
+                        maxLines: 10,
+                        style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12),
+                        decoration: _inputDecoration(
+                          hint:
+                              '[{"id":"primary","provider":"zoho_caldav","url":"https://calendar.zoho.com/caldav/...","username":"you@example.com","password":"app-password","default":true,"writable":true}]',
+                        ),
+                        onChanged: (_) => setState(() {
+                          try {
+                            _parseJsonArrayController(_calendarSourcesController);
+                            _calendarJsonValid = true;
+                          } catch (_) {
+                            _calendarJsonValid = false;
+                          }
+                        }),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          _calendarJsonValid
+                              ? 'Supports caldav, zoho_caldav, ics, icloud, google, microsoft.'
+                              : 'Invalid JSON array',
+                          style: TextStyle(color: _calendarJsonValid ? Colors.white38 : Colors.red, fontSize: 11),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          _buildTestButton(
+                            testing: _testingCalendar,
+                            connected: _calendarConnected,
+                            onPressed: () => _testConfiguredProvider(
+                              endpoint: 'test-calendar',
+                              id: _firstConfiguredId(_calendarSourcesController),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text('Tests the first configured calendar id after saving.',
+                                style: TextStyle(color: Colors.white38, fontSize: 11)),
+                          ),
+                        ],
+                      ),
+                      if (_calendarTestError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(_calendarTestError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                        ),
+                      if (_calendarTestInfo != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(_calendarTestInfo!, style: const TextStyle(color: Color(0xFF45997C), fontSize: 12)),
+                        ),
+                    ],
+                  ],
+                ]),
+
+                const SizedBox(height: 12),
 
                 // Home Assistant
                 _buildCard([

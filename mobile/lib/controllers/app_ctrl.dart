@@ -17,6 +17,12 @@ class AppCtrl extends ChangeNotifier {
   static const uuid = Uuid();
   static final _logger = Logger('AppCtrl');
 
+  /// Stable per-controller client id used to get a dedicated LiveKit room.
+  ///
+  /// The web frontend now supports client-specific rooms so reconnects from
+  /// mobile do not collide with browser sessions or other devices.
+  final String _clientId = uuid.v4();
+
   // Configuration
   String _serverUrl;
 
@@ -45,6 +51,10 @@ class AppCtrl extends ChangeNotifier {
   sdk.Session _createSession() {
     return sdk.Session.fromConfigurableTokenSource(
       createCaalTokenSource(serverUrl).cached(),
+      tokenOptions: sdk.TokenRequestOptions(
+        participantName: 'Cesar',
+        participantIdentity: 'mobile_$_clientId',
+      ),
       options: sdk.SessionOptions(
         room: _room,
         // Don't auto-enable camera on startup to avoid Windows native renderer issues

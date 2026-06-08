@@ -47,6 +47,7 @@ from livekit.protocol.room import SendDataRequest
 from pydantic import BaseModel
 
 from . import settings as settings_module
+from .tools import calendar_tools, create_default_registry, email_tools
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,37 @@ class ModelsResponse(BaseModel):
     models: list[str]
 
 
+class NativeToolResponse(BaseModel):
+    """Native assistant tool metadata for frontend display."""
+
+    name: str
+    description: str
+    category: str
+    requires_confirmation: bool
+    parameters: dict
+
+
+class NativeToolsResponse(BaseModel):
+    """Response body for /tools/native endpoint."""
+
+    tools: list[NativeToolResponse]
+
+
+class ProviderTestRequest(BaseModel):
+    """Request body for provider connection tests."""
+
+    id: str | None = None
+
+
+class ProviderTestResponse(BaseModel):
+    """Response body for provider connection tests."""
+
+    success: bool
+    message: str
+    data: dict | None = None
+    error: str | None = None
+
+
 @app.get("/settings", response_model=SettingsResponse)
 async def get_settings() -> SettingsResponse:
     """Get current settings and prompt content.
@@ -357,6 +389,54 @@ async def get_settings() -> SettingsResponse:
     )
 
 
+@app.get("/tools/native", response_model=NativeToolsResponse)
+async def get_native_tools() -> NativeToolsResponse:
+    """List native assistant tools available to JARVIS."""
+    registry = create_default_registry()
+    return NativeToolsResponse(
+        tools=[
+            NativeToolResponse(
+                name=tool.name,
+                description=tool.description,
+                category=tool.category,
+                requires_confirmation=tool.requires_confirmation,
+                parameters=tool.parameters,
+            )
+            for tool in registry.list()
+        ]
+    )
+
+
+@app.post("/setup/test-email", response_model=ProviderTestResponse)
+async def test_email_provider(req: ProviderTestRequest) -> ProviderTestResponse:
+    """Validate a configured email account's IMAP/SMTP credentials."""
+    try:
+        result = email_tools.test_email_account(req.id)
+        return ProviderTestResponse(
+            success=True, message=result["message"], data=result.get("data")
+        )
+    except Exception as exc:
+        logger.warning("Email provider test failed: %s", exc)
+        return ProviderTestResponse(
+            success=False, message="Email account connection failed.", error=str(exc)
+        )
+
+
+@app.post("/setup/test-calendar", response_model=ProviderTestResponse)
+async def test_calendar_provider(req: ProviderTestRequest) -> ProviderTestResponse:
+    """Validate a configured calendar source."""
+    try:
+        result = calendar_tools.test_calendar_source(req.id)
+        return ProviderTestResponse(
+            success=True, message=result["message"], data=result.get("data")
+        )
+    except Exception as exc:
+        logger.warning("Calendar provider test failed: %s", exc)
+        return ProviderTestResponse(
+            success=False, message="Calendar source connection failed.", error=str(exc)
+        )
+
+
 @app.post("/settings", response_model=SettingsResponse)
 async def update_settings(req: SettingsUpdateRequest) -> SettingsResponse:
     """Update settings.
@@ -370,23 +450,23 @@ async def update_settings(req: SettingsUpdateRequest) -> SettingsResponse:
     # Load current settings
     current = settings_module.load_settings()
 
-    # Secret fields that should not be overwritten with empty values
-    # (UI doesn't show these, so saving would clear them)
-    secret_fields = {"groq_api_key", "hass_token", "n8n_token"}
+    # Secret fields that should not be overwritten with empty/redacted values.
+    secret_fields = settings_module.SENSITIVE_KEYS
 
     # Merge with new settings (only known keys)
     for key, value in req.settings.items():
         if key in settings_module.DEFAULT_SETTINGS:
-            # Don't overwrite secrets with empty values
-            if key in secret_fields and not value:
+            # Don't overwrite secrets with empty/redacted placeholder values
+            if key in secret_fields and (not value or value == settings_module.REDACTED_SECRET):
                 continue
             current[key] = value
 
     # Save merged settings
     settings_module.save_settings(current)
 
-    # Reload and return
-    settings = settings_module.reload_settings()
+    # Reload and return safe settings
+    settings_module.reload_settings()
+    settings = settings_module.load_settings_safe()
     prompt_content = settings_module.load_prompt_content()
     custom_exists = settings_module.custom_prompt_exists()
 
@@ -520,9 +600,7 @@ async def get_voices(provider: str | None = None) -> VoicesResponse:
     except Exception as e:
         logger.warning(f"Failed to fetch voices from Kokoro: {e}")
         # Return default voices as fallback
-        return VoicesResponse(
-            voices=["af_heart", "af_bella", "af_sarah", "am_adam", "am_puck"]
-        )
+        return VoicesResponse(voices=["af_heart", "af_bella", "af_sarah", "am_adam", "am_puck"])
 
 
 class DownloadModelRequest(BaseModel):
@@ -556,10 +634,7 @@ async def download_piper_model(request: DownloadModelRequest) -> DownloadModelRe
     # Validate it's a Piper model
     if not model_id.startswith("speaches-ai/piper-"):
         logger.warning(f"Invalid Piper model ID: {model_id}")
-        return DownloadModelResponse(
-            success=False,
-            message=f"Invalid Piper model ID: {model_id}"
-        )
+        return DownloadModelResponse(success=False, message=f"Invalid Piper model ID: {model_id}")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -571,8 +646,7 @@ async def download_piper_model(request: DownloadModelRequest) -> DownloadModelRe
             if check_response.status_code == 200:
                 logger.info(f"Piper model already installed: {model_id}")
                 return DownloadModelResponse(
-                    success=True,
-                    message=f"Model '{model_id}' already installed"
+                    success=True, message=f"Model '{model_id}' already installed"
                 )
 
             # Download the model (~60MB, should take <30s)
@@ -585,21 +659,16 @@ async def download_piper_model(request: DownloadModelRequest) -> DownloadModelRe
 
             logger.info(f"Piper model downloaded successfully: {model_id}")
             return DownloadModelResponse(
-                success=True,
-                message=f"Model '{model_id}' downloaded successfully"
+                success=True, message=f"Model '{model_id}' downloaded successfully"
             )
     except httpx.TimeoutException:
         logger.error(f"Timeout downloading Piper model: {model_id}")
         return DownloadModelResponse(
-            success=False,
-            message=f"Timeout downloading model '{model_id}'"
+            success=False, message=f"Timeout downloading model '{model_id}'"
         )
     except Exception as e:
         logger.error(f"Failed to download Piper model {model_id}: {e}")
-        return DownloadModelResponse(
-            success=False,
-            message=f"Failed to download model: {e}"
-        )
+        return DownloadModelResponse(success=False, message=f"Failed to download model: {e}")
 
 
 @app.get("/models", response_model=ModelsResponse)
@@ -1003,9 +1072,7 @@ async def test_hass(req: TestHassRequest) -> TestConnectionResponse:
                 timeout=10.0,
             )
             if response.status_code == 401:
-                return TestConnectionResponse(
-                    success=False, error="Invalid access token"
-                )
+                return TestConnectionResponse(success=False, error="Invalid access token")
             response.raise_for_status()
 
             states = response.json()
@@ -1038,9 +1105,7 @@ async def get_hass_agents(req: TestHassRequest) -> HassAgentsResponse:
                 timeout=10.0,
             )
             if response.status_code == 401:
-                return HassAgentsResponse(
-                    success=False, error="Invalid access token"
-                )
+                return HassAgentsResponse(success=False, error="Invalid access token")
             response.raise_for_status()
 
             states = response.json()
@@ -1050,16 +1115,13 @@ async def get_hass_agents(req: TestHassRequest) -> HassAgentsResponse:
             for entity in states:
                 entity_id = entity.get("entity_id", "")
                 if entity_id.startswith("conversation."):
-                    friendly_name = entity.get("attributes", {}).get(
-                        "friendly_name", entity_id
-                    )
+                    friendly_name = entity.get("attributes", {}).get("friendly_name", entity_id)
                     agents.append(HassAgent(id=entity_id, name=friendly_name))
 
             # Sort by name, but put "Home Assistant" first as default
-            agents.sort(key=lambda a: (
-                0 if a.id == "conversation.home_assistant" else 1,
-                a.name.lower()
-            ))
+            agents.sort(
+                key=lambda a: (0 if a.id == "conversation.home_assistant" else 1, a.name.lower())
+            )
 
             return HassAgentsResponse(success=True, agents=agents)
 
@@ -1107,24 +1169,18 @@ async def test_n8n(req: TestN8nRequest) -> TestConnectionResponse:
             if response.status_code == 200:
                 text = response.text
                 if "Unauthorized" in text:
-                    return TestConnectionResponse(
-                        success=False, error="Invalid access token"
-                    )
+                    return TestConnectionResponse(success=False, error="Invalid access token")
                 # SSE response with tools means success
                 if "search_workflows" in text:
                     return TestConnectionResponse(success=True)
 
             if response.status_code == 401:
-                return TestConnectionResponse(
-                    success=False, error="Invalid access token"
-                )
+                return TestConnectionResponse(success=False, error="Invalid access token")
             response.raise_for_status()
 
             return TestConnectionResponse(success=True)
     except httpx.ConnectError:
-        return TestConnectionResponse(
-            success=False, error=f"Cannot connect to n8n at {req.url}"
-        )
+        return TestConnectionResponse(success=False, error=f"Cannot connect to n8n at {req.url}")
     except Exception as e:
         return TestConnectionResponse(success=False, error=str(e))
 
@@ -1166,13 +1222,9 @@ async def test_friday(req: TestFridayRequest) -> TestConnectionResponse:
             )
 
             if response.status_code == 401:
-                return TestConnectionResponse(
-                    success=False, error="Invalid API token"
-                )
+                return TestConnectionResponse(success=False, error="Invalid API token")
             if response.status_code == 403:
-                return TestConnectionResponse(
-                    success=False, error="Access denied"
-                )
+                return TestConnectionResponse(success=False, error="Access denied")
             response.raise_for_status()
 
             return TestConnectionResponse(success=True)
@@ -1292,6 +1344,7 @@ def get_speaker_recognition():
     if _speaker_recognition is None:
         settings = settings_module.load_settings()
         from .audio.speaker_recognition import create_speaker_recognition
+
         _speaker_recognition = create_speaker_recognition(settings)
 
     return _speaker_recognition

@@ -303,7 +303,10 @@ fi
 
 # Check if mlx-audio is already running
 MLX_RUNNING=false
-if [ -f "$MLX_PID_FILE" ]; then
+if curl -s http://localhost:8001/docs > /dev/null 2>&1; then
+    MLX_RUNNING=true
+    log "✓ mlx-audio already running on port 8001"
+elif [ -f "$MLX_PID_FILE" ]; then
     PID=$(cat "$MLX_PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
         MLX_RUNNING=true
@@ -349,7 +352,10 @@ fi
 
 # Check if DeepFilter server is already running
 DF_RUNNING=false
-if [ -f "$DF_PID_FILE" ]; then
+if curl -s http://localhost:8002/health > /dev/null 2>&1; then
+    DF_RUNNING=true
+    log "✓ DeepFilter already running on port 8002"
+elif [ -f "$DF_PID_FILE" ]; then
     PID=$(cat "$DF_PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
         DF_RUNNING=true

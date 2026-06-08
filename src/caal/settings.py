@@ -68,6 +68,12 @@ DEFAULT_SETTINGS = {
     "n8n_enabled": False,
     "n8n_url": "",
     "n8n_token": "",
+    # Native assistant tools (preferred over legacy n8n workflows)
+    "native_tools_enabled": True,
+    "email_accounts": [],
+    "calendar_sources": [],
+    "reminders_provider": "local",  # "local" | "apple"
+    "alarms_enabled": True,
     # Shared settings
     "max_turns": 20,
     "tool_cache_size": 3,
@@ -129,8 +135,27 @@ DEFAULT_SETTINGS = {
     "friday_agent_id": "main",
 }
 
-# Keys that should never be returned via API (security)
-SENSITIVE_KEYS: set[str] = set()  # All keys returned - shown as dots in password fields
+# Keys that should never be returned via API in plaintext (security)
+SENSITIVE_KEY_PARTS = ("token", "key", "secret", "password", "credential", "auth")
+SENSITIVE_KEYS: set[str] = {
+    "groq_api_key",
+    "hass_token",
+    "n8n_token",
+    "friday_token",
+}
+REDACTED_SECRET = "********"
+
+EMAIL_PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
+    "zoho": {
+        "imap_host": "imap.zoho.com",
+        "imap_port": 993,
+        "imap_ssl": True,
+        "smtp_host": "smtp.zoho.com",
+        "smtp_port": 587,
+        "smtp_starttls": True,
+    },
+    "generic_imap_smtp": {},
+}
 
 # Cached settings (reloaded on save)
 _settings_cache: dict | None = None
@@ -212,16 +237,80 @@ def _migrate_env_to_settings(settings: dict) -> dict:
     return settings
 
 
+def is_sensitive_key(key: str) -> bool:
+    """Return whether a settings key likely contains a secret."""
+    lowered = key.lower()
+    return key in SENSITIVE_KEYS or any(part in lowered for part in SENSITIVE_KEY_PARTS)
+
+
+def redact_sensitive_values(value: Any) -> Any:
+    """Recursively redact secret-looking values for API responses."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if is_sensitive_key(key) and item:
+                redacted[key] = REDACTED_SECRET
+            else:
+                redacted[key] = redact_sensitive_values(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive_values(item) for item in value]
+    return value
+
+
+def _merge_secret_placeholders(new_value: Any, existing_value: Any) -> Any:
+    """Preserve existing nested secrets when the UI posts redacted placeholders."""
+    if new_value == REDACTED_SECRET and existing_value:
+        return existing_value
+
+    if isinstance(new_value, dict) and isinstance(existing_value, dict):
+        merged: dict[str, Any] = {}
+        for key, item in new_value.items():
+            existing_item = existing_value.get(key)
+            if is_sensitive_key(key) and item == REDACTED_SECRET and existing_item:
+                merged[key] = existing_item
+            else:
+                merged[key] = _merge_secret_placeholders(item, existing_item)
+        return merged
+
+    if isinstance(new_value, list) and isinstance(existing_value, list):
+        existing_by_id = {
+            item.get("id"): item
+            for item in existing_value
+            if isinstance(item, dict) and item.get("id")
+        }
+        merged_list: list[Any] = []
+        for index, item in enumerate(new_value):
+            existing_item: Any = None
+            if isinstance(item, dict) and item.get("id") in existing_by_id:
+                existing_item = existing_by_id[item["id"]]
+            elif index < len(existing_value):
+                existing_item = existing_value[index]
+            merged_list.append(_merge_secret_placeholders(item, existing_item))
+        return merged_list
+
+    return new_value
+
+
+def apply_email_provider_preset(account: dict[str, Any]) -> dict[str, Any]:
+    """Fill provider-specific defaults for a UI-configured email account."""
+    provider = str(account.get("provider") or "generic_imap_smtp")
+    preset = EMAIL_PROVIDER_PRESETS.get(provider, {})
+    normalized = {**preset, **account, "provider": provider}
+    email_address = normalized.get("email")
+    if email_address:
+        normalized.setdefault("imap_username", email_address)
+        normalized.setdefault("smtp_username", email_address)
+    return normalized
+
+
 def load_settings_safe() -> dict:
-    """Load settings without sensitive keys (for API responses).
+    """Load settings with sensitive values redacted (for API responses).
 
     Returns:
-        Settings dict with sensitive keys removed.
+        Settings dict with configured sensitive keys replaced by a placeholder.
     """
-    settings = load_settings().copy()
-    for key in SENSITIVE_KEYS:
-        settings.pop(key, None)
-    return settings
+    return redact_sensitive_values(load_settings())
 
 
 def load_user_settings() -> dict:
@@ -253,8 +342,13 @@ def save_settings(settings: dict) -> None:
     # Load existing settings first
     existing = load_user_settings()
 
-    # Merge: existing settings + new settings (new overwrites existing)
-    merged = {**existing, **settings}
+    # Merge: existing settings + new settings (new overwrites existing).
+    # Preserve secrets when the UI submits the redacted placeholder back unchanged.
+    merged = existing.copy()
+    for key, value in settings.items():
+        if key in SENSITIVE_KEYS and value == REDACTED_SECRET and existing.get(key):
+            continue
+        merged[key] = _merge_secret_placeholders(value, existing.get(key))
 
     # Filter to only known keys
     filtered = {k: v for k, v in merged.items() if k in DEFAULT_SETTINGS}

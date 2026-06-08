@@ -67,6 +67,12 @@ class _SettingsModalState extends State<SettingsModal> {
   double _energyGateThresholdDb = -35.0;
   // Visualization
   String _visualizationType = 'jarvis';
+  // Native assistant tools
+  bool _nativeToolsEnabled = true;
+  String _remindersProvider = 'local';
+  bool _alarmsEnabled = true;
+  bool _emailJsonValid = true;
+  bool _calendarJsonValid = true;
 
   // Available options
   List<String> _voices = [];
@@ -75,6 +81,8 @@ class _SettingsModalState extends State<SettingsModal> {
 
   // Text controllers
   final _wakeGreetingsController = TextEditingController();
+  final _emailAccountsController = TextEditingController();
+  final _calendarSourcesController = TextEditingController();
 
   String get _webhookUrl {
     final serverUrl = context.read<AppCtrl>().serverUrl;
@@ -91,7 +99,31 @@ class _SettingsModalState extends State<SettingsModal> {
   @override
   void dispose() {
     _wakeGreetingsController.dispose();
+    _emailAccountsController.dispose();
+    _calendarSourcesController.dispose();
     super.dispose();
+  }
+
+  String _prettyJson(dynamic value) {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(value ?? []);
+  }
+
+  List<dynamic> _parseJsonArrayController(TextEditingController controller) {
+    final text = controller.text.trim();
+    if (text.isEmpty) return [];
+    final parsed = jsonDecode(text);
+    if (parsed is! List) {
+      throw const FormatException('Expected a JSON array');
+    }
+    return parsed;
+  }
+
+  void _syncNativeToolControllers(Map<String, dynamic> settings) {
+    _emailAccountsController.text = _prettyJson(settings['email_accounts'] ?? []);
+    _calendarSourcesController.text = _prettyJson(settings['calendar_sources'] ?? []);
+    _emailJsonValid = true;
+    _calendarJsonValid = true;
   }
 
   Future<void> _loadSettings() async {
@@ -137,6 +169,10 @@ class _SettingsModalState extends State<SettingsModal> {
           _energyGateEnabled = settings['energy_gate_enabled'] ?? _energyGateEnabled;
           _energyGateThresholdDb = (settings['energy_gate_threshold_db'] ?? _energyGateThresholdDb).toDouble();
           _visualizationType = settings['visualization_type'] ?? _visualizationType;
+          _nativeToolsEnabled = settings['native_tools_enabled'] ?? _nativeToolsEnabled;
+          _remindersProvider = settings['reminders_provider'] ?? _remindersProvider;
+          _alarmsEnabled = settings['alarms_enabled'] ?? _alarmsEnabled;
+          _syncNativeToolControllers(Map<String, dynamic>.from(settings));
           _wakeGreetingsController.text = _wakeGreetings.join('\n');
         });
       }
@@ -183,6 +219,20 @@ class _SettingsModalState extends State<SettingsModal> {
       final greetings =
           _wakeGreetingsController.text.split('\n').where((g) => g.trim().isNotEmpty).toList();
 
+      List<dynamic> emailAccounts;
+      List<dynamic> calendarSources;
+      try {
+        emailAccounts = _parseJsonArrayController(_emailAccountsController);
+        calendarSources = _parseJsonArrayController(_calendarSourcesController);
+      } catch (e) {
+        setState(() {
+          _emailJsonValid = false;
+          _calendarJsonValid = false;
+          _error = 'Native tools JSON must be valid arrays: $e';
+        });
+        return;
+      }
+
       final settings = {
         'agent_name': _agentName,
         'tts_voice': _ttsVoice,
@@ -203,6 +253,11 @@ class _SettingsModalState extends State<SettingsModal> {
         'energy_gate_enabled': _energyGateEnabled,
         'energy_gate_threshold_db': _energyGateThresholdDb,
         'visualization_type': _visualizationType,
+        'native_tools_enabled': _nativeToolsEnabled,
+        'email_accounts': emailAccounts,
+        'calendar_sources': calendarSources,
+        'reminders_provider': _remindersProvider,
+        'alarms_enabled': _alarmsEnabled,
       };
 
       final res = await http.post(
@@ -524,6 +579,115 @@ class _SettingsModalState extends State<SettingsModal> {
                         ),
                         const SizedBox(height: 16),
                       ],
+                    ),
+
+                    // Native Assistant Tools
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Native Assistant Tools',
+                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
+                                    Text('Email, calendar, reminders, alarms',
+                                        style: TextStyle(color: Colors.white54, fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                              Switch(
+                                value: _nativeToolsEnabled,
+                                onChanged: (v) => setState(() => _nativeToolsEnabled = v),
+                                activeTrackColor: const Color(0xFF45997C),
+                              ),
+                            ],
+                          ),
+                          if (_nativeToolsEnabled) ...[
+                            const SizedBox(height: 12),
+                            _buildDropdown(
+                              label: 'Reminders Provider',
+                              value: _remindersProvider,
+                              options: const ['local', 'apple'],
+                              onChanged: (v) => setState(() => _remindersProvider = v ?? _remindersProvider),
+                            ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Expanded(
+                                  child: Text('Alarms and Timers',
+                                      style: TextStyle(color: Colors.white70, fontSize: 13)),
+                                ),
+                                Switch(
+                                  value: _alarmsEnabled,
+                                  onChanged: (v) => setState(() => _alarmsEnabled = v),
+                                  activeTrackColor: const Color(0xFF45997C),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            _buildLabel('Email Accounts JSON'),
+                            TextFormField(
+                              controller: _emailAccountsController,
+                              minLines: 3,
+                              maxLines: 6,
+                              style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12),
+                              decoration: _inputDecoration(),
+                              onChanged: (_) => setState(() {
+                                try {
+                                  _parseJsonArrayController(_emailAccountsController);
+                                  _emailJsonValid = true;
+                                } catch (_) {
+                                  _emailJsonValid = false;
+                                }
+                              }),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                _emailJsonValid ? 'JSON array of email account configs' : 'Invalid JSON array',
+                                style: TextStyle(color: _emailJsonValid ? Colors.white38 : Colors.red, fontSize: 11),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            _buildLabel('Calendar Sources JSON'),
+                            TextFormField(
+                              controller: _calendarSourcesController,
+                              minLines: 3,
+                              maxLines: 6,
+                              style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12),
+                              decoration: _inputDecoration(),
+                              onChanged: (_) => setState(() {
+                                try {
+                                  _parseJsonArrayController(_calendarSourcesController);
+                                  _calendarJsonValid = true;
+                                } catch (_) {
+                                  _calendarJsonValid = false;
+                                }
+                              }),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                _calendarJsonValid
+                                    ? 'JSON array of calendar source configs'
+                                    : 'Invalid JSON array',
+                                style: TextStyle(color: _calendarJsonValid ? Colors.white38 : Colors.red, fontSize: 11),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
 
                     // Advanced: Turn Detection Section

@@ -18,6 +18,35 @@ import { Button } from '@/components/livekit/button';
 // Types
 // =============================================================================
 
+interface EmailAccount {
+  id: string;
+  provider: 'zoho' | 'generic_imap_smtp';
+  display_name?: string;
+  email: string;
+  imap_host?: string;
+  imap_port?: number;
+  imap_ssl?: boolean;
+  imap_username?: string;
+  imap_password?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_starttls?: boolean;
+  smtp_username?: string;
+  smtp_password?: string;
+  default?: boolean;
+}
+
+interface CalendarSource {
+  id: string;
+  provider: 'zoho_caldav' | 'caldav' | 'ics' | 'google' | 'microsoft' | 'icloud';
+  display_name?: string;
+  url?: string;
+  username?: string;
+  password?: string;
+  default?: boolean;
+  writable?: boolean;
+}
+
 interface Settings {
   agent_name: string;
   prompt: string;
@@ -44,6 +73,11 @@ interface Settings {
   n8n_enabled: boolean;
   n8n_url: string;
   n8n_token: string;
+  native_tools_enabled: boolean;
+  email_accounts: EmailAccount[];
+  calendar_sources: CalendarSource[];
+  reminders_provider: 'local' | 'apple';
+  alarms_enabled: boolean;
   // Friday assistant
   friday_enabled: boolean;
   friday_host: string;
@@ -111,6 +145,11 @@ const DEFAULT_SETTINGS: Settings = {
   n8n_enabled: false,
   n8n_url: '',
   n8n_token: '',
+  native_tools_enabled: true,
+  email_accounts: [],
+  calendar_sources: [],
+  reminders_provider: 'local',
+  alarms_enabled: true,
   friday_enabled: false,
   friday_host: '',
   friday_token: '',
@@ -155,6 +194,45 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'integrations', label: 'Integrations' },
   { id: 'wake', label: 'Wake Word' },
 ];
+
+const REDACTED_SECRET = '********';
+
+const applyEmailProviderDefaults = (account: EmailAccount): EmailAccount => {
+  const withProvider = { ...account };
+  if (withProvider.provider === 'zoho') {
+    withProvider.imap_host ||= 'imap.zoho.com';
+    withProvider.imap_port ||= 993;
+    withProvider.imap_ssl ??= true;
+    withProvider.smtp_host ||= 'smtp.zoho.com';
+    withProvider.smtp_port ||= 587;
+    withProvider.smtp_starttls ??= true;
+  }
+  if (withProvider.email) {
+    withProvider.imap_username ||= withProvider.email;
+    withProvider.smtp_username ||= withProvider.email;
+  }
+  return withProvider;
+};
+
+const newEmailAccount = (index: number): EmailAccount =>
+  applyEmailProviderDefaults({
+    id: index === 0 ? 'personal' : `email-${index + 1}`,
+    provider: 'zoho',
+    display_name: index === 0 ? 'Personal' : `Email ${index + 1}`,
+    email: '',
+    default: index === 0,
+  });
+
+const newCalendarSource = (index: number): CalendarSource => ({
+  id: index === 0 ? 'primary' : `calendar-${index + 1}`,
+  provider: 'zoho_caldav',
+  display_name: index === 0 ? 'Primary calendar' : `Calendar ${index + 1}`,
+  url: '',
+  username: '',
+  password: '',
+  default: index === 0,
+  writable: true,
+});
 
 // =============================================================================
 // Component
@@ -214,7 +292,64 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     error: null,
     info: null,
   });
+  const [emailTests, setEmailTests] = useState<
+    Record<string, { status: TestStatus; error: string | null; info: string | null }>
+  >({});
+  const [calendarTests, setCalendarTests] = useState<
+    Record<string, { status: TestStatus; error: string | null; info: string | null }>
+  >({});
   const [hassAgents, setHassAgents] = useState<{ id: string; name: string }[]>([]);
+
+  const updateEmailAccount = (index: number, patch: Partial<EmailAccount>) => {
+    const accounts = [...(settings.email_accounts || [])];
+    const current = accounts[index] || newEmailAccount(index);
+    const updated = applyEmailProviderDefaults({ ...current, ...patch });
+    if (patch.default) {
+      accounts.forEach((account, accountIndex) => {
+        accounts[accountIndex] = { ...account, default: accountIndex === index };
+      });
+    }
+    accounts[index] = updated;
+    setSettings({ ...settings, email_accounts: accounts });
+  };
+
+  const addEmailAccount = () => {
+    const accounts = settings.email_accounts || [];
+    setSettings({ ...settings, email_accounts: [...accounts, newEmailAccount(accounts.length)] });
+  };
+
+  const removeEmailAccount = (index: number) => {
+    setSettings({
+      ...settings,
+      email_accounts: (settings.email_accounts || []).filter((_, accountIndex) => accountIndex !== index),
+    });
+  };
+
+  const updateCalendarSource = (index: number, patch: Partial<CalendarSource>) => {
+    const sources = [...(settings.calendar_sources || [])];
+    const updated = { ...(sources[index] || newCalendarSource(index)), ...patch };
+    if (patch.default) {
+      sources.forEach((source, sourceIndex) => {
+        sources[sourceIndex] = { ...source, default: sourceIndex === index };
+      });
+    }
+    sources[index] = updated;
+    setSettings({ ...settings, calendar_sources: sources });
+  };
+
+  const addCalendarSource = () => {
+    const sources = settings.calendar_sources || [];
+    setSettings({ ...settings, calendar_sources: [...sources, newCalendarSource(sources.length)] });
+  };
+
+  const removeCalendarSource = (index: number) => {
+    setSettings({
+      ...settings,
+      calendar_sources: (settings.calendar_sources || []).filter(
+        (_, sourceIndex) => sourceIndex !== index
+      ),
+    });
+  };
 
   // Speaker enrollment state
   const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
@@ -670,6 +805,70 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setFridayTest({ status: 'error', error: 'Failed to connect', info: null });
     }
   }, [settings.friday_host, settings.friday_token]);
+
+  const testEmailAccount = useCallback(async (account: EmailAccount) => {
+    if (!account.id) return;
+    setEmailTests((prev) => ({ ...prev, [account.id]: { status: 'testing', error: null, info: null } }));
+
+    try {
+      const res = await fetch('/api/setup/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: account.id }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        const checks = result.data?.checks ? Object.keys(result.data.checks).join(' + ') : 'Connected';
+        setEmailTests((prev) => ({
+          ...prev,
+          [account.id]: { status: 'success', error: null, info: checks || 'Connected' },
+        }));
+      } else {
+        setEmailTests((prev) => ({
+          ...prev,
+          [account.id]: { status: 'error', error: result.error || 'Connection failed', info: null },
+        }));
+      }
+    } catch {
+      setEmailTests((prev) => ({
+        ...prev,
+        [account.id]: { status: 'error', error: 'Failed to connect', info: null },
+      }));
+    }
+  }, []);
+
+  const testCalendarSource = useCallback(async (source: CalendarSource) => {
+    if (!source.id) return;
+    setCalendarTests((prev) => ({
+      ...prev,
+      [source.id]: { status: 'testing', error: null, info: null },
+    }));
+
+    try {
+      const res = await fetch('/api/setup/test-calendar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: source.id }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        setCalendarTests((prev) => ({
+          ...prev,
+          [source.id]: { status: 'success', error: null, info: 'Connected' },
+        }));
+      } else {
+        setCalendarTests((prev) => ({
+          ...prev,
+          [source.id]: { status: 'error', error: result.error || 'Connection failed', info: null },
+        }));
+      }
+    } catch {
+      setCalendarTests((prev) => ({
+        ...prev,
+        [source.id]: { status: 'error', error: 'Failed to connect', info: null },
+      }));
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Save
@@ -1354,6 +1553,359 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
   const renderIntegrationsTab = () => (
     <div className="space-y-4">
+      {/* Native Assistant Tools */}
+      <div className="overflow-hidden rounded-xl border border-green-500/30">
+        <div className="bg-green-500/10 flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <span className="font-semibold">Native Assistant Tools</span>
+            <p className="text-muted-foreground text-xs">
+              Preferred JARVIS capabilities: email, calendars, reminders, alarms and timers.
+            </p>
+          </div>
+          <Toggle
+            enabled={settings.native_tools_enabled}
+            onToggle={() =>
+              setSettings({ ...settings, native_tools_enabled: !settings.native_tools_enabled })
+            }
+          />
+        </div>
+
+        {settings.native_tools_enabled && (
+          <div className="space-y-5 p-4">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <label className="text-sm font-medium">Email accounts</label>
+                    <p className="text-muted-foreground text-xs">
+                      Runtime SMTP + IMAP accounts. Zoho custom domains work out of the box.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addEmailAccount}
+                    className="bg-muted hover:bg-muted/80 rounded-lg px-3 py-2 text-xs font-medium"
+                  >
+                    Add email
+                  </button>
+                </div>
+
+                {(settings.email_accounts || []).length === 0 && (
+                  <p className="text-muted-foreground rounded-lg border border-dashed p-3 text-xs">
+                    No email accounts configured. Add your Zoho Mail account here — no Docker edits.
+                  </p>
+                )}
+
+                {(settings.email_accounts || []).map((account, index) => (
+                  <div key={`${account.id}-${index}`} className="space-y-3 rounded-lg border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        type="text"
+                        value={account.display_name || ''}
+                        onChange={(e) => updateEmailAccount(index, { display_name: e.target.value })}
+                        placeholder="Display name"
+                        className="border-input bg-background flex-1 rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeEmailAccount(index)}
+                        className="text-muted-foreground hover:text-red-500 rounded-lg p-2"
+                        aria-label="Remove email account"
+                      >
+                        <Trash size={16} />
+                      </button>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <input
+                        type="text"
+                        value={account.id || ''}
+                        onChange={(e) => updateEmailAccount(index, { id: e.target.value })}
+                        placeholder="account id, e.g. personal"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <select
+                        value={account.provider || 'zoho'}
+                        onChange={(e) =>
+                          updateEmailAccount(index, {
+                            provider: e.target.value as EmailAccount['provider'],
+                          })
+                        }
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      >
+                        <option value="zoho">Zoho Mail</option>
+                        <option value="generic_imap_smtp">Generic IMAP/SMTP</option>
+                      </select>
+                      <input
+                        type="email"
+                        value={account.email || ''}
+                        onChange={(e) =>
+                          updateEmailAccount(index, {
+                            email: e.target.value,
+                            imap_username: e.target.value,
+                            smtp_username: e.target.value,
+                          })
+                        }
+                        placeholder="name@yourdomain.com"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm md:col-span-2"
+                      />
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <input
+                        type="text"
+                        value={account.imap_host || ''}
+                        onChange={(e) => updateEmailAccount(index, { imap_host: e.target.value })}
+                        placeholder="IMAP host"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="number"
+                        value={account.imap_port || 993}
+                        onChange={(e) => updateEmailAccount(index, { imap_port: Number(e.target.value) })}
+                        placeholder="IMAP port"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={account.smtp_host || ''}
+                        onChange={(e) => updateEmailAccount(index, { smtp_host: e.target.value })}
+                        placeholder="SMTP host"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="number"
+                        value={account.smtp_port || 587}
+                        onChange={(e) => updateEmailAccount(index, { smtp_port: Number(e.target.value) })}
+                        placeholder="SMTP port"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="password"
+                        value={account.imap_password || ''}
+                        onChange={(e) => updateEmailAccount(index, { imap_password: e.target.value })}
+                        placeholder={`IMAP app password (${REDACTED_SECRET} keeps existing)`}
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="password"
+                        value={account.smtp_password || ''}
+                        onChange={(e) => updateEmailAccount(index, { smtp_password: e.target.value })}
+                        placeholder={`SMTP app password (${REDACTED_SECRET} keeps existing)`}
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-xs">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={account.default || false}
+                          onChange={(e) => updateEmailAccount(index, { default: e.target.checked })}
+                        />
+                        Default account
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={account.imap_ssl ?? true}
+                          onChange={(e) => updateEmailAccount(index, { imap_ssl: e.target.checked })}
+                        />
+                        IMAP SSL
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={account.smtp_starttls ?? true}
+                          onChange={(e) => updateEmailAccount(index, { smtp_starttls: e.target.checked })}
+                        />
+                        SMTP STARTTLS
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => testEmailAccount(account)}
+                        disabled={!account.id || emailTests[account.id]?.status === 'testing'}
+                        className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-50"
+                      >
+                        <TestStatusIcon status={emailTests[account.id]?.status || 'idle'} />
+                        Test email
+                      </button>
+                      {emailTests[account.id]?.info && (
+                        <p className="text-xs text-green-500">{emailTests[account.id]?.info}</p>
+                      )}
+                      {emailTests[account.id]?.error && (
+                        <p className="text-xs text-red-500">{emailTests[account.id]?.error}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <label className="text-sm font-medium">Calendar sources</label>
+                    <p className="text-muted-foreground text-xs">
+                      Add Zoho CalDAV, iCloud, generic CalDAV, ICS, Google, or Outlook sources.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addCalendarSource}
+                    className="bg-muted hover:bg-muted/80 rounded-lg px-3 py-2 text-xs font-medium"
+                  >
+                    Add calendar
+                  </button>
+                </div>
+
+                {(settings.calendar_sources || []).length === 0 && (
+                  <p className="text-muted-foreground rounded-lg border border-dashed p-3 text-xs">
+                    No calendars configured. Add a source here and JARVIS can read it at runtime.
+                  </p>
+                )}
+
+                {(settings.calendar_sources || []).map((source, index) => (
+                  <div key={`${source.id}-${index}`} className="space-y-3 rounded-lg border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        type="text"
+                        value={source.display_name || ''}
+                        onChange={(e) => updateCalendarSource(index, { display_name: e.target.value })}
+                        placeholder="Display name"
+                        className="border-input bg-background flex-1 rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeCalendarSource(index)}
+                        className="text-muted-foreground hover:text-red-500 rounded-lg p-2"
+                        aria-label="Remove calendar source"
+                      >
+                        <Trash size={16} />
+                      </button>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <input
+                        type="text"
+                        value={source.id || ''}
+                        onChange={(e) => updateCalendarSource(index, { id: e.target.value })}
+                        placeholder="source id, e.g. work"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <select
+                        value={source.provider || 'zoho_caldav'}
+                        onChange={(e) =>
+                          updateCalendarSource(index, {
+                            provider: e.target.value as CalendarSource['provider'],
+                          })
+                        }
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      >
+                        <option value="zoho_caldav">Zoho Calendar / CalDAV</option>
+                        <option value="caldav">Generic CalDAV</option>
+                        <option value="icloud">Apple iCloud CalDAV</option>
+                        <option value="ics">ICS feed (read-only)</option>
+                        <option value="google">Google Calendar</option>
+                        <option value="microsoft">Outlook / Microsoft 365</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={source.url || ''}
+                        onChange={(e) => updateCalendarSource(index, { url: e.target.value })}
+                        placeholder="CalDAV or ICS URL"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm md:col-span-2"
+                      />
+                      <input
+                        type="text"
+                        value={source.username || ''}
+                        onChange={(e) => updateCalendarSource(index, { username: e.target.value })}
+                        placeholder="username / email"
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="password"
+                        value={source.password || ''}
+                        onChange={(e) => updateCalendarSource(index, { password: e.target.value })}
+                        placeholder={`app password (${REDACTED_SECRET} keeps existing)`}
+                        className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-xs">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={source.default || false}
+                          onChange={(e) => updateCalendarSource(index, { default: e.target.checked })}
+                        />
+                        Default calendar
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={source.writable ?? true}
+                          onChange={(e) => updateCalendarSource(index, { writable: e.target.checked })}
+                        />
+                        Writable
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => testCalendarSource(source)}
+                        disabled={!source.id || calendarTests[source.id]?.status === 'testing'}
+                        className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-50"
+                      >
+                        <TestStatusIcon status={calendarTests[source.id]?.status || 'idle'} />
+                        Test calendar
+                      </button>
+                      {calendarTests[source.id]?.info && (
+                        <p className="text-xs text-green-500">{calendarTests[source.id]?.info}</p>
+                      )}
+                      {calendarTests[source.id]?.error && (
+                        <p className="text-xs text-red-500">{calendarTests[source.id]?.error}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2 rounded-lg border p-3">
+                <label className="text-sm font-medium">Reminders provider</label>
+                <select
+                  value={settings.reminders_provider}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      reminders_provider: e.target.value as Settings['reminders_provider'],
+                    })
+                  }
+                  className="border-input bg-background w-full rounded-lg border px-4 py-3 text-sm"
+                >
+                  <option value="local">Local CAAL reminders</option>
+                  <option value="apple">Apple Reminders via remindctl</option>
+                </select>
+                <p className="text-muted-foreground text-xs">
+                  Local works in Docker; Apple requires host-side bridge access.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div>
+                  <label className="text-sm font-medium">Alarms and timers</label>
+                  <p className="text-muted-foreground text-xs">
+                    Let JARVIS schedule audible alarms and timer announcements.
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.alarms_enabled}
+                  onToggle={() => setSettings({ ...settings, alarms_enabled: !settings.alarms_enabled })}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Home Assistant */}
       <div className="overflow-hidden rounded-xl border">
         <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
@@ -1423,12 +1975,17 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         )}
       </div>
 
-      {/* n8n */}
+      {/* Legacy n8n */}
       <div
         className={`overflow-hidden rounded-xl border ${!settings.n8n_enabled ? 'opacity-60' : ''}`}
       >
         <div className="bg-muted/50 flex items-center justify-between border-b px-4 py-3">
-          <span className="font-semibold">n8n</span>
+          <div>
+            <span className="font-semibold">n8n Legacy Workflows</span>
+            <p className="text-muted-foreground text-xs">
+              Optional fallback. Native Assistant Tools are the primary path.
+            </p>
+          </div>
           <Toggle
             enabled={settings.n8n_enabled}
             onToggle={() => setSettings({ ...settings, n8n_enabled: !settings.n8n_enabled })}
