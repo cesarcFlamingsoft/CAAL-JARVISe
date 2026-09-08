@@ -16,7 +16,7 @@ export type FeedController<T> = FeedState<T> & { reload: () => void };
 export type FeedPath = '/api/dashboard/calendar' | '/api/dashboard/inbox';
 
 /** How often a visible dashboard re-reads a feed on its own. */
-const REFRESH_INTERVAL_MS = 5 * 60_000;
+const REFRESH_INTERVAL_MS = 60_000;
 
 /**
  * One dashboard feed from the BFF, reduced by `parse`, re-read on a timer
@@ -74,6 +74,20 @@ export function useDashboardFeed<T>(
       window.clearInterval(timer);
     };
   }, [attempt, path, parse, reload]);
+
+  // Refresh immediately when the user comes back, rather than waiting for the
+  // next minute tick after a laptop wake, tab switch, or mobile app resume.
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('focus', refreshWhenVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('focus', refreshWhenVisible);
+    };
+  }, [reload]);
 
   // Settings saves and account connects or disconnects announce themselves.
   useEffect(() => {

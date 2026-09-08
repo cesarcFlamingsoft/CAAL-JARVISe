@@ -68,6 +68,13 @@ describe('dashboard feed hook', () => {
     assert.match(source, /cache: 'no-store'/);
     assert.match(source, /'connections-updated'/);
     assert.match(source, /'settings-updated'/);
+    const refresh = /REFRESH_INTERVAL_MS = (\d[\d_]*)/.exec(source);
+    assert.ok(refresh, 'dashboard feeds must declare an automatic refresh interval');
+    assert.ok(
+      Number(refresh![1].replace(/_/g, '')) <= 60_000,
+      'visible dashboard feeds must refresh at least once per minute'
+    );
+    assert.match(source, /'visibilitychange'/, 'returning to a visible tab must refresh promptly');
     assert.match(source, /identity_not_configured/);
     for (const name of SESSION_READS) assert.ok(!source.includes(name), name);
   });
@@ -82,7 +89,16 @@ describe('calendar and inbox widgets', () => {
     assert.match(inbox, /accountIssues\(/);
     // Each account's state is reported by its own section, never feed-wide.
     for (const source of [calendar, inbox]) assert.match(source, /<AccountSection\b/);
-    assert.match(read(SECTION), /<AccountIssues\b/);
+    const section = read(SECTION);
+    assert.match(section, /<AccountIssues\b/);
+    assert.match(section, /aria-expanded/, 'account summaries must reveal details on demand');
+    assert.match(section, /role="dialog"/, 'an account must open in an inspection card above the dashboard');
+    assert.match(section, /aria-modal="true"/, 'the inspection card must own focus while open');
+    assert.match(section, /event\.key === 'Escape'/, 'Escape must dismiss the inspection card');
+    assert.match(section, /fixed inset-0/, 'the inspection card must layer above the dashboard');
+    assert.match(section, /AnimatePresence/, 'account details must animate in and out');
+    assert.match(section, /<motion\.div/, 'account details need a motion container');
+    assert.match(section, /type="button"/, 'the account summary must be keyboard-clickable');
     assert.match(read(ISSUES), /describeAccountStatus\(/);
     assert.match(inbox, /rel=.noopener noreferrer./);
     assert.match(inbox, /target=._blank./);
