@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from caal.tools import calendar_tools, email_tools
+from caal.tools import alarms_tools, calendar_tools, email_tools, memory_tools, reminders_tools
 
 ToolHandler = Callable[..., Any]
 
@@ -34,6 +34,9 @@ class ToolDefinition:
     category: str
     requires_confirmation: bool = False
     handler: ToolHandler = field(default=_not_configured_handler, compare=False)
+    # A user-scoped tool receives the session's verified ``user_id`` from the
+    # runtime (see caal.user_scope), never from the model's arguments.
+    user_scoped: bool = False
 
 
 class ToolRegistry:
@@ -147,6 +150,23 @@ def create_default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name="calendar.find_free_time",
+            description="Find unoccupied calendar slots that fit a requested duration.",
+            category="calendar",
+            parameters=_object_schema(
+                {
+                    "source": {"type": "string", "description": "Calendar source name or 'all'."},
+                    "start": {"type": "string", "description": "ISO-8601 start datetime."},
+                    "end": {"type": "string", "description": "ISO-8601 end datetime."},
+                    "duration_minutes": {"type": "integer", "minimum": 1},
+                },
+                ["source", "start", "end", "duration_minutes"],
+            ),
+            handler=calendar_tools.find_free_time,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="calendar.create_event",
             description="Create a calendar event on a writable configured calendar source.",
             category="calendar",
@@ -173,6 +193,74 @@ def create_default_registry() -> ToolRegistry:
 
     registry.register(
         ToolDefinition(
+            name="calendar.update_event",
+            description="Update a CalDAV calendar event after explicit confirmation.",
+            category="calendar",
+            requires_confirmation=True,
+            parameters=_object_schema(
+                {
+                    "source": {"type": "string"},
+                    "event_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "attendees": {"type": "array", "items": {"type": "string"}},
+                    "location": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
+                },
+                ["source", "event_id", "title", "start", "end"],
+            ),
+            handler=calendar_tools.update_calendar_event,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar.delete_event",
+            description="Delete a CalDAV calendar event after explicit confirmation.",
+            category="calendar",
+            requires_confirmation=True,
+            parameters=_object_schema(
+                {
+                    "source": {"type": "string"},
+                    "event_id": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
+                },
+                ["source", "event_id"],
+            ),
+            handler=calendar_tools.delete_calendar_event,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="memory.remember",
+            description="Save an explicit preference or fact for future assistant sessions.",
+            category="memory",
+            parameters=_object_schema(
+                {
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                ["key", "value"],
+            ),
+            handler=memory_tools.remember,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="memory.recall",
+            description="Recall one saved preference, or list all saved preferences.",
+            category="memory",
+            parameters=_object_schema({"key": {"type": "string"}}),
+            handler=memory_tools.recall,
+            user_scoped=True,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
             name="reminders.create",
             description="Create a reminder using Apple Reminders or the local CAAL reminder store.",
             category="reminders",
@@ -185,6 +273,7 @@ def create_default_registry() -> ToolRegistry:
                 },
                 ["title"],
             ),
+            handler=reminders_tools.create_reminder,
         )
     )
     registry.register(
@@ -203,6 +292,7 @@ def create_default_registry() -> ToolRegistry:
                 },
                 ["label", "when", "kind"],
             ),
+            handler=alarms_tools.set_alarm,
         )
     )
 

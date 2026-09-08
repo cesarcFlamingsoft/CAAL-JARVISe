@@ -29,13 +29,12 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
-  logo: '/cwl-logo-round.png',
+  logo: '/mexcantech-mark.png',
   accent: '#45997c',
-  logoDark: '/cwl-logo-round.png',
+  logoDark: '/mexcantech-mark.png',
   accentDark: '#45997c',
   startButtonText: 'Talk to JARVIS',
 
-  // for LiveKit Cloud Sandbox
-  sandboxId: undefined,
-  agentName: undefined,
+  // LiveKit routing worker; user-facing identity remains JARVIS.
+  agentName: 'caal',
 };

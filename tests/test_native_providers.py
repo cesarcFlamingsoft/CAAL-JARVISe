@@ -201,6 +201,69 @@ END:VCALENDAR
     assert result["data"]["events"][0]["source"] == "work"
 
 
+def test_calendar_finds_free_time_between_occupied_events(monkeypatch, tmp_path):
+    ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:morning
+SUMMARY:Standup
+DTSTART:20260530T090000Z
+DTEND:20260530T093000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:afternoon
+SUMMARY:Review
+DTSTART:20260530T110000Z
+DTEND:20260530T113000Z
+END:VEVENT
+END:VCALENDAR
+"""
+    ics_path = tmp_path / "calendar.ics"
+    ics_path.write_text(ics)
+    configure_settings(
+        monkeypatch,
+        tmp_path,
+        {
+            "calendar_sources": [
+                {
+                    "id": "work",
+                    "provider": "ics",
+                    "url": ics_path.as_uri(),
+                    "writable": False,
+                }
+            ]
+        },
+    )
+    from caal.tools.calendar_tools import find_free_time
+
+    result = find_free_time(
+        source="work",
+        start="2026-05-30T08:00:00+00:00",
+        end="2026-05-30T12:00:00+00:00",
+        duration_minutes=60,
+    )
+
+    assert result["message"] == "Found 2 available time slots."
+    assert result["data"]["slots"] == [
+        {"start": "2026-05-30T08:00:00+00:00", "end": "2026-05-30T09:00:00+00:00"},
+        {"start": "2026-05-30T09:30:00+00:00", "end": "2026-05-30T11:00:00+00:00"},
+    ]
+
+
+def test_calendar_free_time_tool_is_registered():
+    from caal.tools.registry import create_default_registry
+
+    free_time = create_default_registry().get("calendar.find_free_time")
+    update = create_default_registry().get("calendar.update_event")
+    delete = create_default_registry().get("calendar.delete_event")
+
+    assert free_time.requires_confirmation is False
+    assert free_time.handler.__name__ == "find_free_time"
+    assert update.requires_confirmation is True
+    assert update.handler.__name__ == "update_calendar_event"
+    assert delete.requires_confirmation is True
+    assert delete.handler.__name__ == "delete_calendar_event"
+
+
 def test_calendar_create_event_requires_confirmation_and_writable_source(monkeypatch, tmp_path):
     configure_settings(
         monkeypatch,
@@ -255,6 +318,61 @@ def test_calendar_create_event_requires_confirmation_and_writable_source(monkeyp
     assert created["message"] == "Created calendar event: Dentist."
     assert calls[0][0] == "PUT"
     assert "BEGIN:VEVENT" in calls[0][2]["data"]
+
+
+def test_calendar_update_and_delete_require_confirmation(monkeypatch, tmp_path):
+    configure_settings(
+        monkeypatch,
+        tmp_path,
+        {
+            "calendar_sources": [
+                {
+                    "id": "work",
+                    "provider": "caldav",
+                    "url": "https://cal.example.com/user/work/",
+                    "writable": True,
+                }
+            ]
+        },
+    )
+    from caal.tools import calendar_tools
+
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+        return Response()
+
+    monkeypatch.setattr(calendar_tools.requests, "request", fake_request)
+    blocked = calendar_tools.update_calendar_event(
+        source="work", event_id="dentist", title="Dentist", confirmed=False
+    )
+    assert blocked["status"] == "confirmation_required"
+    assert calls == []
+
+    updated = calendar_tools.update_calendar_event(
+        source="work",
+        event_id="dentist",
+        title="Dentist rescheduled",
+        start="2026-05-30T17:00:00+00:00",
+        end="2026-05-30T18:00:00+00:00",
+        confirmed=True,
+    )
+    assert updated["message"] == "Updated calendar event: Dentist rescheduled."
+    assert calls[0][0] == "PUT"
+    assert calls[0][1].endswith("/dentist.ics")
+
+    deleted = calendar_tools.delete_calendar_event(
+        source="work", event_id="dentist", confirmed=True
+    )
+    assert deleted["message"] == "Deleted calendar event: dentist."
+    assert calls[1][0] == "DELETE"
+    assert calls[1][1].endswith("/dentist.ics")
 
 
 @pytest.mark.asyncio

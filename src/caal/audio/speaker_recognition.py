@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +21,7 @@ import numpy as np
 # Try to import resemblyzer for speaker embeddings
 try:
     from resemblyzer import VoiceEncoder, preprocess_wav
+
     HAS_RESEMBLYZER = True
 except ImportError:
     HAS_RESEMBLYZER = False
@@ -245,6 +245,7 @@ class SpeakerRecognition:
         avg_embedding = avg_embedding / (np.linalg.norm(avg_embedding) + 1e-10)
 
         import time
+
         self._profiles[name] = SpeakerProfile(
             name=name,
             embedding=avg_embedding,
@@ -253,9 +254,7 @@ class SpeakerRecognition:
         )
 
         self._save_profiles()
-        logger.info(
-            f"Enrolled speaker '{name}' with {len(embeddings)} sample(s)"
-        )
+        logger.info(f"Enrolled speaker '{name}' with {len(embeddings)} sample(s)")
         return True
 
     def remove_speaker(self, name: str) -> bool:
@@ -336,10 +335,7 @@ class SpeakerRecognition:
             is_recognized = best_score >= self.config.verification_threshold
 
             if is_recognized:
-                logger.info(
-                    f"Speaker recognized: {best_speaker} "
-                    f"(confidence={best_score:.2f})"
-                )
+                logger.info(f"Speaker recognized: {best_speaker} (confidence={best_score:.2f})")
             else:
                 logger.debug(
                     f"Speaker not recognized: best match {best_speaker} "
@@ -443,8 +439,7 @@ def create_speaker_recognition(settings: dict) -> SpeakerRecognition | None:
 
     if not HAS_RESEMBLYZER:
         logger.warning(
-            "Speaker recognition requires 'resemblyzer'. "
-            "Install with: pip install resemblyzer"
+            "Speaker recognition requires 'resemblyzer'. Install with: pip install resemblyzer"
         )
         return None
 

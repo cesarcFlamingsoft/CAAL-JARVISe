@@ -170,6 +170,16 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
       - WEBHOOK_URL=http://agent:8889
+      # Multi-user identity (server-only; see docs/MULTI-USER-IDENTITY.md).
+      # Leave empty for the legacy single-user mode.
+      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+      - CAAL_INTERNAL_AUTH_SECRET=${CAAL_INTERNAL_AUTH_SECRET:-}
+      - CAAL_IDENTITY_API_URL=http://agent:8889
+      - CAAL_PUBLIC_ORIGIN=${CAAL_PUBLIC_ORIGIN:-}
+      - CAAL_REQUIRE_IDENTITY_FOR_SESSIONS=${CAAL_REQUIRE_IDENTITY_FOR_SESSIONS:-false}
+      - CAAL_PASSWORD_LOGIN=${CAAL_PASSWORD_LOGIN:-true}
+      - CAAL_ALLOW_INSECURE_COOKIES=${CAAL_ALLOW_INSECURE_COOKIES:-false}
     networks:
       - caal-network
     depends_on:

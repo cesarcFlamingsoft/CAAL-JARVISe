@@ -33,7 +33,7 @@ DEFAULT_SETTINGS = {
     # First-launch flag
     "first_launch_completed": False,
     # Agent identity
-    "agent_name": "Cal",
+    "agent_name": "JARVIS",
     "prompt": "default",  # "default" | "custom"
     "wake_greetings": [
         "Hey, what's up?",
@@ -46,7 +46,7 @@ DEFAULT_SETTINGS = {
     ],
     # Provider settings (UI sets both together, but stored separately for power users)
     "stt_provider": "speaches",  # "speaches" | "groq"
-    "llm_provider": "ollama",  # "ollama" | "groq"
+    "llm_provider": "hermes",  # "hermes" | "ollama" | "groq"
     "tts_provider": "kokoro",  # "kokoro" | "piper"
     # TTS settings - voice selection (Kokoro uses voice param, Piper bakes voice into model)
     "tts_voice_kokoro": "am_puck",
@@ -59,6 +59,10 @@ DEFAULT_SETTINGS = {
     # Groq settings
     "groq_api_key": "",  # API key from console.groq.com
     "groq_model": "llama-3.3-70b-versatile",
+    # Hermes Agent API (default LLM backend)
+    "hermes_api_url": "http://host.docker.internal:8642/v1",
+    "hermes_api_key": "",
+    "hermes_model": "hermes-agent",
     # Home Assistant integration
     "hass_enabled": False,
     "hass_host": "",
@@ -133,15 +137,32 @@ DEFAULT_SETTINGS = {
     "friday_host": "",
     "friday_token": "",
     "friday_agent_id": "main",
+    # Background tasks ("look into this and get back to me")
+    "background_tasks_enabled": True,
+    "background_task_max_concurrency": 2,  # 1-8 tasks in flight per agent process
+    "background_task_timeout_seconds": 600,  # Give up on a single task after this long
+    # Semantic routing of a turn into conversation or work. Off falls back to the
+    # offline pattern net alone, which is what the assistant did before it existed.
+    "work_router_enabled": True,
+    "work_router_timeout_seconds": 4.0,  # The user waits on this; fail to the net after
+    # Telegram fallback for results that arrive after the session ended (env fallback:
+    # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    # Opaque signed-in profile permitted to receive files at the configured
+    # global Telegram chat. Empty keeps that chat legacy-only.
+    "telegram_owner_user_id": "",
 }
 
 # Keys that should never be returned via API in plaintext (security)
 SENSITIVE_KEY_PARTS = ("token", "key", "secret", "password", "credential", "auth")
 SENSITIVE_KEYS: set[str] = {
     "groq_api_key",
+    "hermes_api_key",
     "hass_token",
     "n8n_token",
     "friday_token",
+    "telegram_bot_token",
 }
 REDACTED_SECRET = "********"
 
@@ -191,8 +212,10 @@ def load_settings() -> dict:
                 # Check if user has customized beyond default values (not just having the keys)
                 # A true existing user would have changed ollama_host or n8n_url
                 env_configured = (
-                    os.getenv("OLLAMA_HOST") and user_settings.get("ollama_host") or
-                    os.getenv("N8N_MCP_URL") and user_settings.get("n8n_url")
+                    os.getenv("OLLAMA_HOST")
+                    and user_settings.get("ollama_host")
+                    or os.getenv("N8N_MCP_URL")
+                    and user_settings.get("n8n_url")
                 )
                 if env_configured:
                     settings["first_launch_completed"] = True

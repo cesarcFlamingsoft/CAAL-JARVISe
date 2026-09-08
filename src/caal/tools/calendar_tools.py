@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -170,6 +170,46 @@ def list_calendar_events(
     )
 
 
+def find_free_time(
+    source: str | None = "all",
+    start: str = "",
+    end: str = "",
+    duration_minutes: int = 30,
+) -> dict[str, Any]:
+    """Return unoccupied time ranges that can fit the requested duration."""
+    if duration_minutes <= 0:
+        raise ValueError("duration_minutes must be greater than zero")
+    start_dt = _parse_datetime(start)
+    end_dt = _parse_datetime(end)
+    if end_dt <= start_dt:
+        raise ValueError("end must be after start")
+
+    events = list_calendar_events(source, start, end)["data"]["events"]
+    busy_ranges = sorted(
+        (
+            max(start_dt, _parse_datetime(event["start"])),
+            min(end_dt, _parse_datetime(event["end"] or event["start"])),
+        )
+        for event in events
+    )
+    slots: list[dict[str, str]] = []
+    cursor = start_dt
+    minimum_duration = timedelta(minutes=duration_minutes)
+    for busy_start, busy_end in busy_ranges:
+        if busy_start - cursor >= minimum_duration:
+            slots.append({"start": cursor.isoformat(), "end": busy_start.isoformat()})
+        if busy_end > cursor:
+            cursor = busy_end
+    if end_dt - cursor >= minimum_duration:
+        slots.append({"start": cursor.isoformat(), "end": end_dt.isoformat()})
+
+    count = len(slots)
+    return _result(
+        f"Found {count} available time {'slot' if count == 1 else 'slots'}.",
+        {"slots": slots},
+    )
+
+
 def _filter_events(
     events: list[dict[str, Any]], start: datetime, end: datetime
 ) -> list[dict[str, Any]]:
@@ -251,6 +291,80 @@ def create_calendar_event(
     )
 
 
+def _writable_caldav_source(source: str | None) -> dict[str, Any]:
+    selected = _resolve_sources(source, writable=True)[0]
+    provider = str(selected.get("provider", "")).lower()
+    if provider not in {"caldav", "zoho_caldav", "icloud_caldav"}:
+        raise ValueError(f"Calendar source {selected.get('id')} is not writable through CalDAV")
+    return selected
+
+
+def _event_url(source: dict[str, Any], event_id: str) -> str:
+    if not event_id or "/" in event_id or "\\" in event_id:
+        raise ValueError("event_id must be a single calendar event identifier")
+    filename = event_id if event_id.endswith(".ics") else f"{event_id}.ics"
+    return f"{str(source.get('url', '')).rstrip('/')}/{filename}"
+
+
+def update_calendar_event(
+    source: str | None = None,
+    event_id: str = "",
+    title: str = "",
+    start: str = "",
+    end: str = "",
+    attendees: list[str] | None = None,
+    location: str = "",
+    notes: str = "",
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """Replace a CalDAV event after explicit confirmation."""
+    selected = _writable_caldav_source(source)
+    if not confirmed:
+        return _result(
+            f"Please confirm before I update calendar event: {event_id}.",
+            {"source": selected.get("id"), "event_id": event_id},
+            status="confirmation_required",
+        )
+    if not title or not start or not end:
+        raise ValueError("title, start, and end are required to update a calendar event")
+    response = requests.request(
+        "PUT",
+        _event_url(selected, event_id),
+        data=_build_event_ics(
+            event_id.removesuffix(".ics"), title, start, end, attendees or [], location, notes
+        ),
+        headers={"Content-Type": "text/calendar; charset=utf-8"},
+        auth=_auth(selected),
+        timeout=30,
+    )
+    response.raise_for_status()
+    return _result(
+        f"Updated calendar event: {title}.",
+        {"source": selected.get("id"), "event_id": event_id, "title": title},
+    )
+
+
+def delete_calendar_event(
+    source: str | None = None, event_id: str = "", confirmed: bool = False
+) -> dict[str, Any]:
+    """Delete a CalDAV event after explicit confirmation."""
+    selected = _writable_caldav_source(source)
+    if not confirmed:
+        return _result(
+            f"Please confirm before I delete calendar event: {event_id}.",
+            {"source": selected.get("id"), "event_id": event_id},
+            status="confirmation_required",
+        )
+    response = requests.request(
+        "DELETE", _event_url(selected, event_id), auth=_auth(selected), timeout=30
+    )
+    response.raise_for_status()
+    return _result(
+        f"Deleted calendar event: {event_id.removesuffix('.ics')}.",
+        {"source": selected.get("id"), "event_id": event_id},
+    )
+
+
 def _build_event_ics(
     event_uid: str,
     title: str,
@@ -299,8 +413,8 @@ def test_calendar_source(source: str | None = None) -> dict[str, Any]:
         propfind_body = (
             '<?xml version="1.0"?>'
             '<d:propfind xmlns:d="DAV:">'
-            '<d:prop><d:displayname/></d:prop>'
-            '</d:propfind>'
+            "<d:prop><d:displayname/></d:prop>"
+            "</d:propfind>"
         )
         response = requests.request(
             "PROPFIND",

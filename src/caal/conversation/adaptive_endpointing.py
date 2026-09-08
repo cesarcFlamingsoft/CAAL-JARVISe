@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +25,12 @@ class EndpointingConfig:
     enabled: bool = True
     delay_after_question: float = 0.25  # Short - expect quick response
     delay_after_statement: float = 0.5  # Normal conversational pause
-    delay_initial_turns: float = 0.7    # Patient during warm-up
-    initial_turns_count: int = 3        # How many turns count as "initial"
+    delay_initial_turns: float = 0.7  # Patient during warm-up
+    initial_turns_count: int = 3  # How many turns count as "initial"
 
     # Learning parameters
     learn_user_patterns: bool = True
-    max_pattern_samples: int = 20       # Rolling window of response times
+    max_pattern_samples: int = 20  # Rolling window of response times
 
 
 @dataclass

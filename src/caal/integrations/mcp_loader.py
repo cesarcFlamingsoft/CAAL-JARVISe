@@ -4,7 +4,6 @@ Loads MCP server definitions from settings, environment variables, and optional 
 Settings take priority, then env vars, then JSON file.
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MCPServerConfig:
     """Configuration for a single MCP server."""
+
     name: str
     url: str
     auth_token: str | None = None
@@ -70,6 +70,7 @@ def load_mcp_config(settings: dict[str, Any] | None = None) -> list[MCPServerCon
     if settings is None:
         try:
             from .. import settings as settings_module
+
             settings = settings_module.load_settings()
         except Exception:
             settings = {}
@@ -82,13 +83,15 @@ def load_mcp_config(settings: dict[str, Any] | None = None) -> list[MCPServerCon
         if hass_host:
             # Build MCP URL from host
             hass_mcp_url = f"{hass_host.rstrip('/')}/api/mcp"
-            servers.append(MCPServerConfig(
-                name="home_assistant",
-                url=hass_mcp_url,
-                auth_token=hass_token,
-                transport="streamable_http",  # HASS MCP uses Streamable HTTP
-                timeout=10.0,
-            ))
+            servers.append(
+                MCPServerConfig(
+                    name="home_assistant",
+                    url=hass_mcp_url,
+                    auth_token=hass_token,
+                    transport="streamable_http",  # HASS MCP uses Streamable HTTP
+                    timeout=10.0,
+                )
+            )
             logger.debug(f"Loaded MCP server config: home_assistant ({hass_mcp_url})")
         else:
             logger.warning("Home Assistant enabled but no host configured")
@@ -115,13 +118,15 @@ def load_mcp_config(settings: dict[str, Any] | None = None) -> list[MCPServerCon
             n8n_token = os.environ.get("N8N_MCP_TOKEN")
 
     if n8n_url:
-        servers.append(MCPServerConfig(
-            name="n8n",
-            url=n8n_url,
-            auth_token=n8n_token,
-            transport="streamable_http",  # n8n uses /http suffix which needs explicit transport
-            timeout=float(os.environ.get("N8N_MCP_TIMEOUT", "10.0")),
-        ))
+        servers.append(
+            MCPServerConfig(
+                name="n8n",
+                url=n8n_url,
+                auth_token=n8n_token,
+                transport="streamable_http",  # n8n uses /http suffix which needs explicit transport
+                timeout=float(os.environ.get("N8N_MCP_TIMEOUT", "10.0")),
+            )
+        )
         logger.debug(f"Loaded MCP server config: n8n ({n8n_url})")
     else:
         logger.info("n8n not configured - n8n MCP tools will not be available")
@@ -139,13 +144,15 @@ def load_mcp_config(settings: dict[str, Any] | None = None) -> list[MCPServerCon
                         logger.warning(f"Skipping MCP server with missing name or url: {server}")
                         continue
 
-                    servers.append(MCPServerConfig(
-                        name=name,
-                        url=url,
-                        auth_token=server.get("token"),
-                        transport=server.get("transport"),
-                        timeout=server.get("timeout", 10.0),
-                    ))
+                    servers.append(
+                        MCPServerConfig(
+                            name=name,
+                            url=url,
+                            auth_token=server.get("token"),
+                            transport=server.get("transport"),
+                            timeout=server.get("timeout", 10.0),
+                        )
+                    )
                     logger.debug(f"Loaded MCP server config from JSON: {name} ({url})")
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse mcp_servers.json: {e}")

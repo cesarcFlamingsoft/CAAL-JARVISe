@@ -27,8 +27,9 @@ from typing import Any
 
 import ollama
 
-from ..utils.formatting import strip_markdown_for_tts
 from ..integrations.n8n import execute_n8n_workflow
+from ..utils.formatting import strip_markdown_for_tts
+from .agent_tools import resolve_agent_method_tool
 
 logger = logging.getLogger(__name__)
 
@@ -172,11 +173,15 @@ async def ollama_llm_node(
                     # Publish tool status immediately (bullshit detector!)
                     if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
                         import asyncio
+
                         asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
 
                     # Execute tools and get results (cache structured data)
                     messages = await _execute_tool_calls(
-                        agent, messages, tool_calls, response.message,
+                        agent,
+                        messages,
+                        tool_calls,
+                        response.message,
                         tool_data_cache=tool_data_cache,
                     )
 
@@ -200,6 +205,7 @@ async def ollama_llm_node(
                     # Publish no-tool status immediately
                     if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
                         import asyncio
+
                         asyncio.create_task(agent._on_tool_status(False, [], []))
                     yield strip_markdown_for_tts(response.message.content)
                     return
@@ -208,6 +214,7 @@ async def ollama_llm_node(
         # Publish no-tool status immediately
         if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
             import asyncio
+
             asyncio.create_task(agent._on_tool_status(False, [], []))
 
         response_stream = ollama.chat(
@@ -260,26 +267,32 @@ def _build_messages_from_context(
                 chat_messages.append(msg)
         elif item_type == "FunctionCall":
             try:
-                chat_messages.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": item.id,
-                        "function": {
-                            "name": item.name,
-                            "arguments": getattr(item, "arguments", {}) or {},
-                        },
-                    }],
-                })
+                chat_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": item.id,
+                                "function": {
+                                    "name": item.name,
+                                    "arguments": getattr(item, "arguments", {}) or {},
+                                },
+                            }
+                        ],
+                    }
+                )
             except AttributeError:
                 pass
         elif item_type == "FunctionCallOutput":
             try:
-                chat_messages.append({
-                    "role": "tool",
-                    "content": str(item.content),
-                    "tool_call_id": item.tool_call_id,
-                })
+                chat_messages.append(
+                    {
+                        "role": "tool",
+                        "content": str(item.content),
+                        "tool_call_id": item.tool_call_id,
+                    }
+                )
             except AttributeError:
                 pass
 
@@ -336,30 +349,32 @@ async def _discover_tools(agent) -> list[dict] | None:
                         continue
                     param_type = "string"
                     if param.annotation != inspect.Parameter.empty:
-                        if param.annotation == str:
+                        if param.annotation is str:
                             param_type = "string"
-                        elif param.annotation == int:
+                        elif param.annotation is int:
                             param_type = "integer"
-                        elif param.annotation == float:
+                        elif param.annotation is float:
                             param_type = "number"
-                        elif param.annotation == bool:
+                        elif param.annotation is bool:
                             param_type = "boolean"
                     properties[param_name] = {"type": param_type}
                     if param.default == inspect.Parameter.empty and param_name != "self":
                         required.append(param_name)
 
-                ollama_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
+                ollama_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": description,
+                            "parameters": {
+                                "type": "object",
+                                "properties": properties,
+                                "required": required,
+                            },
                         },
-                    },
-                })
+                    }
+                )
 
     # Get MCP tools from all configured servers (except n8n)
     # n8n uses webhook-based workflow discovery, not direct MCP tools
@@ -415,14 +430,16 @@ async def _get_mcp_tools(mcp_server) -> list[dict]:
                         parameters["properties"] = schema.properties or {}
                         parameters["required"] = getattr(schema, "required", []) or []
 
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": mcp_tool.name,
-                        "description": getattr(mcp_tool, "description", "") or "",
-                        "parameters": parameters,
-                    },
-                })
+                tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": mcp_tool.name,
+                            "description": getattr(mcp_tool, "description", "") or "",
+                            "parameters": parameters,
+                        },
+                    }
+                )
 
         if tools:
             tool_names = [t["function"]["name"] for t in tools]
@@ -459,13 +476,15 @@ async def _execute_tool_calls(
     }
 
     for tool_call in tool_calls:
-        tool_call_message["tool_calls"].append({
-            "id": getattr(tool_call, "id", ""),
-            "function": {
-                "name": tool_call.function.name,
-                "arguments": tool_call.function.arguments or {},
-            },
-        })
+        tool_call_message["tool_calls"].append(
+            {
+                "id": getattr(tool_call, "id", ""),
+                "function": {
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments or {},
+                },
+            }
+        )
 
     messages.append(tool_call_message)
 
@@ -485,19 +504,23 @@ async def _execute_tool_calls(
                 tool_data_cache.add(tool_name, data)
                 logger.debug(f"Cached tool data for {tool_name}")
 
-            messages.append({
-                "role": "tool",
-                "content": str(tool_result),
-                "tool_call_id": getattr(tool_call, "id", None),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": str(tool_result),
+                    "tool_call_id": getattr(tool_call, "id", None),
+                }
+            )
         except Exception as e:
             error_msg = f"Error executing tool {tool_name}: {e}"
             logger.error(error_msg, exc_info=True)
-            messages.append({
-                "role": "tool",
-                "content": error_msg,
-                "tool_call_id": getattr(tool_call, "id", None),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": error_msg,
+                    "tool_call_id": getattr(tool_call, "id", None),
+                }
+            )
 
     return messages
 
@@ -519,10 +542,11 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         logger.info(f"HASS tool {tool_name} completed")
         return result
 
-    # Check if it's an agent method
-    if hasattr(agent, tool_name) and callable(getattr(agent, tool_name)):
+    # Check if it's an allowlisted agent method
+    agent_tool = resolve_agent_method_tool(agent, tool_name)
+    if agent_tool is not None:
         logger.info(f"Calling agent tool: {tool_name}")
-        result = await getattr(agent, tool_name)(**arguments)
+        result = await agent_tool(**arguments)
         logger.info(f"Agent tool {tool_name} completed")
         return result
 

@@ -5,6 +5,16 @@
 set -e
 
 CONFIG_DIR="/app/config"
+DATA_DIR="${CAAL_DATA_DIR:-/app/data}"
+
+# Ensure runtime directories are writable by the unprivileged agent process.
+# Named volumes are initially root-owned, so without this the SQLite-backed
+# device registry (and memory tools) can read but cannot create/update state.
+mkdir -p "$DATA_DIR"
+# Existing named volumes can contain root-owned SQLite files created by an older
+# container. The directory alone is insufficient: SQLite needs to update the
+# database file and may create journal/WAL siblings alongside it.
+chown -R agent:agent "$DATA_DIR"
 
 # Ensure config directory exists and is writable by agent
 mkdir -p "$CONFIG_DIR"

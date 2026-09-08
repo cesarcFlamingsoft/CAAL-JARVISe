@@ -17,6 +17,101 @@ import 'widgets/app_layout_switcher.dart';
 import 'widgets/connection_error_banner.dart';
 import 'widgets/session_error_banner.dart';
 
+/// Defers disposal of a replaced value; see [KeyedResource.scheduleDisposal].
+typedef DisposalScheduler = void Function(VoidCallback task);
+
+void _disposeAfterFrame(VoidCallback task) {
+  final binding = WidgetsBinding.instance;
+  binding.addPostFrameCallback((_) => task());
+  // A post-frame callback only runs if another frame is scheduled.
+  binding.scheduleFrame();
+}
+
+/// Holds one disposable value per key, so that a value is built once instead
+/// of on every rebuild, and the value it replaces is always disposed.
+///
+/// Controllers that register room event listeners must never be constructed
+/// inside a `build`/`Consumer` callback: each rebuild would add another
+/// listener that nobody disposes. Build them through a [KeyedResource] keyed
+/// on whatever identifies the session instead.
+///
+/// Disposal of a replaced value is deferred via [scheduleDisposal] (by default
+/// to after the current frame) so the outgoing widget subtree can finish
+/// building against a still-live value.
+class KeyedResource<K, V> {
+  KeyedResource({
+    required V Function(K key) create,
+    required void Function(V value) disposeValue,
+    DisposalScheduler? scheduleDisposal,
+  })  : _create = create,
+        _disposeValue = disposeValue,
+        _scheduleDisposal = scheduleDisposal ?? _disposeAfterFrame;
+
+  final V Function(K key) _create;
+  final void Function(V value) _disposeValue;
+  final DisposalScheduler _scheduleDisposal;
+
+  bool _hasValue = false;
+  bool _disposed = false;
+  late K _key;
+  late V _value;
+
+  /// The value for [key], creating it only when [key] differs from the key the
+  /// current value was created with.
+  V of(K key) {
+    if (_hasValue && _key == key) return _value;
+
+    final hadPrevious = _hasValue;
+    final V? previous = hadPrevious ? _value : null;
+
+    _value = _create(key);
+    _key = key;
+    _hasValue = true;
+
+    if (hadPrevious) {
+      _scheduleDisposal(() => _disposeValue(previous as V));
+    }
+    return _value;
+  }
+
+  /// Disposes the current value, if any. Safe to call more than once.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    if (_hasValue) {
+      _hasValue = false;
+      _disposeValue(_value);
+    }
+  }
+}
+
+/// Identifies which session the per-session controllers belong to.
+typedef _SessionKey = ({int sessionKey, String serverUrl});
+
+/// The controllers that own listeners on the current [sdk.Room].
+///
+/// They live and die with one session: when [AppCtrl] recreates its room the
+/// whole bundle is replaced and the old one disposed.
+class _SessionControllers {
+  _SessionControllers({required sdk.Room room, required String serverUrl})
+      : toolStatus = ToolStatusCtrl(room: room),
+        wakeWordState = WakeWordStateCtrl(room: room, serverUrl: serverUrl),
+        audioFilter = AudioFilterCtrl(room: room),
+        connectionError = ConnectionErrorCtrl(room: room);
+
+  final ToolStatusCtrl toolStatus;
+  final WakeWordStateCtrl wakeWordState;
+  final AudioFilterCtrl audioFilter;
+  final ConnectionErrorCtrl connectionError;
+
+  void dispose() {
+    toolStatus.dispose();
+    wakeWordState.dispose();
+    audioFilter.dispose();
+    connectionError.dispose();
+  }
+}
+
 class JarvisApp extends StatefulWidget {
   final ConfigService configService;
 
@@ -28,6 +123,15 @@ class JarvisApp extends StatefulWidget {
 
 class _JarvisAppState extends State<JarvisApp> {
   AppCtrl? _appCtrl;
+
+  late final KeyedResource<_SessionKey, _SessionControllers> _sessionControllers =
+      KeyedResource<_SessionKey, _SessionControllers>(
+    create: (key) => _SessionControllers(
+      room: _appCtrl!.room,
+      serverUrl: key.serverUrl,
+    ),
+    disposeValue: (controllers) => controllers.dispose(),
+  );
 
   @override
   void initState() {
@@ -44,15 +148,19 @@ class _JarvisAppState extends State<JarvisApp> {
   }
 
   void _onConfigured() {
+    if (!mounted) return;
+    final previous = _appCtrl;
     setState(() {
       _appCtrl = AppCtrl(
         serverUrl: widget.configService.serverUrl,
       );
     });
+    previous?.dispose();
   }
 
   @override
   void dispose() {
+    _sessionControllers.dispose();
     _appCtrl?.dispose();
     super.dispose();
   }
@@ -124,23 +232,24 @@ class _JarvisAppState extends State<JarvisApp> {
         value: _appCtrl!,
         child: Consumer<AppCtrl>(
           builder: (ctx, appCtrl, _) {
-            final toolStatusCtrl = ToolStatusCtrl(room: appCtrl.room);
-            final wakeWordStateCtrl = WakeWordStateCtrl(
-              room: appCtrl.room,
+            // Built once per session, never per rebuild: these controllers own
+            // room event listeners and must be disposed when the session is
+            // replaced.
+            final sessionKey = (
+              sessionKey: appCtrl.sessionKey,
               serverUrl: widget.configService.serverUrl,
             );
-            final audioFilterCtrl = AudioFilterCtrl(room: appCtrl.room);
-            final connectionErrorCtrl = ConnectionErrorCtrl(room: appCtrl.room);
+            final controllers = _sessionControllers.of(sessionKey);
 
             return MultiProvider(
-              key: ValueKey(appCtrl.sessionKey),
+              key: ValueKey(sessionKey),
               providers: [
                 ChangeNotifierProvider<sdk.Session>.value(value: appCtrl.session),
                 ChangeNotifierProvider<components.RoomContext>.value(value: appCtrl.roomContext),
-                ChangeNotifierProvider<ToolStatusCtrl>.value(value: toolStatusCtrl),
-                ChangeNotifierProvider<WakeWordStateCtrl>.value(value: wakeWordStateCtrl),
-                ChangeNotifierProvider<AudioFilterCtrl>.value(value: audioFilterCtrl),
-                ChangeNotifierProvider<ConnectionErrorCtrl>.value(value: connectionErrorCtrl),
+                ChangeNotifierProvider<ToolStatusCtrl>.value(value: controllers.toolStatus),
+                ChangeNotifierProvider<WakeWordStateCtrl>.value(value: controllers.wakeWordState),
+                ChangeNotifierProvider<AudioFilterCtrl>.value(value: controllers.audioFilter),
+                ChangeNotifierProvider<ConnectionErrorCtrl>.value(value: controllers.connectionError),
               ],
               child: components.SessionContext(
                 session: appCtrl.session,

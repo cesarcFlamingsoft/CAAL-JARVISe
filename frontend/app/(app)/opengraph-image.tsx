@@ -18,8 +18,15 @@ type ImageData = {
   dimensions: Dimensions;
 };
 
+const BRAND_NAME = 'MEXCANTECH';
+const BRAND_TAGLINE = 'Learn. Build. Empower.';
+
+// Local brand assets, resolved from the public/ folder.
+const BRAND_WORDMARK_PATH = 'public/mexcantech-logo.png';
+const BRAND_MARK_PATH = 'public/mexcantech-mark.png';
+
 // Image metadata
-export const alt = 'About Acme';
+export const alt = 'JARVIS by MexcanTech - Learn. Build. Empower.';
 export const size = {
   width: 1200,
   height: 628,
@@ -90,12 +97,16 @@ function scaleImageSize(size: { width: number; height: number }, desiredHeight: 
   };
 }
 
-function cleanPageTitle(appName: string) {
-  if (appName === APP_CONFIG_DEFAULTS.pageTitle) {
-    return 'Voice agent';
+/**
+ * Config logos may be absolute URLs or public/ paths such as `/mexcantech-mark.png`.
+ * Remote URIs are fetched as-is; everything else is read from the public folder.
+ */
+function resolveImageUri(uri: string) {
+  if (isRemoteFile(uri)) {
+    return uri;
   }
 
-  return appName;
+  return 'public/' + uri.replace(/^[.\/]+/, '');
 }
 
 export const contentType = 'image/png';
@@ -105,10 +116,8 @@ export default async function Image() {
   const hdrs = await headers();
   const appConfig = await getAppConfig(hdrs);
 
-  const pageTitle = cleanPageTitle(appConfig.pageTitle);
-  const logoUri = appConfig.logoDark || appConfig.logo;
-  const isLogoUriLocal = logoUri.includes('lk-logo');
-  const wordmarkUri = logoUri === APP_CONFIG_DEFAULTS.logoDark ? 'public/lk-wordmark.svg' : logoUri;
+  const pageTitle = appConfig.pageTitle || APP_CONFIG_DEFAULTS.pageTitle;
+  const logoUri = resolveImageUri(appConfig.logoDark || appConfig.logo);
 
   // Load fonts - use file system in dev, fetch in production
   let commitMonoData: ArrayBuffer | undefined;
@@ -125,18 +134,17 @@ export default async function Image() {
   // bg
   const { base64: bgSrcBase64 } = await getImageData('public/opengraph-image-bg.png');
 
-  // wordmark
-  const { base64: wordmarkSrcBase64, dimensions: wordmarkDimensions } = isLogoUriLocal
-    ? await getImageData(wordmarkUri)
-    : await getImageData(logoUri);
-  const wordmarkSize = scaleImageSize(wordmarkDimensions, isLogoUriLocal ? 32 : 64);
+  // full brand logo (hero)
+  const { base64: wordmarkSrcBase64, dimensions: wordmarkDimensions } =
+    await getImageData(BRAND_WORDMARK_PATH);
+  const wordmarkSize = scaleImageSize(wordmarkDimensions, 400);
 
-  // logo
+  // square brand mark (header badge)
   const { base64: logoSrcBase64, dimensions: logoDimensions } = await getImageData(
     logoUri,
-    'public/lk-logo-dark.svg'
+    BRAND_MARK_PATH
   );
-  const logoSize = scaleImageSize(logoDimensions, 24);
+  const logoSize = scaleImageSize(logoDimensions, 48);
 
   return new ImageResponse(
     // ImageResponse JSX element
@@ -153,7 +161,7 @@ export default async function Image() {
         backgroundRepeat: 'no-repeat',
       }}
     >
-      {/* wordmark */}
+      {/* brand mark + wordmark */}
       <div
         style={{
           position: 'absolute',
@@ -161,25 +169,40 @@ export default async function Image() {
           left: 30,
           display: 'flex',
           alignItems: 'center',
-          gap: 10,
+          gap: 14,
+        }}
+      >
+        {/* eslint-disable-next-line jsx-a11y/alt-text */}
+        <img
+          src={logoSrcBase64}
+          width={logoSize.width}
+          height={logoSize.height}
+          style={{ borderRadius: 8 }}
+        />
+        <div
+          style={{
+            fontSize: 20,
+            fontFamily: 'CommitMono',
+            fontWeight: 600,
+            color: 'white',
+            letterSpacing: 3,
+          }}
+        >
+          {BRAND_NAME}
+        </div>
+      </div>
+      {/* full brand logo */}
+      <div
+        style={{
+          position: 'absolute',
+          top: (size.height - wordmarkSize.height) / 2,
+          left: size.width - wordmarkSize.width - 80,
+          display: 'flex',
+          alignItems: 'center',
         }}
       >
         {/* eslint-disable-next-line jsx-a11y/alt-text */}
         <img src={wordmarkSrcBase64} width={wordmarkSize.width} height={wordmarkSize.height} />
-      </div>
-      {/* logo */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 200,
-          left: 460,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-        }}
-      >
-        {/* eslint-disable-next-line jsx-a11y/alt-text */}
-        <img src={logoSrcBase64} width={logoSize.width} height={logoSize.height} />
       </div>
       {/* title */}
       <div
@@ -187,7 +210,7 @@ export default async function Image() {
           position: 'absolute',
           bottom: 100,
           left: 30,
-          width: '380px',
+          width: '560px',
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
@@ -198,15 +221,15 @@ export default async function Image() {
             backgroundColor: '#1F1F1F',
             padding: '2px 8px',
             borderRadius: 4,
-            width: 72,
             fontSize: 12,
             fontFamily: 'CommitMono',
             fontWeight: 600,
-            color: '#999999',
+            color: '#CCCCCC',
             letterSpacing: 0.8,
+            textTransform: 'uppercase',
           }}
         >
-          SANDBOX
+          {BRAND_TAGLINE}
         </div>
         <div
           style={{

@@ -55,9 +55,7 @@ class CAALLLM(llm.LLM):
         super().__init__()
         self._provider = provider
 
-        logger.debug(
-            f"CAALLLM initialized with {provider.provider_name}: {provider.model}"
-        )
+        logger.debug(f"CAALLLM initialized with {provider.provider_name}: {provider.model}")
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> "CAALLLM":
@@ -149,9 +147,14 @@ class CAALLLM(llm.LLM):
         )
 
     async def aclose(self) -> None:
-        """Cleanup resources."""
-        # Providers don't currently need cleanup, but this is here for future use
-        pass
+        """Cleanup resources, including any provider-held HTTP client."""
+        provider_aclose = getattr(self._provider, "aclose", None)
+        if provider_aclose is None:
+            return
+        try:
+            await provider_aclose()
+        except Exception:
+            logger.warning("Failed to close LLM provider cleanly", exc_info=True)
 
 
 class _CAALLLMStream(llm.LLMStream):

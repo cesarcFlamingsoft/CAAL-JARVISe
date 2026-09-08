@@ -13,6 +13,8 @@ import {
   X,
 } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
+import { ConnectedAccounts } from '@/components/settings/connected-accounts';
+import { WeatherLocation } from '@/components/settings/weather-location';
 
 // =============================================================================
 // Types
@@ -1553,6 +1555,12 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
   const renderIntegrationsTab = () => (
     <div className="space-y-4">
+      {/* Per-user provider accounts (OAuth): the secure path, no shared secrets */}
+      <ConnectedAccounts />
+
+      {/* Per-user weather location: a chosen city, or this browser position */}
+      <WeatherLocation />
+
       {/* Native Assistant Tools */}
       <div className="overflow-hidden rounded-xl border border-green-500/30">
         <div className="bg-green-500/10 flex items-center justify-between border-b px-4 py-3">

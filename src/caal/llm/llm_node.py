@@ -29,9 +29,11 @@ from typing import TYPE_CHECKING, Any
 
 from caal import settings as settings_module
 from caal.tools import create_default_registry
+from caal.user_scope import memory_unavailable_result, scoped_tool_arguments
 
 from ..integrations.n8n import execute_n8n_workflow
 from ..utils.formatting import strip_markdown_for_tts
+from .agent_tools import resolve_agent_method_tool
 from .providers import LLMProvider
 
 if TYPE_CHECKING:
@@ -112,8 +114,13 @@ async def llm_node(
             max_turns=max_turns,
         )
 
-        # Discover tools from agent and MCP servers
-        tools = await _discover_tools(agent)
+        # Discover tools from agent and MCP servers. Providers that run their
+        # own tool loop (Hermes) never receive these schemas, so building the
+        # catalog would only add latency to every turn.
+        if provider.manages_own_tools:
+            tools = None
+        else:
+            tools = await _discover_tools(agent)
 
         # If tools available, check for tool calls first (non-streaming)
         if tools:
@@ -211,7 +218,10 @@ def _build_messages_from_context(
         tool_data_cache: Cache of recent tool response data
         max_turns: Max conversation turns to keep (1 turn = user + assistant)
     """
-    system_prompt = None
+    # Every system message is kept, in order, and merged into the single
+    # leading system prompt. A later system message (e.g. the private handoff
+    # continuation preamble) must add to the agent prompt, never replace it.
+    system_parts: list[str] = []
     chat_messages = []
 
     for item in chat_ctx.items:
@@ -220,7 +230,8 @@ def _build_messages_from_context(
         if item_type == "ChatMessage":
             msg = {"role": item.role, "content": item.text_content}
             if item.role == "system":
-                system_prompt = msg
+                if item.text_content:
+                    system_parts.append(item.text_content)
             else:
                 chat_messages.append(msg)
         elif item_type == "FunctionCall":
@@ -262,8 +273,8 @@ def _build_messages_from_context(
     messages = []
 
     # 1. System prompt always first
-    if system_prompt:
-        messages.append(system_prompt)
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
     # 2. Inject tool data context
     if tool_data_cache:
@@ -543,7 +554,14 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     if native_registry is not None and tool_name in native_registry.names():
         logger.info(f"Calling native tool: {tool_name}")
         tool = native_registry.get(tool_name)
-        result = tool.handler(**arguments)
+        # The model never chooses whose data a tool touches: user-scoped tools
+        # are bound to the session's verified scope, and an unidentified
+        # session under multi-user is refused before any store is opened.
+        bound = scoped_tool_arguments(tool, arguments, getattr(agent, "_user_scope", None))
+        if bound is None:
+            logger.info(f"Refused user-scoped tool {tool_name} for an unidentified session")
+            return memory_unavailable_result()
+        result = tool.handler(**bound)
         logger.info(f"Native tool {tool_name} completed")
         return result
 
@@ -561,10 +579,11 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         logger.info(f"Friday tool {tool_name} completed")
         return result
 
-    # Check if it's an agent method (decorated on class)
-    if hasattr(agent, tool_name) and callable(getattr(agent, tool_name)):
+    # Check if it's an allowlisted agent method (decorated on class)
+    agent_tool = resolve_agent_method_tool(agent, tool_name)
+    if agent_tool is not None:
         logger.info(f"Calling agent tool: {tool_name}")
-        result = await getattr(agent, tool_name)(**arguments)
+        result = await agent_tool(**arguments)
         logger.info(f"Agent tool {tool_name} completed")
         return result
 

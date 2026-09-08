@@ -8,6 +8,7 @@ import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/caal_token_source.dart';
+import '../services/config_service.dart';
 
 enum AppScreenState { welcome, agent }
 
@@ -23,7 +24,7 @@ class AppCtrl extends ChangeNotifier {
   /// mobile do not collide with browser sessions or other devices.
   final String _clientId = uuid.v4();
 
-  // Configuration
+  // Configuration - always stored in normalized form.
   String _serverUrl;
 
   String get serverUrl => _serverUrl;
@@ -76,7 +77,7 @@ class AppCtrl extends ChangeNotifier {
   /// Recreate all session objects (Room, RoomContext, Session).
   /// Called when native resources have been disposed (e.g., app swiped away).
   Future<void> _recreateSessionObjects() async {
-    if (!_needsRecreation) return;
+    if (!_needsRecreation || _disposed) return;
 
     _logger.info('Recreating session objects...');
 
@@ -115,13 +116,18 @@ class AppCtrl extends ChangeNotifier {
   bool isSendButtonEnabled = false;
   bool isSessionStarting = false;
   bool _hasCleanedUp = false;
+  bool _disposed = false;
+
+  /// Subscription to the root logger, cancelled on [dispose] so that a
+  /// recreated [AppCtrl] does not stack duplicate log sinks.
+  StreamSubscription<LogRecord>? _logSubscription;
 
   AppCtrl({
     required String serverUrl,
-  })  : _serverUrl = serverUrl {
+  })  : _serverUrl = normalizeServerUrl(serverUrl) ?? '' {
     final format = DateFormat('HH:mm:ss');
     Logger.root.level = Level.FINE;
-    Logger.root.onRecord.listen((record) {
+    _logSubscription = Logger.root.onRecord.listen((record) {
       debugPrint('${format.format(record.time)}: ${record.message}');
     });
 
@@ -138,15 +144,28 @@ class AppCtrl extends ChangeNotifier {
 
   /// Update server URL config.
   /// Called when user changes settings.
+  ///
+  /// The incoming value is normalized first, so a differently spelled but
+  /// equivalent URL (extra slashes, missing scheme, different casing) is a
+  /// no-op and leaves an active session untouched. An unusable value is
+  /// ignored rather than tearing the session down.
   Future<void> updateConfig({
     required String serverUrl,
   }) async {
-    if (serverUrl == _serverUrl) {
+    if (_disposed) return;
+
+    final normalized = normalizeServerUrl(serverUrl);
+    if (normalized == null) {
+      _logger.warning('Ignoring invalid server URL: "$serverUrl"');
+      return;
+    }
+    if (normalized == _serverUrl) {
+      _logger.fine('Server URL unchanged after normalization, keeping session');
       return;
     }
 
-    _logger.info('Updating config - serverUrl: $serverUrl');
-    _serverUrl = serverUrl;
+    _logger.info('Updating config - serverUrl: $normalized');
+    _serverUrl = normalized;
 
     // Recreate session with new server URL
     _markNeedsRecreation();
@@ -160,17 +179,43 @@ class AppCtrl extends ChangeNotifier {
     _hasCleanedUp = true;
 
     _session.removeListener(_handleSessionChange);
-    await _session.dispose();
-    await _room.dispose();
-    _roomContext.dispose();
+
+    // Native resources may already be gone (e.g. the app was swiped away),
+    // so tear each one down independently and never let one failure strand
+    // the rest.
+    for (final step in <(String, Future<void> Function())>[
+      ('session', () async => _session.dispose()),
+      ('room', () async => _room.dispose()),
+      ('roomContext', () async => _roomContext.dispose()),
+    ]) {
+      try {
+        await step.$2();
+      } catch (error) {
+        _logger.fine('${step.$1} dispose error (expected): $error');
+      }
+    }
+
     messageCtrl.dispose();
     messageFocusNode.dispose();
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    // Cancel synchronously: the async cleanup below must not let one more
+    // log record reach a sink owned by a dead controller.
+    unawaited(_logSubscription?.cancel());
+    _logSubscription = null;
     unawaited(_cleanUp());
     super.dispose();
+  }
+
+  /// Swallows notifications issued after [dispose], which async work
+  /// (connection attempts, session recreation) can still emit.
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
   }
 
   void sendMessage() async {

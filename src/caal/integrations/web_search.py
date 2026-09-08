@@ -49,7 +49,8 @@ class WebSearchTools:
 
     @function_tool
     async def web_search(self, query: str) -> str:
-        """Search the web for current events, news, prices, store hours, or any time-sensitive information not available from other tools.
+        """Search the web for current events, news, prices, store hours, or any time-sensitive \
+        information not available from other tools.
 
         Args:
             query: What to search for on the web.
@@ -58,8 +59,7 @@ class WebSearchTools:
 
         try:
             raw_results = await asyncio.wait_for(
-                self._do_search(query),
-                timeout=self._search_timeout
+                self._do_search(query), timeout=self._search_timeout
             )
 
             if not raw_results:
@@ -83,20 +83,14 @@ class WebSearchTools:
 
         def _search():
             with DDGS(timeout=self._search_timeout) as ddgs:
-                return list(ddgs.text(
-                    query,
-                    max_results=self._search_max_results,
-                    safesearch="moderate"
-                ))
+                return list(
+                    ddgs.text(query, max_results=self._search_max_results, safesearch="moderate")
+                )
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _search)
 
-    async def _summarize_results(
-        self,
-        query: str,
-        results: list[dict[str, Any]]
-    ) -> str:
+    async def _summarize_results(self, query: str, results: list[dict[str, Any]]) -> str:
         """Summarize search results with configured LLM provider."""
 
         # Truncate to avoid exceeding context limits (~500 tokens total)

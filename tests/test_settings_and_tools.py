@@ -77,6 +77,7 @@ def test_native_assistant_defaults_disable_legacy_n8n_and_enable_core_capabiliti
 
     defaults = settings_module.DEFAULT_SETTINGS
 
+    assert defaults["agent_name"] == "JARVIS"
     assert defaults["n8n_enabled"] is False
     assert defaults["native_tools_enabled"] is True
     assert defaults["email_accounts"] == []

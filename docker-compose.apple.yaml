@@ -39,13 +39,15 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        # Render both LAN and HTTPS configuration so settings such as the
+        # LiveKit API key can safely come from Docker's secret environment.
+        apk add --no-cache gettext > /dev/null 2>&1
         if [ -n "$${HTTPS_DOMAIN}" ]; then
           echo "HTTPS mode: enabling TURN/TLS for $${HTTPS_DOMAIN}"
-          apk add --no-cache gettext > /dev/null 2>&1
           envsubst < /etc/livekit.yaml.template > /etc/livekit.yaml
         else
-          echo "LAN mode: using basic config"
-          cp /etc/livekit-lan.yaml /etc/livekit.yaml
+          echo "LAN mode: rendering basic config"
+          envsubst < /etc/livekit-lan.yaml > /etc/livekit.yaml
         fi
         exec /livekit-server --config /etc/livekit.yaml --node-ip $${CAAL_HOST_IP}
     ports:
@@ -54,7 +56,7 @@ services:
       - "7881:7881/udp"   # UDP for WebRTC
       - "5349:5349"       # TURN/TLS (only used in HTTPS mode)
       - "30000-30100:30000-30100/udp"  # TURN relay ports
-      - "40000-40100:50000-50100/udp"  # WebRTC media ports (changed to 40000-40100 to avoid conflicts)
+      - "40000-40100:40000-40100/udp"  # WebRTC media ports; matches advertised ICE candidates
     volumes:
       - ./livekit.yaml:/etc/livekit-lan.yaml:ro
       - ./livekit-tailscale.yaml.template:/etc/livekit.yaml.template:ro
@@ -89,6 +91,10 @@ services:
     ports:
       - "8889:8889"  # Webhook server
     env_file:
+      # Also carries the multi-user identity settings (CAAL_INTERNAL_AUTH_SECRET,
+      # CAAL_PROFILE_ENCRYPTION_KEYS, CAAL_BOOTSTRAP_ADMIN_EMAIL,
+      # CAAL_BOOTSTRAP_ADMIN_PASSWORD_HASH); Cloudflare Access (CF_ACCESS_*) is
+      # optional. See docs/STANDALONE-AUTH.md.
       - ./.env
     environment:
       - LIVEKIT_URL=ws://livekit:7880
@@ -124,7 +130,7 @@ services:
       platforms:
         - linux/arm64
       args:
-        - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
+        - NEXT_PUBLIC_LIVEKIT_URL=${JARVIS_LIVEKIT_PUBLIC_URL:-wss://jarvis.mexcantech.io}
         - NEXT_PUBLIC_PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     container_name: caal-frontend
     platform: linux/arm64
@@ -134,8 +140,23 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
+      - NEXT_PUBLIC_LIVEKIT_URL=${JARVIS_LIVEKIT_PUBLIC_URL:-wss://jarvis.mexcantech.io}
+      # Server-only CAAL device registry credentials; never exposed with NEXT_PUBLIC_.
+      - CAAL_DEVICE_API_URL=http://agent:8889
+      - CAAL_DEVICE_ENROLLMENT_TOKEN=${CAAL_DEVICE_ENROLLMENT_TOKEN:-}
       - WEBHOOK_URL=http://agent:8889
+      # Multi-user identity (server-only; see docs/MULTI-USER-IDENTITY.md). The
+      # BFF verifies Cloudflare Access assertions itself and signs short-lived
+      # principals for the backend with the shared secret. Leave empty for the
+      # legacy single-user mode.
+      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+      - CAAL_INTERNAL_AUTH_SECRET=${CAAL_INTERNAL_AUTH_SECRET:-}
+      - CAAL_IDENTITY_API_URL=http://agent:8889
+      - CAAL_PUBLIC_ORIGIN=${CAAL_PUBLIC_ORIGIN:-}
+      - CAAL_REQUIRE_IDENTITY_FOR_SESSIONS=${CAAL_REQUIRE_IDENTITY_FOR_SESSIONS:-false}
+      - CAAL_PASSWORD_LOGIN=${CAAL_PASSWORD_LOGIN:-true}
+      - CAAL_ALLOW_INSECURE_COOKIES=${CAAL_ALLOW_INSECURE_COOKIES:-false}
     networks:
       - caal-network
     depends_on:

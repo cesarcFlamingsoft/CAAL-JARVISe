@@ -72,8 +72,7 @@ async def discover_n8n_workflows(n8n_mcp, base_url: str) -> tuple[list[dict], di
                 # Check cache first
                 if wf_id not in _workflow_details_cache:
                     details_result = await n8n_mcp._client.call_tool(
-                        "get_workflow_details",
-                        {"workflowId": wf_id}
+                        "get_workflow_details", {"workflowId": wf_id}
                     )
                     _workflow_details_cache[wf_id] = parse_mcp_result(details_result)
 
@@ -90,7 +89,7 @@ async def discover_n8n_workflows(n8n_mcp, base_url: str) -> tuple[list[dict], di
             # Flexible schema - LLM uses description to determine parameters
             parameters = {
                 "type": "object",
-                "additionalProperties": True  # Accept any properties
+                "additionalProperties": True,  # Accept any properties
             }
 
             # Create Ollama tool definition

@@ -15,7 +15,6 @@ This wrapper is stackable - can be combined with WakeWordGatedSTT:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
@@ -28,10 +27,9 @@ if TYPE_CHECKING:
     from livekit import rtc
 
 from livekit.agents.stt import (
+    STT,
     RecognizeStream,
     SpeechEvent,
-    STT,
-    STTCapabilities,
 )
 from livekit.agents.types import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -134,9 +132,7 @@ class NoiseSuppressedSTT(STT):
                 atten_lim_db=self._config.atten_lim_db,
             )
             self._initialized = True
-            logger.info(
-                f"DeepFilterNet initialized: atten_lim={self._config.atten_lim_db}dB"
-            )
+            logger.info(f"DeepFilterNet initialized: atten_lim={self._config.atten_lim_db}dB")
             return True
 
         except ImportError:
@@ -202,13 +198,11 @@ class NoiseSuppressedSTT(STT):
 
         # Try local DeepFilterNet
         try:
-            import df
+            import df  # noqa: F401 - import verifies the optional dependency is installed
 
             logger.debug("DeepFilterNet package found")
         except ImportError:
-            logger.warning(
-                "Noise suppression enabled but DeepFilterNet not installed - skipping"
-            )
+            logger.warning("Noise suppression enabled but DeepFilterNet not installed - skipping")
             return inner_stt
 
         config = NoiseSuppressionConfig(
@@ -228,9 +222,7 @@ class NoiseSuppressedSTT(STT):
         """Pass through to inner STT (batch mode)."""
         # For batch recognition, could process the entire buffer
         # but this adds latency - skip for now
-        return await self._inner.recognize(
-            buffer, language=language, conn_options=conn_options
-        )
+        return await self._inner.recognize(buffer, language=language, conn_options=conn_options)
 
     def stream(
         self,
@@ -239,9 +231,7 @@ class NoiseSuppressedSTT(STT):
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> RecognizeStream:
         """Create streaming recognition with noise suppression."""
-        inner_stream = self._inner.stream(
-            language=language, conn_options=conn_options
-        )
+        inner_stream = self._inner.stream(language=language, conn_options=conn_options)
 
         if not self.is_available:
             # No noise suppression - return inner stream directly
@@ -365,9 +355,7 @@ class LocalNoiseSuppressedStream(RecognizeStream):
 
             # Resample to 48kHz if needed
             if frame.sample_rate != self.DF_SAMPLE_RATE:
-                audio_float = self._resample(
-                    audio_float, frame.sample_rate, self.DF_SAMPLE_RATE
-                )
+                audio_float = self._resample(audio_float, frame.sample_rate, self.DF_SAMPLE_RATE)
 
             # Apply DeepFilterNet
             with self._lock:
@@ -375,9 +363,7 @@ class LocalNoiseSuppressedStream(RecognizeStream):
 
             # Resample back
             if frame.sample_rate != self.DF_SAMPLE_RATE:
-                enhanced = self._resample(
-                    enhanced, self.DF_SAMPLE_RATE, frame.sample_rate
-                )
+                enhanced = self._resample(enhanced, self.DF_SAMPLE_RATE, frame.sample_rate)
 
             # Ensure length matches
             target_len = frame.samples_per_channel
@@ -387,9 +373,7 @@ class LocalNoiseSuppressedStream(RecognizeStream):
                 enhanced = enhanced[:target_len]
 
             # Convert back to int16
-            enhanced_int16 = (
-                (enhanced * 32768.0).clip(-32768, 32767).astype(np.int16)
-            )
+            enhanced_int16 = (enhanced * 32768.0).clip(-32768, 32767).astype(np.int16)
 
             # Recreate multi-channel if needed
             if frame.num_channels > 1:
@@ -423,9 +407,7 @@ class LocalNoiseSuppressedStream(RecognizeStream):
 
         return enhanced.squeeze()
 
-    def _resample(
-        self, audio: np.ndarray, from_rate: int, to_rate: int
-    ) -> np.ndarray:
+    def _resample(self, audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
         """Linear resampling."""
         if from_rate == to_rate:
             return audio
@@ -466,6 +448,7 @@ class RemoteNoiseSuppressedStream(RecognizeStream):
         import httpx
 
         async with httpx.AsyncClient(timeout=5.0) as client:
+
             async def _process_audio() -> None:
                 """Process and forward audio frames."""
                 async for data in self._input_ch:
@@ -526,9 +509,7 @@ class RemoteNoiseSuppressedStream(RecognizeStream):
             # Resample to 48kHz if needed (server expects 48kHz)
             if frame.sample_rate != self.DF_SAMPLE_RATE:
                 audio_float = audio_int16.astype(np.float32) / 32768.0
-                audio_float = self._resample(
-                    audio_float, frame.sample_rate, self.DF_SAMPLE_RATE
-                )
+                audio_float = self._resample(audio_float, frame.sample_rate, self.DF_SAMPLE_RATE)
                 audio_int16 = (audio_float * 32768.0).clip(-32768, 32767).astype(np.int16)
 
             # Send to remote server
@@ -576,9 +557,7 @@ class RemoteNoiseSuppressedStream(RecognizeStream):
             logger.warning(f"Remote noise suppression failed: {e}")
             return frame
 
-    def _resample(
-        self, audio: np.ndarray, from_rate: int, to_rate: int
-    ) -> np.ndarray:
+    def _resample(self, audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
         """Linear resampling."""
         if from_rate == to_rate:
             return audio

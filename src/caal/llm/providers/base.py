@@ -62,6 +62,20 @@ class LLMProvider(ABC):
         """Whether provider supports think parameter (Qwen3 specific)."""
         return False
 
+    @property
+    def manages_own_tools(self) -> bool:
+        """Whether the provider runs its own tool loop.
+
+        Providers that return True never receive CAAL tool schemas, so the
+        caller can skip tool discovery entirely instead of building a catalog
+        the provider would discard.
+        """
+        return False
+
+    async def aclose(self) -> None:
+        """Release provider-held resources (HTTP clients, sockets)."""
+        return None
+
     @abstractmethod
     async def chat(
         self,
@@ -167,7 +181,9 @@ class LLMProvider(ABC):
                     "function": {
                         "name": tc.name,
                         # Arguments must be JSON string for Groq compatibility
-                        "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments),
+                        "arguments": json.dumps(tc.arguments)
+                        if isinstance(tc.arguments, dict)
+                        else str(tc.arguments),
                     },
                 }
                 for tc in tool_calls

@@ -12,17 +12,16 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 import numpy as np
 from livekit import rtc
 from livekit.agents.stt import (
+    STT,
     RecognizeStream,
     SpeechEvent,
     SpeechEventType,
-    STT,
-    STTCapabilities,
     StreamAdapter,
+    STTCapabilities,
 )
 from livekit.agents.types import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -30,13 +29,13 @@ from livekit.agents.types import (
     APIConnectOptions,
     NotGivenOr,
 )
-from livekit.agents.utils import aio
-from livekit.agents.vad import VADEvent, VADEventType
+from livekit.agents.utils import AudioBuffer, aio
+from livekit.agents.vad import VADEventType
 from livekit.plugins import silero
 from openwakeword.model import Model as OWWModel
 
 from caal.audio import AudioEnergyGate, TVRejectionFilter
-from caal.audio.speaker_recognition import SpeakerRecognition, VerificationResult
+from caal.audio.speaker_recognition import SpeakerRecognition
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +92,7 @@ class WakeWordGatedSTT(STT):
         # Override capabilities to indicate we support streaming
         # Even though the inner STT may not support streaming, WE provide streaming
         # by gating audio through wake word detection before forwarding to inner STT
-        super().__init__(
-            capabilities=STTCapabilities(streaming=True, interim_results=False)
-        )
+        super().__init__(capabilities=STTCapabilities(streaming=True, interim_results=False))
         self._inner = inner_stt
         self._model_path = model_path
         self._threshold = threshold
@@ -140,9 +137,7 @@ class WakeWordGatedSTT(STT):
     ) -> SpeechEvent:
         # For non-streaming recognition, just pass through
         # Wake word gating only makes sense for streaming
-        return await self._inner.recognize(
-            buffer, language=language, conn_options=conn_options
-        )
+        return await self._inner.recognize(buffer, language=language, conn_options=conn_options)
 
     def stream(
         self,
@@ -299,7 +294,7 @@ class WakeWordGatedStream(RecognizeStream):
                     if self._speaker_recognition is not None and self._speech_active:
                         audio_data = np.frombuffer(frame.data, dtype=np.int16)
                         if frame.num_channels > 1:
-                            audio_data = audio_data[::frame.num_channels]
+                            audio_data = audio_data[:: frame.num_channels]
                         self._speaker_audio_buffer.append(audio_data)
 
             # End input when done
@@ -385,7 +380,7 @@ class WakeWordGatedStream(RecognizeStream):
 
         # Handle multi-channel by taking first channel
         if frame.num_channels > 1:
-            audio_data = audio_data[::frame.num_channels]
+            audio_data = audio_data[:: frame.num_channels]
 
         # TV rejection filter: spectral/temporal analysis to reject TV audio
         if self._tv_rejection_filter is not None:
@@ -416,12 +411,12 @@ class WakeWordGatedStream(RecognizeStream):
             for model_name, score in predictions.items():
                 # Log scores periodically for debugging (every ~1 sec when score > 0.1)
                 if score > 0.1:
-                    logger.info(f"Wake word score: {model_name}={score:.3f} (threshold={self._threshold})")
+                    logger.info(
+                        f"Wake word score: {model_name}={score:.3f} (threshold={self._threshold})"
+                    )
                 if score >= self._threshold:
                     detect_time = time.time()
-                    logger.info(
-                        f"Wake word detected! model={model_name}, score={score:.3f}"
-                    )
+                    logger.info(f"Wake word detected! model={model_name}, score={score:.3f}")
 
                     # Trigger wake callback FIRST (e.g., greeting) - fire and forget
                     # Do this before state change to minimize latency
@@ -453,7 +448,9 @@ class WakeWordGatedStream(RecognizeStream):
             # Check minimum duration (need at least 1 second for reliable verification)
             duration_sec = len(audio) / self.OWW_SAMPLE_RATE
             if duration_sec < 1.0:
-                logger.debug(f"SPEAKER RECOGNITION: Audio too short ({duration_sec:.1f}s < 1s), skipping")
+                logger.debug(
+                    f"SPEAKER RECOGNITION: Audio too short ({duration_sec:.1f}s < 1s), skipping"
+                )
                 return
 
             # Run verification
@@ -483,8 +480,9 @@ class WakeWordGatedStream(RecognizeStream):
                         logger.info("🎤 SPEAKER RECOGNITION: No speakers enrolled")
                     else:
                         logger.info(
-                            f"🎤 SPEAKER RECOGNITION: Embedding failed (audio may be too short after "
-                            f"voice activity detection). {len(enrolled_speakers)} speaker(s) enrolled."
+                            "🎤 SPEAKER RECOGNITION: Embedding failed "
+                            "(audio may be too short after voice activity detection). "
+                            f"{len(enrolled_speakers)} speaker(s) enrolled."
                         )
 
         except Exception as e:

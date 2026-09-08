@@ -108,3 +108,10 @@ mobile/.pub/
 mobile/releases/*.apk
 .agent-venv/bin/activate
 /.agent-venv
+
+# Local OAuth client-secret values
+.oauth-provider-credentials.env
+
+# Local agent and transient asset workspace
+.hermes/
+.brandtmp/

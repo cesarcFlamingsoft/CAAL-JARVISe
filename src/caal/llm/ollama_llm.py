@@ -33,9 +33,14 @@ import uuid
 from typing import Any
 
 from livekit.agents import llm
-from livekit.agents.llm import ChatContext, ChatChunk, ChoiceDelta
+from livekit.agents.llm import ChatChunk, ChatContext, ChoiceDelta
 from livekit.agents.llm.tool_context import FunctionTool, RawFunctionTool
-from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions, NOT_GIVEN, NotGivenOr
+from livekit.agents.types import (
+    DEFAULT_API_CONNECT_OPTIONS,
+    NOT_GIVEN,
+    APIConnectOptions,
+    NotGivenOr,
+)
 
 __all__ = ["OllamaLLM"]
 
@@ -208,7 +213,10 @@ class _OllamaLLMStream(llm.LLMStream):
             id=request_id,
             delta=ChoiceDelta(
                 role="assistant",
-                content="I'm configured to use a custom LLM node. Please ensure the agent's llm_node override is active.",
+                content=(
+                    "I'm configured to use a custom LLM node. "
+                    "Please ensure the agent's llm_node override is active."
+                ),
             ),
         )
         self._event_ch.send_nowait(chunk)

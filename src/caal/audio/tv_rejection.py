@@ -17,14 +17,14 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
 # Optional scipy import for advanced signal processing
 try:
     from scipy import signal as scipy_signal
+
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
@@ -194,7 +194,7 @@ class TVRejectionFilter:
         features = AudioFeatures()
 
         # === Energy Features ===
-        rms = np.sqrt(np.mean(audio ** 2)) + 1e-10
+        rms = np.sqrt(np.mean(audio**2)) + 1e-10
         peak = np.max(np.abs(audio)) + 1e-10
 
         features.rms_db = 20 * np.log10(rms)
@@ -209,14 +209,12 @@ class TVRejectionFilter:
             freqs = np.fft.rfftfreq(n_fft, 1 / self.sample_rate)
 
             # Spectral rolloff (frequency below which 85% of energy lies)
-            cumsum = np.cumsum(spectrum ** 2)
+            cumsum = np.cumsum(spectrum**2)
             rolloff_idx = np.searchsorted(cumsum, 0.85 * cumsum[-1])
             features.spectral_rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
 
             # Spectral centroid (weighted mean of frequencies)
-            features.spectral_centroid = (
-                np.sum(freqs * spectrum) / (np.sum(spectrum) + 1e-10)
-            )
+            features.spectral_centroid = np.sum(freqs * spectrum) / (np.sum(spectrum) + 1e-10)
 
             # Spectral flatness (geometric mean / arithmetic mean)
             # Higher = more noise-like, Lower = more tonal
@@ -235,8 +233,8 @@ class TVRejectionFilter:
                 features.harmonic_ratio = self._detect_harmonics(spectrum, freqs)
                 features.rhythm_regularity = self._detect_rhythm(rms)
                 features.is_music_detected = (
-                    features.harmonic_ratio > self.config.max_harmonic_ratio or
-                    features.rhythm_regularity > self.config.max_rhythm_regularity
+                    features.harmonic_ratio > self.config.max_harmonic_ratio
+                    or features.rhythm_regularity > self.config.max_rhythm_regularity
                 )
 
             # === Codec Artifact Detection ===
@@ -258,9 +256,9 @@ class TVRejectionFilter:
 
                 # Combine signals to detect playback voice
                 features.is_playback_voice = (
-                    features.room_reverb_ratio < self.config.min_room_reverb_ratio or
-                    features.spectral_consistency > self.config.max_spectral_consistency or
-                    features.pitch_variation < self.config.min_pitch_variation
+                    features.room_reverb_ratio < self.config.min_room_reverb_ratio
+                    or features.spectral_consistency > self.config.max_spectral_consistency
+                    or features.pitch_variation < self.config.min_pitch_variation
                 )
 
         # === Temporal Features ===
@@ -283,9 +281,7 @@ class TVRejectionFilter:
 
         # === Stereo Correlation Analysis ===
         if self.config.stereo_detection_enabled and stereo_audio is not None:
-            features.stereo_correlation, features.stereo_width = (
-                self._analyze_stereo(stereo_audio)
-            )
+            features.stereo_correlation, features.stereo_width = self._analyze_stereo(stereo_audio)
 
         # === Compute Liveness Score ===
         features.liveness_score = self._compute_liveness_score(features)
@@ -314,7 +310,7 @@ class TVRejectionFilter:
         # Find peaks in spectrum
         peak_indices = []
         for i in range(1, len(spectrum) - 1):
-            if spectrum[i] > spectrum[i-1] and spectrum[i] > spectrum[i+1]:
+            if spectrum[i] > spectrum[i - 1] and spectrum[i] > spectrum[i + 1]:
                 if spectrum[i] > np.mean(spectrum) * 2:  # Significant peak
                     peak_indices.append(i)
 
@@ -328,7 +324,9 @@ class TVRejectionFilter:
 
         # Check ratio between consecutive peaks
         harmonic_count = 0
-        fundamental = peak_freqs[0] if peak_freqs[0] > 50 else peak_freqs[1] if len(peak_freqs) > 1 else 100
+        fundamental = (
+            peak_freqs[0] if peak_freqs[0] > 50 else peak_freqs[1] if len(peak_freqs) > 1 else 100
+        )
 
         for freq in peak_freqs[1:]:
             ratio = freq / fundamental
@@ -375,7 +373,9 @@ class TVRejectionFilter:
         regularity = 1.0 - min(1.0, np.std(intervals) / mean_interval)
         return regularity
 
-    def _detect_codec_artifacts(self, spectrum: np.ndarray, freqs: np.ndarray) -> tuple[float, bool]:
+    def _detect_codec_artifacts(
+        self, spectrum: np.ndarray, freqs: np.ndarray
+    ) -> tuple[float, bool]:
         """Detect codec compression artifacts.
 
         Streaming media often has:
@@ -405,8 +405,8 @@ class TVRejectionFilter:
         for cutoff_freq in cutoff_freqs:
             idx = np.argmin(np.abs(freqs - cutoff_freq))
             if idx > 5 and idx < len(spectrum) - 5:
-                before = np.mean(spectrum[idx-5:idx])
-                after = np.mean(spectrum[idx:idx+5])
+                before = np.mean(spectrum[idx - 5 : idx])
+                after = np.mean(spectrum[idx : idx + 5])
                 if before > 0 and after / before < 0.3:  # Sharp drop
                     cutoff_detected = True
                     break
@@ -492,8 +492,8 @@ class TVRejectionFilter:
         correlations = []
         spectra = list(self._spectrum_history)
         for i in range(1, len(spectra)):
-            if len(spectra[i]) == len(spectra[i-1]):
-                corr = np.corrcoef(spectra[i], spectra[i-1])[0, 1]
+            if len(spectra[i]) == len(spectra[i - 1]):
+                corr = np.corrcoef(spectra[i], spectra[i - 1])[0, 1]
                 if not np.isnan(corr):
                     correlations.append(corr)
 
@@ -520,13 +520,13 @@ class TVRejectionFilter:
         # This is a basic approach - could be enhanced with more sophisticated methods
 
         # Use autocorrelation to find fundamental frequency
-        correlation = np.correlate(audio, audio, mode='full')
-        correlation = correlation[len(correlation)//2:]
+        correlation = np.correlate(audio, audio, mode="full")
+        correlation = correlation[len(correlation) // 2 :]
 
         # Find first peak after initial decay (fundamental period)
         # Look in range corresponding to 80-400 Hz (typical speech range)
         min_period = int(self.sample_rate / 400)  # 400 Hz
-        max_period = int(self.sample_rate / 80)   # 80 Hz
+        max_period = int(self.sample_rate / 80)  # 80 Hz
 
         if max_period >= len(correlation):
             return 0.0
@@ -609,8 +609,8 @@ class TVRejectionFilter:
         # Calculate stereo width (difference between channels)
         mid = (left + right) / 2
         side = (left - right) / 2
-        mid_energy = np.sum(mid ** 2) + 1e-10
-        side_energy = np.sum(side ** 2)
+        mid_energy = np.sum(mid**2) + 1e-10
+        side_energy = np.sum(side**2)
         stereo_width = side_energy / mid_energy
 
         # Track correlation history for smoothing
@@ -651,7 +651,9 @@ class TVRejectionFilter:
         if features.continuous_speech_sec > self.config.max_continuous_speech_sec:
             continuity_score = 0.0
         else:
-            continuity_score = 1.0 - (features.continuous_speech_sec / self.config.max_continuous_speech_sec)
+            continuity_score = 1.0 - (
+                features.continuous_speech_sec / self.config.max_continuous_speech_sec
+            )
         score += 0.10 * continuity_score
         weights_sum += 0.10
 
@@ -684,9 +686,9 @@ class TVRejectionFilter:
             else:
                 # Combine room acoustics, spectral consistency, pitch variation
                 playback_score = (
-                    features.room_reverb_ratio * 0.4 +  # Room sounds natural
-                    (1.0 - features.spectral_consistency) * 0.3 +  # Spectrum varies
-                    features.pitch_variation * 0.3  # Pitch varies naturally
+                    features.room_reverb_ratio * 0.4  # Room sounds natural
+                    + (1.0 - features.spectral_consistency) * 0.3  # Spectrum varies
+                    + features.pitch_variation * 0.3  # Pitch varies naturally
                 )
                 score += 0.12 * playback_score
             weights_sum += 0.12
@@ -708,7 +710,7 @@ class TVRejectionFilter:
                 score += 1.0
             else:
                 # Partial score based on harmonic/rhythm ratio
-                score += (features.harmonic_ratio * 0.5 + features.rhythm_regularity * 0.5)
+                score += features.harmonic_ratio * 0.5 + features.rhythm_regularity * 0.5
             count += 1
 
         # 2. Low stereo correlation (media is typically wide stereo)
@@ -757,7 +759,9 @@ class TVRejectionFilter:
 
         return score / max(1, count)
 
-    def should_pass(self, audio: np.ndarray, stereo_audio: np.ndarray | None = None) -> tuple[bool, AudioFeatures]:
+    def should_pass(
+        self, audio: np.ndarray, stereo_audio: np.ndarray | None = None
+    ) -> tuple[bool, AudioFeatures]:
         """Determine if audio should pass the TV/media rejection filter.
 
         Args:
@@ -843,9 +847,7 @@ class TVRejectionFilter:
 
         # Layer 7: High media rejection score
         if features.media_rejection_score > 0.7:
-            logger.debug(
-                f"Media rejection: high media score {features.media_rejection_score:.2f}"
-            )
+            logger.debug(f"Media rejection: high media score {features.media_rejection_score:.2f}")
             self._consecutive_passes = 0
             return False, features
 
@@ -853,7 +855,8 @@ class TVRejectionFilter:
         self._consecutive_passes += 1
         if self._consecutive_passes < self.config.required_consecutive_passes:
             logger.debug(
-                f"Media filter: building passes {self._consecutive_passes}/{self.config.required_consecutive_passes}"
+                "Media filter: building passes "
+                f"{self._consecutive_passes}/{self.config.required_consecutive_passes}"
             )
             return False, features
 
@@ -883,29 +886,25 @@ class TVRejectionFilter:
         """Get statistics for debugging/tuning."""
         return {
             "avg_crest_factor": (
-                np.mean(list(self._recent_crest_factors))
-                if self._recent_crest_factors else 0.0
+                np.mean(list(self._recent_crest_factors)) if self._recent_crest_factors else 0.0
             ),
             "avg_liveness_score": (
-                np.mean(list(self._recent_liveness_scores))
-                if self._recent_liveness_scores else 0.0
+                np.mean(list(self._recent_liveness_scores)) if self._recent_liveness_scores else 0.0
             ),
             "avg_stereo_correlation": (
-                np.mean(list(self._stereo_history))
-                if self._stereo_history else 1.0
+                np.mean(list(self._stereo_history)) if self._stereo_history else 1.0
             ),
             "avg_room_reverb": (
-                np.mean(list(self._reverb_history))
-                if self._reverb_history else 0.0
+                np.mean(list(self._reverb_history)) if self._reverb_history else 0.0
             ),
             "avg_pitch_variation": (
                 np.std(list(self._pitch_history)) / (np.mean(list(self._pitch_history)) + 1e-10)
-                if len(self._pitch_history) > 5 else 0.0
+                if len(self._pitch_history) > 5
+                else 0.0
             ),
             "consecutive_passes": self._consecutive_passes,
             "continuous_speech_sec": (
-                time.time() - self._speech_start_time
-                if self._speech_start_time else 0.0
+                time.time() - self._speech_start_time if self._speech_start_time else 0.0
             ),
             "music_detection_enabled": self.config.music_detection_enabled,
             "stereo_detection_enabled": self.config.stereo_detection_enabled,

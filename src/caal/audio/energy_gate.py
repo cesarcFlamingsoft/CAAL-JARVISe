@@ -113,7 +113,7 @@ class AudioEnergyGate:
         audio = audio / 32768.0
 
         # Calculate RMS
-        rms = np.sqrt(np.mean(audio ** 2))
+        rms = np.sqrt(np.mean(audio**2))
 
         # Convert to dB (with floor to avoid log(0))
         if rms < 1e-10:

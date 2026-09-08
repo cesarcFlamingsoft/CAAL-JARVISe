@@ -26,6 +26,7 @@ from typing import Any
 
 from .base import LLMProvider, LLMResponse, ToolCall
 from .groq_provider import GroqProvider
+from .hermes_provider import HermesProvider
 from .ollama_provider import OllamaProvider
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "ToolCall",
     "OllamaProvider",
     "GroqProvider",
+    "HermesProvider",
     "create_provider",
 ]
 
@@ -70,10 +72,11 @@ def create_provider(
         return OllamaProvider(**kwargs)
     elif provider_name == "groq":
         return GroqProvider(**kwargs)
+    elif provider_name == "hermes":
+        return HermesProvider(**kwargs)
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider_name}. "
-            f"Supported providers: ollama, groq"
+            f"Unknown LLM provider: {provider_name}. Supported providers: ollama, groq, hermes"
         )
 
 
@@ -117,8 +120,13 @@ def create_provider_from_settings(settings: dict[str, Any]) -> LLMProvider:
             api_key=api_key,
             temperature=settings.get("temperature", 0.7),
         )
+    elif provider_name == "hermes":
+        return HermesProvider(
+            base_url=settings.get("hermes_api_url", "http://host.docker.internal:8642/v1"),
+            api_key=settings.get("hermes_api_key") or os.environ.get("HERMES_API_KEY"),
+            model=settings.get("hermes_model", "hermes-agent"),
+        )
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider_name}. "
-            f"Supported providers: ollama, groq"
+            f"Unknown LLM provider: {provider_name}. Supported providers: ollama, groq, hermes"
         )

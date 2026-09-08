@@ -62,7 +62,8 @@ class OllamaProvider(LLMProvider):
         self._client = ollama.Client(host=base_url) if base_url else ollama.Client()
 
         logger.debug(
-            f"OllamaProvider initialized: {model} (think={think}, num_ctx={num_ctx}, host={base_url or 'default'})"
+            f"OllamaProvider initialized: {model} "
+            f"(think={think}, num_ctx={num_ctx}, host={base_url or 'default'})"
         )
 
     @property

@@ -18,6 +18,11 @@ Endpoints:
     POST /wake-word/enable   - Enable server-side wake word detection
     POST /wake-word/disable  - Disable server-side wake word detection
     GET  /wake-word/models   - List available wake word models
+    POST /devices/register   - Enroll a device and mint its session token
+    POST /devices/heartbeat  - Keep the calling device's session alive
+    GET  /devices/active     - List active devices by friendly label
+    POST /devices/handoff    - Snapshot the caller's context behind a handoff id
+    POST /devices/handoff/claim - Claim a handoff exactly once
 
 Usage:
     # Start in a background thread from voice_agent.py:
@@ -39,14 +44,16 @@ import logging
 import os
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 from livekit.protocol.models import DataPacket
 from livekit.protocol.room import SendDataRequest
 from pydantic import BaseModel
 
+from . import connections_api, dashboard_api, device_registry, user_api, weather_api
 from . import settings as settings_module
+from .outbound_calls import OutboundCallCoordinator, OutboundCallPolicy, verify_control_token
 from .tools import calendar_tools, create_default_registry, email_tools
 
 logger = logging.getLogger(__name__)
@@ -65,6 +72,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Multi-user identity, profile, and admin routes. They authenticate every call
+# with a signed internal principal from the BFF and fail closed (503) until the
+# multi-user security configuration validates; see caal.security_config.
+app.add_middleware(user_api.IdentityResponseHeadersMiddleware)
+app.include_router(user_api.router)
+# A user's own provider connections (Google, Microsoft, Zoho) live under
+# /users/me/connections and share the identity boundary above.
+app.include_router(connections_api.router)
+# The dashboard reads a user's connected accounts (upcoming events, recent
+# mail) under /users/me/dashboard, behind the same boundary.
+app.include_router(dashboard_api.router)
+app.include_router(weather_api.router)
 
 
 def get_livekit_api() -> api.LiveKitAPI:
@@ -159,6 +179,19 @@ class HealthResponse(BaseModel):
 
     status: str
     active_sessions: list[str]
+
+
+class OutboundDialRequest(BaseModel):
+    """Explicit, allowlist-checked request to begin an outbound call."""
+
+    destination: str
+
+
+class OutboundDialResponse(BaseModel):
+    """Non-sensitive acknowledgement for an outbound call attempt."""
+
+    status: str
+    attempt_id: str
 
 
 @app.post("/announce", response_model=AnnounceResponse)
@@ -292,6 +325,40 @@ async def health() -> HealthResponse:
         status="ok",
         active_sessions=rooms,
     )
+
+
+@app.post("/outbound/dial", response_model=OutboundDialResponse)
+async def outbound_dial(
+    req: OutboundDialRequest,
+    x_caal_control_token: str | None = Header(default=None),
+) -> OutboundDialResponse:
+    """Dispatch a private outbound job after token and allowlist checks."""
+    expected_token = os.getenv("CAAL_OUTBOUND_CONTROL_TOKEN", "")
+    if not verify_control_token(expected_token, x_caal_control_token):
+        raise HTTPException(status_code=401, detail="Unauthorized outbound-call request")
+
+    try:
+        policy = OutboundCallPolicy.from_csv(os.getenv("CAAL_OUTBOUND_ALLOWED_DESTINATIONS", ""))
+        livekit = get_livekit_api()
+        try:
+            coordinator = OutboundCallCoordinator(
+                policy=policy,
+                livekit=livekit,
+                agent_name=os.getenv("CAAL_OUTBOUND_AGENT_NAME", "caal"),
+            )
+            request = await coordinator.start(req.destination)
+        finally:
+            await livekit.aclose()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Destination is not approved") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Outbound call dispatch failed")
+        raise HTTPException(status_code=503, detail="Outbound call could not be started") from None
+
+    logger.info("Outbound call dispatched attempt=%s", request.attempt_id)
+    return OutboundDialResponse(status="dispatched", attempt_id=request.attempt_id)
 
 
 # =============================================================================
@@ -1512,3 +1579,228 @@ async def remove_speaker(name: str) -> RemoveSpeakerResponse:
             success=False,
             message=f"Speaker '{name}' not found",
         )
+
+
+# =============================================================================
+# Device Session & Handoff Endpoints
+# =============================================================================
+#
+# Enrolling a device requires the shared CAAL_DEVICE_ENROLLMENT_TOKEN; every
+# later call authenticates with the per-device bearer token minted at
+# registration. Responses stay deliberately thin: a device only ever learns
+# friendly labels for its peers, never their rooms, tokens, or context.
+
+DEVICE_ENROLLMENT_TOKEN_ENV = "CAAL_DEVICE_ENROLLMENT_TOKEN"
+_UNAUTHORIZED_DEVICE = "Unauthorized device request"
+
+
+class DeviceRegisterRequest(BaseModel):
+    """Enrollment request for one device session."""
+
+    device_id: str
+    room_name: str
+    label: str
+    transport: str
+
+
+class DeviceRegisterResponse(BaseModel):
+    """Newly minted session token, returned only to the enrolling device."""
+
+    session_token: str
+    device_id: str
+    label: str
+    transport: str
+    expires_in: int
+
+
+class DeviceHeartbeatResponse(BaseModel):
+    """Acknowledgement that the caller's session is still live."""
+
+    status: str
+    label: str
+    transport: str
+    expires_in: int
+
+
+class ActiveDeviceResponse(BaseModel):
+    """One peer device, described only by what is safe to show a user."""
+
+    label: str
+    transport: str
+    last_seen: int
+    is_self: bool
+
+
+class ActiveDevicesResponse(BaseModel):
+    """Response body for GET /devices/active."""
+
+    devices: list[ActiveDeviceResponse]
+
+
+class HandoffCreateRequest(BaseModel):
+    """Bounded context snapshot to carry across a handoff."""
+
+    context: dict | None = None
+
+
+class HandoffCreateResponse(BaseModel):
+    """Opaque handoff id, returned only to the device that created it."""
+
+    handoff_id: str
+    expires_in: int
+
+
+class HandoffClaimRequest(BaseModel):
+    """Request body for POST /devices/handoff/claim."""
+
+    handoff_id: str
+
+
+class HandoffClaimResponse(BaseModel):
+    """The carried context, released to exactly one claiming device."""
+
+    status: str
+    context: dict
+    claimed_at: int
+
+
+def _require_device_enrollment(provided: str | None) -> None:
+    """Authorize device enrollment, failing closed when no secret is configured."""
+    if not verify_control_token(os.getenv(DEVICE_ENROLLMENT_TOKEN_ENV, ""), provided):
+        raise HTTPException(status_code=401, detail=_UNAUTHORIZED_DEVICE)
+
+
+def _authenticated_device(
+    authorization: str | None, *, refresh: bool = False
+) -> device_registry.DeviceSession:
+    """Resolve the caller's live session from its bearer token, or raise 401."""
+    scheme, _, token = (authorization or "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail=_UNAUTHORIZED_DEVICE)
+
+    session = device_registry.heartbeat(token) if refresh else device_registry.get_session(token)
+    if session is None:
+        raise HTTPException(status_code=401, detail=_UNAUTHORIZED_DEVICE)
+    return session
+
+
+@app.post("/devices/register", response_model=DeviceRegisterResponse)
+async def register_device(
+    req: DeviceRegisterRequest,
+    x_caal_device_token: str | None = Header(default=None),
+    x_caal_principal: str | None = Header(default=None),
+    identity_runtime: object | None = Depends(user_api.get_runtime),
+) -> DeviceRegisterResponse:
+    """Enroll a device and issue the bearer token that proves ownership.
+
+    Re-registering the same device retires its previous token. With an
+    ``X-CAAL-Principal`` header (a single-use principal minted by the BFF for
+    a verified user) the device is bound to that user and only ever sees that
+    user's other devices; a principal that fails to verify is refused rather
+    than downgraded to an anonymous device.
+    """
+    _require_device_enrollment(x_caal_device_token)
+    user_id = user_api.principal_subject(x_caal_principal, identity_runtime)
+
+    try:
+        session = device_registry.register_device_session(
+            device_id=req.device_id,
+            room_name=req.room_name,
+            label=req.label,
+            transport=req.transport,
+            user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    logger.info(
+        "Device session registered device=%s transport=%s", session.device_id, session.transport
+    )
+    return DeviceRegisterResponse(
+        session_token=session.session_id,
+        device_id=session.device_id,
+        label=session.label,
+        transport=session.transport.value,
+        expires_in=device_registry.SESSION_TTL_SECONDS,
+    )
+
+
+@app.post("/devices/heartbeat", response_model=DeviceHeartbeatResponse)
+async def device_heartbeat(
+    authorization: str | None = Header(default=None),
+) -> DeviceHeartbeatResponse:
+    """Refresh the calling device's session so it stays listed as active."""
+    session = _authenticated_device(authorization, refresh=True)
+    return DeviceHeartbeatResponse(
+        status="ok",
+        label=session.label,
+        transport=session.transport.value,
+        expires_in=device_registry.SESSION_TTL_SECONDS,
+    )
+
+
+@app.get("/devices/active", response_model=ActiveDevicesResponse)
+async def list_active_devices(
+    authorization: str | None = Header(default=None),
+) -> ActiveDevicesResponse:
+    """List the caller's own user's active devices by friendly label for handoff selection."""
+    session = _authenticated_device(authorization)
+    return ActiveDevicesResponse(
+        devices=[
+            ActiveDeviceResponse(
+                label=active.label,
+                transport=active.transport.value,
+                last_seen=active.last_seen,
+                is_self=active.device_id == session.device_id,
+            )
+            for active in device_registry.list_active_sessions(user_id=session.user_id)
+        ]
+    )
+
+
+@app.post("/devices/handoff", response_model=HandoffCreateResponse)
+async def create_device_handoff(
+    req: HandoffCreateRequest,
+    authorization: str | None = Header(default=None),
+) -> HandoffCreateResponse:
+    """Stage a one-time handoff of the caller's conversation context."""
+    session = _authenticated_device(authorization)
+
+    try:
+        record = device_registry.create_handoff(session.session_id, context=req.context)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=401, detail=_UNAUTHORIZED_DEVICE) from exc
+
+    logger.info("Handoff staged from device=%s", session.device_id)
+    return HandoffCreateResponse(
+        handoff_id=record.handoff_id,
+        expires_in=device_registry.HANDOFF_TTL_SECONDS,
+    )
+
+
+@app.post("/devices/handoff/claim", response_model=HandoffClaimResponse)
+async def claim_device_handoff(
+    req: HandoffClaimRequest,
+    authorization: str | None = Header(default=None),
+) -> HandoffClaimResponse:
+    """Claim a staged handoff exactly once and receive its context.
+
+    Unknown, expired, and already-claimed handoffs are all reported the same
+    way so a caller cannot probe for valid ids.
+    """
+    session = _authenticated_device(authorization)
+    record = device_registry.claim_handoff(
+        req.handoff_id, device_id=session.device_id, user_id=session.user_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Handoff is not available.")
+
+    logger.info("Handoff claimed by device=%s", session.device_id)
+    return HandoffClaimResponse(
+        status="claimed",
+        context=record.context,
+        claimed_at=record.claimed_at or 0,
+    )

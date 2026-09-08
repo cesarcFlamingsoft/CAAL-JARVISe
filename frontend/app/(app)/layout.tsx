@@ -1,9 +1,14 @@
 import { headers } from 'next/headers';
+import Link from 'next/link';
+import { AccountMenu } from '@/components/account/account-menu';
 import { getAppConfig } from '@/lib/utils';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
+
+const BRAND_NAME = 'MEXCANTECH';
+const BRAND_TAGLINE = 'Learn. Build. Empower.';
 
 export default async function Layout({ children }: LayoutProps) {
   const hdrs = await headers();
@@ -11,40 +16,41 @@ export default async function Layout({ children }: LayoutProps) {
 
   return (
     <>
-      {/* Logo - top left */}
+      {/* Brand - top left */}
       <header className="fixed top-0 left-0 z-40 hidden p-6 md:block">
-        <a
-          target="_blank"
-          rel="noopener noreferrer"
-          href="https://www.youtube.com/@coreworxlab"
-          className="scale-100 transition-transform duration-300 hover:scale-110"
+        <Link
+          href="/"
+          aria-label={`${BRAND_NAME} — ${companyName} home`}
+          className="focus-visible:ring-ring flex items-center gap-3 rounded-md transition-opacity duration-200 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={logo} alt={`${companyName} Logo`} className="block size-6 dark:hidden" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={logoDark ?? logo}
-            alt={`${companyName} Logo`}
-            className="hidden size-12 dark:block"
+            alt=""
+            aria-hidden="true"
+            className="size-8 rounded-md shadow-sm"
           />
-        </a>
+          <span className="flex flex-col leading-tight">
+            <span className="text-foreground font-mono text-sm font-semibold tracking-widest">
+              {BRAND_NAME}
+            </span>
+            <span className="text-muted-foreground font-mono text-[10px] tracking-wider uppercase">
+              {BRAND_TAGLINE}
+            </span>
+          </span>
+        </Link>
       </header>
+
+      {/* Who is signed in (multi-user deployments only) */}
+      <AccountMenu />
 
       {children}
 
       {/* Branding - bottom right */}
       <footer className="fixed right-0 bottom-0 z-40 hidden p-6 md:block">
-        <span className="text-muted-foreground font-mono text-xs font-medium tracking-wider uppercase">
-          Built by{' '}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://github.com/coreworxlab"
-            className="hover:text-foreground underline underline-offset-4 transition-colors"
-          >
-            CoreWorxLab
-          </a>
-        </span>
+        <p className="text-muted-foreground font-mono text-xs font-medium tracking-wider uppercase">
+          {companyName} by {BRAND_NAME}
+        </p>
       </footer>
     </>
   );

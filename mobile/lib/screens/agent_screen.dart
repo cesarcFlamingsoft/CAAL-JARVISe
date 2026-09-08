@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 
 import '../controllers/app_ctrl.dart';
 import '../controllers/wake_word_state_ctrl.dart';
+import '../services/config_service.dart';
 import '../support/agent_selector.dart';
 import '../widgets/agent_layout_switcher.dart';
 import '../widgets/bar_visualizer.dart';
@@ -29,15 +30,22 @@ class _AgentTrackViewState extends State<AgentTrackView> {
   bool _hasLoadedSettings = false;
   Timer? _settingsTimer;
 
+  /// Resolved once from the shared webhook base URL, so the polling timer
+  /// never has to touch an ancestor context after this widget is unmounted.
+  Uri? _settingsUrl;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final baseUrl = webhookBaseUrl(context.read<AppCtrl>().serverUrl);
+    _settingsUrl = baseUrl == null ? null : Uri.parse('$baseUrl/settings');
+
     if (!_hasLoadedSettings) {
       _hasLoadedSettings = true;
-      _loadVisualizationType();
+      unawaited(_loadVisualizationType());
       // Poll settings every 3 seconds to detect changes
       _settingsTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-        _loadVisualizationType();
+        unawaited(_loadVisualizationType());
       });
     }
   }
@@ -45,37 +53,31 @@ class _AgentTrackViewState extends State<AgentTrackView> {
   @override
   void dispose() {
     _settingsTimer?.cancel();
+    _settingsTimer = null;
     super.dispose();
   }
 
   Future<void> _loadVisualizationType() async {
+    final url = _settingsUrl;
+    if (url == null || !mounted) return;
+
     try {
-      final serverUrl = context.read<AppCtrl>().serverUrl;
-      final uri = Uri.parse(serverUrl);
-      final webhookUrl = 'http://${uri.host}:8889';
-      
-      print('Fetching settings from: $webhookUrl/settings');
-      final response = await http.get(Uri.parse('$webhookUrl/settings'));
-      print('Response status: ${response.statusCode}');
-      print('Response body: ${response.body}');
-      
+      final response = await http.get(url);
+      if (!mounted) return;
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        print('Parsed data: $data');
-        print('Settings object: ${data['settings']}');
         final type = data['settings']?['visualization_type'] ?? 'jarvis';
-        print('Loaded visualization type: $type (current: $_visualizationType)');
-        if (mounted && _visualizationType != type) {
+        if (_visualizationType != type) {
           setState(() {
             _visualizationType = type;
           });
-          print('Updated visualization type to: $_visualizationType');
         }
       } else {
-        print('Failed to load settings: ${response.statusCode}');
+        debugPrint('[AgentTrackView] Failed to load settings: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error loading visualization type: $e');
+      debugPrint('[AgentTrackView] Error loading visualization type: $e');
       // Keep default on error
     }
   }

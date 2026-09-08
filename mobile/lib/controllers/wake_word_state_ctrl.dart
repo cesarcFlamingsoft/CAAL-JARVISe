@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as sdk;
 
+import '../services/config_service.dart';
+
 /// Server-side wake word detection state.
 enum WakeWordState {
   /// Agent is waiting for wake word
@@ -25,6 +27,18 @@ class WakeWordStateCtrl extends ChangeNotifier {
   WakeWordState? _state;
   bool _isEnabled = false;
   bool _hasFetched = false;
+  bool _disposed = false;
+
+  /// Whether this controller has been disposed. Once disposed it is inert:
+  /// in-flight fetches and pending retries stop touching it.
+  bool get isDisposed => _disposed;
+
+  /// The wake word status endpoint, derived from the one shared webhook base
+  /// URL. Null when [serverUrl] is empty or unusable.
+  Uri? get statusUrl {
+    final baseUrl = webhookBaseUrl(serverUrl);
+    return baseUrl == null ? null : Uri.parse('$baseUrl/wake-word/status');
+  }
 
   /// Current wake word state. Null if server-side detection is disabled.
   WakeWordState? get state => _state;
@@ -56,8 +70,11 @@ class WakeWordStateCtrl extends ChangeNotifier {
   }
 
   Future<void> _fetchInitialState({int retryCount = 0}) async {
-    if (serverUrl.isEmpty) {
-      debugPrint('[WakeWordStateCtrl] No serverUrl, skipping initial fetch');
+    if (_disposed) return;
+
+    final url = statusUrl;
+    if (url == null) {
+      debugPrint('[WakeWordStateCtrl] No usable serverUrl, skipping initial fetch');
       return;
     }
 
@@ -65,17 +82,14 @@ class WakeWordStateCtrl extends ChangeNotifier {
     if (_hasFetched) return;
 
     try {
-      // Extract base URL (remove /api/connection-details path if present)
-      final uri = Uri.parse(serverUrl);
-      final baseUrl = '${uri.scheme}://${uri.host}:8889';
-      final statusUrl = '$baseUrl/wake-word/status';
-
-      debugPrint('[WakeWordStateCtrl] Fetching initial state from: $statusUrl (attempt ${retryCount + 1})');
+      debugPrint('[WakeWordStateCtrl] Fetching initial state from: $url (attempt ${retryCount + 1})');
 
       final response = await http.get(
-        Uri.parse(statusUrl),
+        url,
         headers: {'Content-Type': 'application/json'},
       ).timeout(const Duration(seconds: 5));
+
+      if (_disposed) return;
 
       debugPrint('[WakeWordStateCtrl] Response: ${response.statusCode} - ${response.body}');
 
@@ -95,11 +109,12 @@ class WakeWordStateCtrl extends ChangeNotifier {
     } catch (error) {
       debugPrint('[WakeWordStateCtrl] Failed to fetch initial state: $error');
       // Retry up to 3 times with exponential backoff
-      if (retryCount < 3) {
+      if (retryCount < 3 && !_disposed) {
         final delay = Duration(milliseconds: 500 * (retryCount + 1));
         debugPrint('[WakeWordStateCtrl] Retrying in ${delay.inMilliseconds}ms...');
         await Future.delayed(delay);
-        _fetchInitialState(retryCount: retryCount + 1);
+        if (_disposed) return;
+        await _fetchInitialState(retryCount: retryCount + 1);
       }
     }
   }
@@ -128,12 +143,23 @@ class WakeWordStateCtrl extends ChangeNotifier {
 
   /// Reset state (e.g., when disconnecting)
   void reset() {
+    if (_disposed) return;
     _state = null;
     notifyListeners();
   }
 
+  /// Swallows notifications issued after [dispose], which an in-flight fetch
+  /// or a late room event can still emit.
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
   @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _listener.dispose();
     super.dispose();
   }

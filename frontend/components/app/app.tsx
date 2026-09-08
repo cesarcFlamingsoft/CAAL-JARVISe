@@ -5,8 +5,9 @@ import { TokenSource } from 'livekit-client';
 import { SessionProvider, StartAudio, useSession } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
 import { AgentAudioRenderer } from '@/components/app/agent-audio-renderer';
-import { ViewController } from '@/components/app/view-controller';
+import { DevicePresence } from '@/components/app/device-presence';
 import { WakeWordProvider } from '@/components/app/wake-word-provider';
+import { SkipToVoiceLink, Workspace } from '@/components/dashboard/workspace';
 import { Toaster } from '@/components/livekit/toaster';
 import { SetupWizard } from '@/components/setup';
 // import { useAgentErrors } from '@/hooks/useAgentErrors';
@@ -63,12 +64,12 @@ export function App({ appConfig }: AppProps) {
 
   // Generate unique session ID once when component mounts
   const sessionId = useMemo(() => generateSessionId(), []);
-  
+
   const tokenSource = useMemo(() => {
     if (typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string') {
       return getSandboxTokenSource(appConfig);
     }
-    
+
     // Create custom token source that includes client_id in the request
     return TokenSource.custom(async (options) => {
       const response = await fetch('/api/connection-details', {
@@ -154,9 +155,10 @@ export function App({ appConfig }: AppProps) {
         defaultEnabled={false}
       >
         <AppSetup />
-        <main className="grid h-svh grid-cols-1 place-content-center">
-          <ViewController appConfig={appConfig} />
-        </main>
+        <SkipToVoiceLink />
+        <DevicePresence />
+        {/* The workspace is the application session; a voice call is docked inside it. */}
+        <Workspace appConfig={appConfig} />
         <StartAudio label="Start Audio" />
         <AgentAudioRenderer />
         <Toaster />
