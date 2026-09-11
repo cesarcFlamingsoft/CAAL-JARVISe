@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from caal import telegram_notify
@@ -20,21 +22,29 @@ class _Client:
         return _Response()
 
 
+def test_notifier_composes_no_call_outcome_text_of_its_own() -> None:
+    """The generic unanswered-call prompt is gone, not merely unused.
+
+    It asked the user to reply with another phone number, which no chat reply
+    could ever have changed, and it was sent once per failed outbound attempt.
+    """
+    assert not hasattr(TelegramCallNotifier, "notify_unanswered")
+    source = Path(telegram_notify.__file__).read_text()
+    for phrase in ("another number", "retry later", "continue through chat", "not answered"):
+        assert phrase not in source.lower()
+
+
 @pytest.mark.asyncio
-async def test_notifier_sends_safe_no_answer_message_with_decision_options() -> None:
+async def test_notifier_sends_exactly_the_text_the_caller_composed() -> None:
     client = _Client()
     notifier = TelegramCallNotifier(token="secret", chat_id="123", client=client)
 
-    await notifier.notify_unanswered("machine-vm")
+    await notifier.notify_text("JARVIS: a bounded line the caller already redacted.")
 
     assert client.calls[0][0].endswith("/botsecret/sendMessage")
     payload = client.calls[0][1]
     assert payload["chat_id"] == "123"
-    assert "voicemail" in payload["text"].lower()
-    assert "another number" in payload["text"].lower()
-    assert "retry later" in payload["text"].lower()
-    assert "continue through chat" in payload["text"].lower()
-    assert "+1" not in payload["text"]
+    assert payload["text"] == "JARVIS: a bounded line the caller already redacted."
 
 
 class _DocumentClient:

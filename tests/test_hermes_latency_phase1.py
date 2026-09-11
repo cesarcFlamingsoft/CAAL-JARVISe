@@ -197,7 +197,7 @@ class _CountingClient:
         self.posts = 0
         _CountingClient.instances.append(self)
 
-    async def post(self, url, *, json, headers):
+    async def post(self, url, *, json, headers, **kwargs):
         if self.closed:
             raise AssertionError("request issued on a closed client")
         self.posts += 1

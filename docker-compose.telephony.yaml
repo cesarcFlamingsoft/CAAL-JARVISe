@@ -1,21 +1,28 @@
 # CAAL telephony overlay for self-hosted LiveKit SIP.
-# Apply with:
+# ==================================================
+#
+# Apply with (never LiveKit on its own -- use ./telephony-livekit.sh, which
+# recreates it under exactly this set):
 #   docker compose -f docker-compose.apple.yaml -f docker-compose.telephony.yaml up -d
 #
 # Router/firewall prerequisite for public PSTN calls:
 #   TCP + UDP 5060, UDP 10000-10100 -> this Mac's LAN address.
+#
+# The overlay adds Redis and SIP; it does not replace the LiveKit configuration.
+# LiveKit renders one config from the same templates in every composition and
+# appends its Redis section when LIVEKIT_REDIS_ADDRESS is set, so telephony and
+# the public HTTPS/TURN deployment coexist instead of excluding each other.
+# Set LIVEKIT_REDIS_ADDRESS=redis:6379 in .env as well: that way even a
+# livekit-only recreate from the base compose file still comes up Redis-backed.
 
 services:
   livekit:
-    # SIP requires LiveKit's Redis-backed telephony configuration. The base
-    # compose treats any non-empty HTTPS_DOMAIN (even a LAN IP) as TLS mode,
-    # whose template has no Redis section; force the SIP-safe branch here.
+    # LiveKit refuses SIP without a Redis-backed deployment ("sip not connected
+    # (redis required)"). This is the only thing SIP needs from LiveKit here.
     environment:
-      HTTPS_DOMAIN: ""
+      LIVEKIT_REDIS_ADDRESS: ${LIVEKIT_REDIS_ADDRESS:-redis:6379}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
-    volumes:
-      - ./livekit.telephony.yaml:/etc/livekit-lan.yaml:ro
     depends_on:
       redis:
         condition: service_healthy

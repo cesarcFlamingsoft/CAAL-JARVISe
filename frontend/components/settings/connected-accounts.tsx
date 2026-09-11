@@ -9,6 +9,9 @@
  * account" -- is offered only when the operator has configured that provider
  * and the backend says it can finish the exchange. Disconnect applies to one
  * account and asks for an explicit confirmation before anything is sent.
+ * Each account can also be given the names its owner will ask JARVIS for it
+ * by ("work", "university", "wife"); those names are the user's own and never
+ * replace the account identity the provider reported.
  * What the panel says about the token exchange comes from the backend, not
  * from optimism: while the backend reports it cannot complete one, the panel
  * says so and offers nothing it cannot deliver.
@@ -22,8 +25,12 @@ import {
   type BrowserConnectionList,
   type ConnectionRow,
   type Provider,
+  MAX_ALIAS_LENGTH,
+  MAX_USER_LABEL_LENGTH,
+  accountNamesFrom,
   explainConnectionError,
   panelRows,
+  parseAliasInput,
 } from '@/lib/connections/protocol';
 
 interface StartResponse {
@@ -63,6 +70,13 @@ export function ConnectedAccounts() {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The connection whose names are being edited, and the two draft fields. */
+  const [naming, setNaming] = useState<string | null>(null);
+  const [labelDraft, setLabelDraft] = useState('');
+  const [aliasDraft, setAliasDraft] = useState('');
+  const [savingNames, setSavingNames] = useState(false);
+  /** A bounded reason the names were refused. Never the text that was typed. */
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,6 +138,58 @@ export function ConnectedAccounts() {
           }
         : { provider: row.provider, tone: 'error', text: describeError(result.error, result.details) }
     );
+    await load();
+  }
+
+  function startNaming(connection: BrowserConnection) {
+    setNotice(null);
+    setNameError(null);
+    setConfirming(null);
+    setNaming(connection.connectionId);
+    setLabelDraft(connection.userLabel ?? '');
+    setAliasDraft(connection.aliases.join(', '));
+  }
+
+  function stopNaming() {
+    setNaming(null);
+    setNameError(null);
+    setLabelDraft('');
+    setAliasDraft('');
+  }
+
+  async function saveNames(row: ConnectionRow, connection: BrowserConnection) {
+    if (savingNames) return;
+    const body = {
+      user_label: labelDraft.trim() ? labelDraft : null,
+      aliases: parseAliasInput(aliasDraft),
+    };
+    // Checked here with the same rules the route and the backend apply, so a
+    // name that cannot be saved is explained without a round trip.
+    const checked = accountNamesFrom(body);
+    if (!checked.ok) {
+      setNameError(describeError(checked.error));
+      return;
+    }
+    setSavingNames(true);
+    setNameError(null);
+    const result = await apiRequest<BrowserConnection>(
+      `/api/connections/${connection.connectionId}`,
+      { method: 'PATCH', body }
+    );
+    setSavingNames(false);
+    if (!result.ok) {
+      setNameError(describeError(result.error, result.details));
+      return;
+    }
+    stopNaming();
+    // The voice route reads these names from the backend on the next question;
+    // the dashboard only needs to re-read its account list.
+    window.dispatchEvent(new Event('connections-updated'));
+    setNotice({
+      provider: row.provider,
+      tone: 'info',
+      text: 'Saved. JARVIS will use these names for this account.',
+    });
     await load();
   }
 
@@ -207,6 +273,8 @@ export function ConnectedAccounts() {
 
               {row.connections.map((connection) => {
                 const isConfirming = confirming === connection.connectionId;
+                const isNaming = naming === connection.connectionId;
+                const nameId = `names-${connection.connectionId}`;
                 const isRemoving = removing === connection.connectionId;
                 const since = formatWhen(connection.connectedAt);
                 return (
@@ -220,19 +288,118 @@ export function ConnectedAccounts() {
                         {since ? ` · since ${since}` : ''}
                       </p>
                       {!isConfirming && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => {
-                            setNotice(null);
-                            setConfirming(connection.connectionId);
-                          }}
-                          disabled={removing !== null}
-                        >
-                          Disconnect…
-                        </Button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            aria-expanded={isNaming}
+                            aria-controls={nameId}
+                            onClick={() => (isNaming ? stopNaming() : startNaming(connection))}
+                            disabled={removing !== null}
+                          >
+                            {connection.userLabel || connection.aliases.length > 0
+                              ? 'Edit names'
+                              : 'Name this account'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              setNotice(null);
+                              stopNaming();
+                              setConfirming(connection.connectionId);
+                            }}
+                            disabled={removing !== null}
+                          >
+                            Disconnect…
+                          </Button>
+                        </div>
                       )}
                     </div>
+
+                    {(connection.userLabel || connection.aliases.length > 0) && !isNaming && (
+                      <p className="text-muted-foreground text-xs">
+                        JARVIS knows this account as:{' '}
+                        <span className="text-foreground">
+                          {[connection.userLabel, ...connection.aliases]
+                            .filter(Boolean)
+                            .join(', ')}
+                        </span>
+                      </p>
+                    )}
+
+                    {isNaming && (
+                      <div id={nameId} className="space-y-2 rounded-lg border p-3">
+                        <p className="text-muted-foreground text-xs">
+                          These names are used by JARVIS to choose this account when you ask for
+                          it, for example “my work inbox” or “my university calendar”. The
+                          provider account identity remains unchanged.
+                        </p>
+                        <div className="space-y-1">
+                          <label
+                            className="text-xs font-medium"
+                            htmlFor={`${nameId}-label`}
+                          >
+                            Name for this account
+                          </label>
+                          <input
+                            id={`${nameId}-label`}
+                            className="bg-background w-full rounded-md border px-2 py-1 text-sm"
+                            value={labelDraft}
+                            maxLength={MAX_USER_LABEL_LENGTH}
+                            placeholder="work"
+                            autoComplete="off"
+                            onChange={(event) => setLabelDraft(event.target.value)}
+                            disabled={savingNames}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label
+                            className="text-xs font-medium"
+                            htmlFor={`${nameId}-aliases`}
+                          >
+                            Other names, separated by commas
+                          </label>
+                          <input
+                            id={`${nameId}-aliases`}
+                            className="bg-background w-full rounded-md border px-2 py-1 text-sm"
+                            value={aliasDraft}
+                            maxLength={(MAX_ALIAS_LENGTH + 2) * 8}
+                            placeholder="office, day job"
+                            autoComplete="off"
+                            onChange={(event) => setAliasDraft(event.target.value)}
+                            disabled={savingNames}
+                          />
+                          <p className="text-muted-foreground text-xs">
+                            Up to 8 names, each up to {MAX_ALIAS_LENGTH} characters. Leave both
+                            fields empty to remove the names.
+                          </p>
+                        </div>
+                        {nameError && (
+                          <p className="text-destructive text-xs" role="alert">
+                            {nameError}
+                          </p>
+                        )}
+                        <div className="flex gap-2">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => void saveNames(row, connection)}
+                            disabled={savingNames}
+                          >
+                            {savingNames ? 'Saving…' : 'Save names'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={stopNaming}
+                            disabled={savingNames}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    )}
 
                     {isConfirming && (
                       <div

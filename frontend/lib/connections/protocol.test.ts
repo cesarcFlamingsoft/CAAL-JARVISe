@@ -2,11 +2,16 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  MAX_ALIASES,
   MAX_CODE_LENGTH,
   OAUTH_CALLBACK_PATH,
   OUTCOMES,
   PROVIDERS,
+  accountNamesFrom,
+  accountNamesRequest,
+  browserConnection,
   browserConnectionList,
+  cleanNames,
   configurationNeeded,
   describeOutcome,
   explainConnectionError,
@@ -16,7 +21,9 @@ import {
   isProvider,
   outcomeFromAuth,
   outcomeFromBackend,
+  nameKey,
   panelRows,
+  parseAliasInput,
   parseAuthorization,
   parseCallbackQuery,
   parseState,
@@ -117,6 +124,8 @@ describe('browser shapes', () => {
           provider: 'google',
           status: 'connected',
           accountLabel: 'ana@gmail.com',
+          userLabel: null,
+          aliases: [],
           scopes: ['openid', 'email'],
           tokenExpiresAt: NOW + 3600,
           hasRefreshToken: true,
@@ -491,5 +500,96 @@ describe('panel view model', () => {
     assert.match(explainConnectionError('not_found') ?? '', /connection/i);
     assert.ok(!/user/i.test(explainConnectionError('not_found') ?? ''));
     assert.equal(explainConnectionError('nope'), null);
+  });
+});
+
+
+describe('the names a user gives their own accounts', () => {
+  it('carries the user names beside the provider label, never instead of it', () => {
+    const named = browserConnection({
+      ...backendRow,
+      user_label: '  Work  ',
+      aliases: ['Office', 'office', '', 'day job'],
+    });
+    assert.ok(named);
+    assert.equal(named.accountLabel, 'ana@gmail.com');
+    assert.equal(named.userLabel, 'Work');
+    assert.deepEqual(named.aliases, ['Office', 'day job']);
+
+    // An unusable name is dropped rather than failing the whole row.
+    const messy = browserConnection({
+      ...backendRow,
+      user_label: 'line\nbreak',
+      aliases: ['ok', 42, 'x'.repeat(200), null],
+    });
+    assert.ok(messy);
+    assert.equal(messy.userLabel, null);
+    assert.deepEqual(messy.aliases, ['ok']);
+    const bare = browserConnection(backendRow);
+    assert.equal(bare?.userLabel, null);
+    assert.deepEqual(bare?.aliases, []);
+  });
+
+  it('folds case, spacing, accents and apostrophes into one key', () => {
+    assert.equal(nameKey('  W\u00f6rk\u2019s  Mail '), 'works mail');
+    assert.equal(nameKey('WORK'), nameKey('work'));
+    assert.equal(nameKey('###'), '');
+  });
+
+  it('reads one comma-separated field into bounded, deduplicated names', () => {
+    assert.deepEqual(parseAliasInput('work, Work ,  office ,'), ['work', 'office']);
+    assert.deepEqual(parseAliasInput(''), []);
+    assert.deepEqual(parseAliasInput('   ,  '), []);
+    const many = parseAliasInput(Array.from({ length: 20 }, (_, i) => `n${i}`).join(','));
+    assert.equal(many.length, MAX_ALIASES);
+    assert.deepEqual(cleanNames('not a list'), []);
+  });
+
+  it('validates a submitted update the way the backend will, without echoing it', () => {
+    const ok = accountNamesFrom({ user_label: ' work ', aliases: ['Office', 'office'] });
+    assert.equal(ok.ok, true);
+    if (ok.ok) {
+      assert.deepEqual(ok.names, { userLabel: 'work', aliases: ['Office'] });
+      assert.deepEqual(accountNamesRequest(ok.names), {
+        user_label: 'work',
+        aliases: ['Office'],
+      });
+    }
+    // Clearing both names is a legitimate update.
+    const cleared = accountNamesFrom({ user_label: '', aliases: [] });
+    assert.equal(cleared.ok && cleared.names.userLabel, null);
+
+    for (const bad of [
+      { user_label: 'x'.repeat(49) },
+      { user_label: 'line\nbreak' },
+      { user_label: '-' },
+      { user_label: 7 },
+      { aliases: 'work' },
+      { aliases: [7] },
+      { aliases: ['x'.repeat(49)] },
+      { aliases: ['#'] },
+      null,
+      'garbage',
+    ]) {
+      const refused = accountNamesFrom(bad);
+      assert.equal(refused.ok, false, JSON.stringify(bad));
+      if (!refused.ok) {
+        assert.equal(refused.error, 'invalid_account_name');
+        // The refusal is a code: nothing the user typed travels with it.
+        assert.ok(!JSON.stringify(refused).includes('line'));
+      }
+    }
+    const tooMany = accountNamesFrom({
+      aliases: Array.from({ length: 40 }, (_, i) => `name${i}`),
+    });
+    assert.equal(tooMany.ok, false);
+    if (!tooMany.ok) assert.equal(tooMany.error, 'too_many_names');
+  });
+
+  it('has plain words for every naming failure, and never repeats the input', () => {
+    for (const code of ['invalid_account_name', 'too_many_names', 'no_change']) {
+      const text = explainConnectionError(code);
+      assert.ok(text && text.length > 10, code);
+    }
   });
 });

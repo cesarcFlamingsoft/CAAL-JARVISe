@@ -11,9 +11,40 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from caal.tools import alarms_tools, calendar_tools, email_tools, memory_tools, reminders_tools
+from caal.tools import (
+    alarms_tools,
+    calendar_tools,
+    email_tools,
+    knowledge_tools,
+    memory_tools,
+    reminder_delivery,
+    reminders_tools,
+)
 
 ToolHandler = Callable[..., Any]
+
+# Shared parameter descriptions of the connected-account knowledge tools.
+_ACCOUNT_HINT = (
+    "Optional account filter, in the user own words: the name or alias they gave a linked "
+    "account (work, university, Vertex), the email address of the account, or a provider "
+    "name: google, microsoft or zoho. Pass the words the user said and nothing else. Omit "
+    "it to read every connected account. If the name matches nothing the answer says so; "
+    "if it matches several accounts the answer asks which one is meant."
+)
+_DAY_HINT = (
+    "Optional single day instead of a range: today, tonight, tomorrow, the day after "
+    "tomorrow, a weekday name, or a date as YYYY-MM-DD. Use this for a question about one "
+    "named day; use days for a span such as this week."
+)
+
+
+_WHEN_DESCRIPTION = (
+    "When it is due. Prefer an ISO-8601 duration from now, such as PT2M for two minutes, "
+    "PT30S, PT1H30M or P1D; a plain duration such as 10m or 2 hours also works. For a time "
+    "of day give a full timestamp that includes the timezone offset, such as "
+    "2026-09-09T18:30:00-06:00. A timestamp without an offset is refused, and so is a time "
+    "already past."
+)
 
 
 def _not_configured_handler(*_: Any, **__: Any) -> dict[str, str]:
@@ -259,40 +290,299 @@ def create_default_registry() -> ToolRegistry:
         )
     )
 
+    # Knowledge tools: answers about the connected (OAuth-linked) email and
+    # calendar accounts of the signed-in user, from a bounded per-user index that
+    # is refreshed from the providers when it is stale. Distinct from the
+    # settings-configured IMAP/ICS tools above. Never a full body.
+    registry.register(
+        ToolDefinition(
+            name="inbox.recent",
+            description=(
+                "Summarize the newest emails across the connected email accounts of the "
+                "signed-in user (Google, Microsoft or Zoho linked under Settings). Use for: "
+                "any new email, what is in my inbox, unread mail, recent messages. Returns "
+                "short safe summaries (sender, subject, preview, when), never full bodies."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    limit=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=25,
+                        description="How many recent emails to return; default 5.",
+                    ),
+                    unread_only=dict(
+                        type="boolean", description="True to count and list unread mail only."
+                    ),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                )
+            ),
+            handler=knowledge_tools.recent_email,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="inbox.search",
+            description=(
+                "Search recent email in the connected accounts of the signed-in user by "
+                "sender name, subject words or preview words. Use for: did I get an email "
+                "from X, anything about Y, find the message about Z. Only when the user "
+                "named something to search for: for unread, new or recent mail, or for a "
+                "request that only names an account (show unread email for my University "
+                "account), use inbox.recent with unread_only and account instead."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    query=dict(
+                        type="string",
+                        description="A sender name, subject words, or a few key words.",
+                    ),
+                    limit=dict(type="integer", minimum=1, maximum=25),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                ),
+                ["query"],
+            ),
+            handler=knowledge_tools.search_email,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="inbox.read_summary",
+            description=(
+                "Read one email aloud as a safe summary: sender, subject, when it arrived, "
+                "read state and the short preview the provider supplies. Never the full body. "
+                "Pick the email by id from an earlier result, by a few words, or leave both "
+                "empty for the newest email in the connected accounts."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    message_id=dict(
+                        type="string", description="The id of an email from an earlier result."
+                    ),
+                    query=dict(
+                        type="string", description="Words from the sender, subject or preview."
+                    ),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                )
+            ),
+            handler=knowledge_tools.read_email_summary,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="schedule.upcoming",
+            description=(
+                "Summarize a window of the connected calendars of the signed-in user "
+                "(Google, Microsoft or Zoho linked under Settings). Use for a period of "
+                "time: what is on my calendar today or tomorrow, what do I have this week, "
+                "anything on Friday. For the next, nearest or soonest event use "
+                "schedule.next instead. Events come back sorted by start time, earliest "
+                "first; ask for a small limit and speak only what was asked for."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    days=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=31,
+                        description="How many days ahead from now; default 7.",
+                    ),
+                    day=dict(type="string", description=_DAY_HINT),
+                    limit=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=25,
+                        description="How many events to return, soonest first; default 8.",
+                    ),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                    only_future=dict(
+                        type="boolean",
+                        description=(
+                            "True to drop what is already over, for what is left of a day: "
+                            "the rest of today, what do I still have this afternoon."
+                        ),
+                    ),
+                )
+            ),
+            handler=knowledge_tools.upcoming_schedule,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="schedule.next",
+            description=(
+                "The event that starts next on the connected calendars of the signed-in "
+                "user, sorted soonest first. Use for: what is my next event, what is coming "
+                "up next, my next or nearest or soonest meeting, what is my next "
+                "appointment, the next thing on my calendar. It returns exactly one event "
+                "unless a larger limit is asked for, never anything in the past, and never "
+                "an event already under way. For a whole day or week (today, tomorrow, this "
+                "week) use schedule.upcoming instead."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    limit=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=5,
+                        description=(
+                            "How many of the soonest events to return; default 1. Use more "
+                            "only when the user asked for several, as in my next three "
+                            "meetings or the next few things."
+                        ),
+                    ),
+                    days=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=31,
+                        description="How far ahead to look for one; default 31 days.",
+                    ),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                )
+            ),
+            handler=knowledge_tools.next_events,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="schedule.find_event",
+            description=(
+                "Check whether an event exists on the connected calendars of the signed-in "
+                "user and say when it is. Use for: do I have a dentist appointment, when is "
+                "my meeting with X, is there anything called Y this week."
+            ),
+            category="knowledge",
+            parameters=_object_schema(
+                dict(
+                    query=dict(
+                        type="string", description="Words from the event title or location."
+                    ),
+                    days=dict(
+                        type="integer",
+                        minimum=1,
+                        maximum=31,
+                        description="How many days ahead to look; default 14.",
+                    ),
+                    day=dict(type="string", description=_DAY_HINT),
+                    account=dict(type="string", description=_ACCOUNT_HINT),
+                ),
+                ["query"],
+            ),
+            handler=knowledge_tools.find_event,
+            user_scoped=True,
+        )
+    )
+
+    _DELIVERY_SCHEMA = {
+        "type": "array",
+        "items": {"type": "string", "enum": list(reminder_delivery.CHANNEL_ARGUMENTS)},
+        "description": reminders_tools.DELIVERY_DESCRIPTION,
+    }
     registry.register(
         ToolDefinition(
             name="reminders.create",
-            description="Create a reminder using Apple Reminders or the local CAAL reminder store.",
+            description=(
+                "Create a reminder in the local CAAL reminder store of the signed-in user. "
+                "Use for: remind me to X, add X to my list, do not let me forget X. Give due "
+                "when the user said a time, and CAAL announces the reminder once when it comes "
+                "due; leave due out for an open list item, which is saved but never announced. "
+                "This is the local store only; it does not write to Apple Reminders or any "
+                "other outside service."
+            ),
             category="reminders",
             parameters=_object_schema(
                 {
-                    "title": {"type": "string"},
-                    "due": {"type": "string", "description": "Optional ISO-8601 due datetime."},
-                    "list": {"type": "string"},
-                    "notes": {"type": "string"},
+                    "title": {
+                        "type": "string",
+                        "description": "What to be reminded about, in the words of the user.",
+                    },
+                    "due": {"type": "string", "description": _WHEN_DESCRIPTION},
+                    "list": {"type": "string", "description": "Optional list name."},
+                    "notes": {"type": "string", "description": "Optional extra detail."},
+                    "delivery": _DELIVERY_SCHEMA,
                 },
                 ["title"],
             ),
             handler=reminders_tools.create_reminder,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="reminders.set_delivery",
+            description=(
+                "Set how the signed-in user wants to be told about the timed reminder they "
+                "just set, after CAAL asked them which ways they want. Use for their answer: "
+                "all of them, call and message me, just tell me here, Telegram only. It "
+                "applies to their own most recent reminder still to come; there is no way to "
+                "name a different one, a phone number or a chat."
+            ),
+            category="reminders",
+            parameters=_object_schema({"delivery": _DELIVERY_SCHEMA}, ["delivery"]),
+            handler=reminders_tools.set_delivery,
+            user_scoped=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="reminders.list",
+            description=(
+                "List the saved reminders of the signed-in user, soonest due first and "
+                "undated ones last. Use for: what are my reminders, what is on my list."
+            ),
+            category="reminders",
+            parameters=_object_schema(
+                {
+                    "include_completed": {
+                        "type": "boolean",
+                        "description": "True to include reminders already marked done.",
+                    }
+                }
+            ),
+            handler=reminders_tools.list_reminders,
+            user_scoped=True,
         )
     )
     registry.register(
         ToolDefinition(
             name="alarms.set",
-            description="Set a local alarm or timer that JARVIS can announce when due.",
+            description=(
+                "Set a local alarm or timer for the signed-in user that CAAL announces out "
+                "loud, once, when it comes due. Use for: wake me at X, set a timer for X "
+                "minutes, alarm in X. Nothing is sent anywhere: the alarm is stored locally "
+                "and announced in a live session of the same user."
+            ),
             category="alarms",
             parameters=_object_schema(
                 {
-                    "label": {"type": "string"},
-                    "when": {
+                    "label": {
                         "type": "string",
-                        "description": "ISO-8601 datetime or duration expression.",
+                        "description": "A short name for the alarm, in the words of the user.",
                     },
-                    "kind": {"type": "string", "enum": ["alarm", "timer"]},
+                    "when": {"type": "string", "description": _WHEN_DESCRIPTION},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["alarm", "timer"],
+                        "description": (
+                            "timer for a countdown the user named a length for, alarm for a "
+                            "time of day."
+                        ),
+                    },
                 },
                 ["label", "when", "kind"],
             ),
             handler=alarms_tools.set_alarm,
+            user_scoped=True,
         )
     )
 

@@ -46,7 +46,10 @@ DEFAULT_SETTINGS = {
     ],
     # Provider settings (UI sets both together, but stored separately for power users)
     "stt_provider": "speaches",  # "speaches" | "groq"
-    "llm_provider": "hermes",  # "hermes" | "ollama" | "groq"
+    # "routed" is the default: the local Ollama model is JARVIS' main model and
+    # Hermes is the escalation for work that needs an agent harness. "ollama",
+    # "hermes" and "groq" pin a single backend.
+    "llm_provider": "routed",  # "routed" | "hermes" | "ollama" | "groq"
     "tts_provider": "kokoro",  # "kokoro" | "piper"
     # TTS settings - voice selection (Kokoro uses voice param, Piper bakes voice into model)
     "tts_voice_kokoro": "am_puck",
@@ -54,7 +57,7 @@ DEFAULT_SETTINGS = {
     "temperature": 0.7,
     # Ollama settings
     "ollama_host": "http://localhost:11434",
-    "ollama_model": "ministral-3:8b",
+    "ollama_model": "qwen3:8b",
     "num_ctx": 8192,
     # Groq settings
     "groq_api_key": "",  # API key from console.groq.com
@@ -76,7 +79,8 @@ DEFAULT_SETTINGS = {
     "native_tools_enabled": True,
     "email_accounts": [],
     "calendar_sources": [],
-    "reminders_provider": "local",  # "local" | "apple"
+    # Only the local store is implemented; nothing here writes to Apple Reminders.
+    "reminders_provider": "local",
     "alarms_enabled": True,
     # Shared settings
     "max_turns": 20,
@@ -141,6 +145,13 @@ DEFAULT_SETTINGS = {
     "background_tasks_enabled": True,
     "background_task_max_concurrency": 2,  # 1-8 tasks in flight per agent process
     "background_task_timeout_seconds": 600,  # Give up on a single task after this long
+    # Coding requests. Every one of them is delegated to the Hermes agent
+    # runtime (caal.coding_delegation), which carries it out with its own
+    # Claude Code capability; the CAAL container runs no coding tool itself.
+    # Without Hermes credentials there is no delegate, and coding turns are
+    # left to the ordinary conversational path.
+    "coding_delegation_enabled": True,
+    "coding_delegation_timeout_seconds": 900,  # Hard bound on one coding job
     # Semantic routing of a turn into conversation or work. Off falls back to the
     # offline pattern net alone, which is what the assistant did before it existed.
     "work_router_enabled": True,

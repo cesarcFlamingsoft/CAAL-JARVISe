@@ -28,6 +28,12 @@ response uncacheable and free of the app-wide CORS policy.
     provider's wording. With no exchanger (no provider configured) the answer
     is an explicit ``token_exchange_unavailable``; the state is spent either
     way.
+``PATCH  /users/me/connections/{connection_id}``
+    name one of the caller's own accounts: a short ``user_label`` and a
+    bounded list of ``aliases`` ("work", "university", "wife"), which is what
+    JARVIS matches when a question names an account. The provider's own
+    account label is never touched. Only the fields present are written.
+    Someone else's id -- and an unknown or revoked one -- is ``not_found``.
 ``DELETE /users/me/connections/{connection_id}``
     revoke: tokens wiped, row retired. Someone else's id is ``not_found``.
 
@@ -43,9 +49,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from . import user_api
+from .knowledge import KnowledgeService
+from .knowledge_store import KnowledgeStore
 from .oauth_exchange import HttpTokenExchanger
 from .oauth_providers import (
     ENV_ZOHO_ACCOUNTS_DOMAIN,
@@ -59,7 +67,10 @@ from .oauth_providers import (
     zoho_accounts_origin,
 )
 from .provider_connections import (
+    MAX_ALIAS_LENGTH,
+    MAX_ALIASES,
     MAX_STATE_LENGTH,
+    MAX_USER_LABEL_LENGTH,
     STATE_TTL_SECONDS,
     ConnectionStore,
     StateError,
@@ -79,6 +90,8 @@ __all__ = [
 ]
 
 MAX_CODE_LENGTH = 4096
+# The status name moved in newer Starlette releases; the number did not.
+UNPROCESSABLE = 422
 _NOT_CONFIGURED = "Multi-user identity is not configured on this CAAL backend."
 
 
@@ -104,6 +117,7 @@ class ConnectionsRuntime:
         exchanger: TokenExchanger | None = None,
         store: ConnectionStore | None = None,
         data_client: ProviderDataClient | None = None,
+        knowledge: KnowledgeService | None = None,
     ) -> None:
         self.identity = identity
         self.providers = providers
@@ -114,6 +128,7 @@ class ConnectionsRuntime:
             state_secret=identity.config.internal_auth_secret,
         )
         self.data_client = data_client
+        self._knowledge = knowledge
 
     @property
     def data(self) -> ProviderDataClient:
@@ -121,6 +136,19 @@ class ConnectionsRuntime:
         if self.data_client is None:
             self.data_client = ProviderDataClient(self.store, self.providers)
         return self.data_client
+
+    @property
+    def knowledge(self) -> KnowledgeService:
+        """The per-user knowledge layer over the data client, built on first use.
+
+        The dashboard feeds write through it and the voice tools answer from it.
+        """
+        if self._knowledge is None:
+            index = KnowledgeStore(self.identity.store, keyring=self.identity.config.keyring)
+            self._knowledge = KnowledgeService(
+                self.store, self.data, index, clock=self.identity.clock
+            )
+        return self._knowledge
 
     @property
     def token_exchange_available(self) -> bool:
@@ -194,6 +222,8 @@ class ConnectionResponse(_Strict):
     provider: str
     status: str
     account_label: str | None
+    user_label: str | None
+    aliases: list[str]
     scopes: list[str]
     token_expires_at: int | None
     has_refresh_token: bool
@@ -205,6 +235,26 @@ class ConnectionsListResponse(_Strict):
     connections: list[ConnectionResponse]
     providers: list[ProviderAvailability]
     token_exchange_available: bool
+
+
+class ConnectionLabelsRequest(_Strict):
+    """The names the owner gives one of their own accounts.
+
+    Both fields are optional: what is absent is left as it was, ``user_label:
+    null`` clears the name, and ``aliases: []`` clears the list. The bounds
+    here are the outer envelope only -- the store normalizes, deduplicates
+    and refuses anything unusable, and its message is never echoed back.
+    """
+
+    user_label: str | None = Field(default=None, max_length=MAX_USER_LABEL_LENGTH)
+    aliases: list[str] | None = Field(default=None, max_length=MAX_ALIASES)
+
+    @field_validator("aliases")
+    @classmethod
+    def _bounded(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(len(item) > MAX_ALIAS_LENGTH for item in value):
+            raise ValueError("An account name is too long")
+        return value
 
 
 class AuthorizeRequest(_Strict):
@@ -399,6 +449,49 @@ async def start_authorization(
     )
 
 
+@router.patch("/users/me/connections/{connection_id}", response_model=ConnectionResponse)
+async def rename_connection(
+    connection_id: str,
+    body: ConnectionLabelsRequest,
+    user: CurrentUser = Depends(throttle_mutation),
+    runtime: ConnectionsRuntime = Depends(require_connections),
+) -> Any:
+    """Give one of the caller's own accounts the names they will ask for it by.
+
+    Only the fields the caller sent are written, so the panel can save a name
+    without disturbing the aliases. The row is found by owner and id together
+    -- an id belonging to anyone else, or to a revoked connection, is the
+    same ``not_found`` a delete gives -- and nothing about the OAuth grant is
+    read or rewritten. The submitted names are never logged: a refusal names
+    the field, not its value.
+    """
+    if not is_valid_connection_id(connection_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    sent = body.model_fields_set
+    if not sent:
+        raise HTTPException(status_code=UNPROCESSABLE, detail="no_change")
+    changes: dict[str, Any] = {}
+    if "user_label" in sent:
+        changes["user_label"] = body.user_label
+    if "aliases" in sent:
+        changes["aliases"] = list(body.aliases or ())
+    try:
+        connection = runtime.store.set_labels(
+            user.profile.user_id, connection_id, now=runtime.now(), **changes
+        )
+    except ValueError:
+        # The store's own message could quote what was typed; only the field
+        # names travel back to the browser.
+        raise HTTPException(
+            status_code=UNPROCESSABLE, detail="invalid_account_name"
+        ) from None
+    if connection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    _audit(runtime, "connection.rename", user, connection.provider)
+    logger.info("Provider connection names updated for %s", connection.provider)
+    return ConnectionResponse(**connection.view())
+
+
 @router.delete("/users/me/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect(
     connection_id: str,
@@ -413,6 +506,8 @@ async def disconnect(
         user_id, connection_id, now=runtime.now()
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    # Nothing indexed for a revoked account may answer a later question.
+    runtime.knowledge.forget_connection(user_id, connection_id)
     _audit(runtime, "connection.revoke", user, existing.provider)
     logger.info("Provider connection revoked for %s", existing.provider)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -35,7 +35,15 @@ class _TelegramClient(Protocol):
 
 
 class TelegramCallNotifier:
-    """Send concise, destination-redacted call fallback prompts."""
+    """Send concise, destination-redacted, caller-composed notifications.
+
+    This class composes no call-outcome text of its own any more. It used to
+    own a generic unanswered-call prompt that was sent on every failed outbound
+    attempt and invited the user to reply with another phone number; callback
+    and hand-off destinations come from a profile an administrator controls, so
+    no chat reply could ever have been honoured. Callers now decide whether
+    anything is owed at all, and pass the exact bounded text.
+    """
 
     def __init__(self, *, token: str, chat_id: str, client: _TelegramClient) -> None:
         if not token or not chat_id:
@@ -43,19 +51,6 @@ class TelegramCallNotifier:
         self._token = token
         self._chat_id = chat_id
         self._client = client
-
-    async def notify_unanswered(self, reason: str) -> None:
-        reason_text = {
-            "machine-vm": "The call reached voicemail, so I hung up without leaving a message.",
-            "machine-ivr": (
-                "The call reached an automated menu, so I hung up without leaving a message."
-            ),
-            "machine-unavailable": "The call could not accept a voicemail, so I hung up.",
-        }.get(reason, "The call was not answered, so I hung up without leaving a message.")
-        await self._send(
-            f"{reason_text}\n\n"
-            "Reply with one of these: another number, retry later, or continue through chat."
-        )
 
     async def notify_text(self, text: str) -> None:
         """Send one plain, bounded message. Callers redact before calling."""

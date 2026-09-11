@@ -450,6 +450,22 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _sorted_events(events: list[CalendarEvent]) -> list[CalendarEvent]:
+    """Events soonest first, whatever order the provider answered in.
+
+    Every calendar answer is ordered here, once, so nothing downstream -- the
+    dashboard, the per-user index, a spoken "what is next" -- has to trust a
+    provider to have sorted. An unreadable start keeps its place at the end
+    rather than being dropped.
+    """
+
+    def when(event: CalendarEvent) -> tuple[int, float]:
+        moment = _parse_datetime(event.start)
+        return (1, 0.0) if moment is None else (0, moment.timestamp())
+
+    return sorted(events, key=when)
+
+
 def _epoch_millis(value: object) -> datetime | None:
     if isinstance(value, str) and value.isdigit():
         value = int(value)
@@ -1040,7 +1056,7 @@ class ProviderDataClient:
         end: datetime,
         limit: int,
     ) -> list[CalendarEvent]:
-        """Events from one connection within ``[start, end)``, in the provider's order."""
+        """Events from one connection within ``[start, end)``, soonest first."""
         _check_window(start, end)
         count = _check_limit(limit)
         _require_scope(connection, _CALENDAR_SCOPES)
@@ -1157,13 +1173,15 @@ class ProviderDataClient:
     ) -> list[CalendarEvent]:
         bearer = _Bearer(self, client, user_id, connection)
         if connection.provider == "google":
-            return await self._bounded(self._google_calendar(client, bearer, start, end, limit))
-        if connection.provider == "zoho":
+            events = await self._bounded(self._google_calendar(client, bearer, start, end, limit))
+        elif connection.provider == "zoho":
             origin = self._zoho_origin("calendar")
-            return await self._bounded(
+            events = await self._bounded(
                 self._zoho_calendar(client, bearer, origin, start, end, limit)
             )
-        return await self._bounded(self._graph_calendar(client, bearer, start, end, limit))
+        else:
+            events = await self._bounded(self._graph_calendar(client, bearer, start, end, limit))
+        return _sorted_events(events)
 
     async def _inbox_with(
         self,

@@ -45,6 +45,18 @@ else
     DOCKER_PROFILE=""
 fi
 
+# Telephony (self-hosted LiveKit SIP) is opt-in per deployment, declared once in
+# .env as CAAL_TELEPHONY=1. When it is on, the overlay belongs to *every* compose
+# command here: bringing the stack up without it recreates LiveKit with no Redis
+# section, and outbound calls then fail inside LiveKit with
+# "sip not connected (redis required)". See docs/TELEPHONY.md.
+COMPOSE_FILES="-f docker-compose.apple.yaml"
+case "${CAAL_TELEPHONY:-}" in
+    1|true|yes)
+        COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.telephony.yaml"
+        ;;
+esac
+
 banner() {
     echo -e "${CYAN}${BOLD}"
     cat << 'EOF'
@@ -87,7 +99,7 @@ stop_all() {
 
     # Stop Docker
     log "Stopping Docker containers..."
-    docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE down || true
+    docker compose $COMPOSE_FILES $DOCKER_PROFILE down || true
 
     # Stop deepfilter
     if [ -f "$DF_PID_FILE" ]; then
@@ -390,9 +402,22 @@ if [ "$DF_RUNNING" = false ]; then
     fi
 fi
 
-# Start Docker services
+# Publish the locally built frontend before anything recreates the container.
+# Nothing here rebuilds the frontend image, so the build baked into it drifts;
+# a recreate during an unrelated deployment once brought back a months-old build
+# and the dashboard vanished. See docs/FRONTEND-DEPLOYMENT.md.
+log "Publishing frontend build..."
+if ! ./publish-frontend-build.sh --if-needed; then
+    error "No frontend build to deploy. Build it once, then start again:"
+    error "  (cd frontend && pnpm install && pnpm build) && ./publish-frontend-build.sh"
+    exit 1
+fi
+
+# Start Docker services. This set includes the durable work service (caal-worker),
+# which owns background tasks and callbacks independently of any LiveKit room or
+# job, and restarts with the stack. See docs/DURABLE-WORK.md.
 log "Starting Docker services..."
-docker compose -f docker-compose.apple.yaml $DOCKER_PROFILE up -d $BUILD_FLAG
+docker compose $COMPOSE_FILES $DOCKER_PROFILE up -d $BUILD_FLAG
 
 # Wait for services
 printf "${GREEN}[CAAL]${NC} Waiting for services"
@@ -404,6 +429,18 @@ for i in {1..10}; do
     sleep 1
 done
 echo -e " ${GREEN}✓${NC}"
+
+# Durable work service: report its liveness rather than assuming it.
+printf "${GREEN}[CAAL]${NC} Checking durable work service... "
+if docker compose $COMPOSE_FILES exec -T worker python -c \
+        "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.getenv('CAAL_WORKER_PORT','8890')+'/healthz',timeout=5)" \
+        > /dev/null 2>&1; then
+    echo -e "${GREEN}✓${NC}"
+else
+    echo ""
+    warn "Durable work service is not answering yet. Background tasks and callbacks"
+    warn "stay queued until it is. Check: ./durable-work.sh verify"
+fi
 
 echo ""
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
@@ -424,5 +461,6 @@ echo ""
 echo -e "  ${BOLD}Logs:${NC}"
 echo -e "    mlx-audio:   tail -f $MLX_LOG_FILE"
 echo -e "    deepfilter:  tail -f $DF_LOG_FILE"
-echo -e "    agent:       docker compose -f docker-compose.apple.yaml logs -f agent"
+echo -e "    agent:       docker compose $COMPOSE_FILES logs -f agent"
+echo -e "    durable work: ./durable-work.sh logs   (status: ./durable-work.sh verify)"
 echo ""

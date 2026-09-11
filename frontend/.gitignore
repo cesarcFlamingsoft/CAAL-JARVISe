@@ -17,6 +17,11 @@
 /.next/
 /out/
 
+# deployment artifact published by ../publish-frontend-build.sh
+/.next-deploy/
+/.next-deploy.previous/
+/.next-deploy.staging.*/
+
 # production
 /build
 

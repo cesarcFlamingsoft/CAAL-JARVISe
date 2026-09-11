@@ -29,6 +29,8 @@ export const ACCOUNT_STATUSES = [
   'not_configured',
   'unsupported',
   'unavailable',
+  /** The provider did not answer; the items shown are what the backend last indexed. */
+  'stale',
 ] as const;
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 
@@ -331,6 +333,8 @@ export function describeAccountStatus(entry: FeedAccount): string {
       return 'Reading this data is not available yet for this provider.';
     case 'unavailable':
       return 'The provider did not answer just now.';
+    case 'stale':
+      return 'The provider did not answer just now, so this shows what JARVIS last saw.';
   }
 }
 

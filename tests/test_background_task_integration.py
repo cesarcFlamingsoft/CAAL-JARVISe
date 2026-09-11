@@ -43,7 +43,6 @@ from caal.background_task_session import (
 from caal.background_tasks import (
     CANCELLED,
     FAILED,
-    INTERRUPTED,
     QUEUED,
     RUNNING,
     SUCCEEDED,
@@ -541,7 +540,10 @@ async def test_outcome_after_close_without_fallback_waits_for_the_room(store) ->
 
 
 @pytest.mark.asyncio
-async def test_abandon_at_process_teardown_interrupts_and_records_it(bridge_parts) -> None:
+async def test_abandon_at_process_teardown_returns_work_to_the_durable_queue(
+    bridge_parts,
+) -> None:
+    """Teardown hands work back; the durable work service picks it up from there."""
     bridge, execute, fallback = bridge_parts
     execute.gate.clear()
     session = FakeSession()
@@ -552,8 +554,12 @@ async def test_abandon_at_process_teardown_interrupts_and_records_it(bridge_part
     await bridge.close()
     await bridge.abandon()
 
-    assert list_tasks()[0].status == INTERRUPTED
-    assert "interrupted" in fallback_notification(list_tasks()[0]).lower()
+    task = list_tasks()[0]
+    assert task.status == QUEUED
+    assert task.finished_at is None
+    # Nothing was announced, because nothing finished.
+    assert fallback.texts == []
+    assert background_tasks.pending_notifications() == []
 
 
 @pytest.mark.asyncio

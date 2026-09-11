@@ -83,6 +83,19 @@ DEFAULT_MAX_CONCURRENCY = 2
 MAX_CONCURRENCY_LIMIT = 8
 MAX_CLASSIFIER_CHARS = 2_000
 
+# Durable supervision bounds.
+DEFAULT_LEASE_SECONDS = 300
+MAX_TASK_ATTEMPTS = 3
+MAX_CALLBACK_ATTEMPTS = 5
+CALLBACK_BACKOFF_BASE_SECONDS = 30
+CALLBACK_BACKOFF_MAX_SECONDS = 900
+
+# Terminal dispatch states of a callback authorization.
+DISPATCH_SENT = "sent"
+DISPATCH_UNCERTAIN = "uncertain"
+DISPATCH_ABANDONED = "abandoned"
+DISPATCH_SUPERSEDED = "superseded"
+
 _TRUNCATION_MARK = "…"
 _REDACTED = "[REDACTED]"
 
@@ -179,6 +192,11 @@ def _new_task_id() -> str:
     return "bt_" + secrets.token_hex(8)
 
 
+def new_runner_id() -> str:
+    """An opaque per-process lease owner. Random, so it never names a host."""
+    return "dw_" + secrets.token_hex(6)
+
+
 def is_valid_task_id(value: object) -> bool:
     """Whether ``value`` has the exact opaque shape this module issues."""
     return isinstance(value, str) and _TASK_ID.fullmatch(value) is not None
@@ -240,6 +258,35 @@ def _connect() -> sqlite3.Connection:
     # the user's profile at dial time, never persisted here.
     _ensure_column(connection, "background_tasks", "user_id", "TEXT")
     _ensure_column(connection, "background_callbacks", "user_id", "TEXT")
+    # Durable supervision. A running task is leased by exactly one process for a
+    # bounded time; a lease that stops being renewed is reclaimed, so work
+    # survives a room, a job, or a whole container ending. ``attempts`` bounds
+    # that resumption, so work that keeps killing its runner cannot loop.
+    _ensure_column(connection, "background_tasks", "lease_owner", "TEXT")
+    _ensure_column(connection, "background_tasks", "lease_expires_at", "INTEGER")
+    _ensure_column(connection, "background_tasks", "attempts", "INTEGER NOT NULL DEFAULT 0")
+    # Durable callback dispatch: bounded retries with backoff, and a terminal
+    # dispatch state, so one authorization is never acted on twice.
+    _ensure_column(connection, "background_callbacks", "attempts", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "background_callbacks", "next_attempt_at", "INTEGER")
+    _ensure_column(connection, "background_callbacks", "dispatched_at", "INTEGER")
+    _ensure_column(connection, "background_callbacks", "dispatch_state", "TEXT")
+    # Terminal callback notices. One row per task, ever: a callback that was
+    # truly given up on (its bounded retry budget is spent, or it was
+    # explicitly cancelled out of session) owes its owner exactly one short
+    # line. The row holds no text, no number and no reason a user could read;
+    # the message itself is a constant chosen by the sender.
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS background_callback_notices (
+            task_id TEXT PRIMARY KEY,
+            user_id TEXT,
+            created_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            claimed_by TEXT
+        )
+        """
+    )
     return connection
 
 
@@ -415,7 +462,7 @@ def _finish(
     with _connect() as connection:
         cursor = connection.execute(
             "UPDATE background_tasks SET status = ?, result = ?, error = ?, "
-            "finished_at = ?, updated_at = ? "
+            "finished_at = ?, updated_at = ?, lease_owner = NULL, lease_expires_at = NULL "
             f"WHERE task_id = ? AND status IN ({', '.join('?' for _ in sources)})",
             (
                 status,
@@ -547,10 +594,23 @@ def callback_armed(task_id: str) -> bool:
     return row is not None
 
 
-def disarm_callback(task_id: str) -> bool:
-    """Withdraw an unclaimed callback authorization. Returns True if one existed."""
+def disarm_callback(task_id: str, *, notify_owner: bool = False) -> bool:
+    """Withdraw an unclaimed callback authorization. Returns True if one existed.
+
+    ``notify_owner`` is for a cancellation the owner has not already been told
+    about to their face: it queues the single terminal notice. A cancellation
+    acknowledged in session leaves it False, because the caller heard the
+    answer when they asked, and a chat line repeating it is the spam this
+    policy exists to stop.
+    """
     with _connect() as connection:
-        return _disarm_callback(connection, task_id)
+        owner = connection.execute(
+            "SELECT user_id FROM background_tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        withdrawn = _disarm_callback(connection, task_id)
+    if withdrawn and notify_owner:
+        mark_callback_notice(task_id, user_id=owner["user_id"] if owner else None)
+    return withdrawn
 
 
 def claim_callback_target(
@@ -596,14 +656,31 @@ def claim_callback(task_id: str, claimant: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_CALLBACK_ARMED_EXCLUSION = (
+    " AND NOT EXISTS (SELECT 1 FROM background_callbacks"
+    " WHERE background_callbacks.task_id = background_tasks.task_id"
+    " AND background_callbacks.claimed_at IS NULL)"
+)
+
+
 def _terminal_placeholders() -> str:
     return ", ".join("?" for _ in TERMINAL_STATUSES)
 
 
 def pending_notifications(
-    *, session_key: str | None = None, limit: int = MAX_LIST, user_id: object = UNSCOPED
+    *,
+    session_key: str | None = None,
+    limit: int = MAX_LIST,
+    user_id: object = UNSCOPED,
+    exclude_callback_armed: bool = False,
 ) -> list[BackgroundTask]:
-    """Finished tasks nobody has announced yet, oldest first, optionally for one user."""
+    """Finished tasks nobody has announced yet, oldest first, optionally for one user.
+
+    ``exclude_callback_armed`` hides outcomes an unclaimed callback
+    authorization still covers. A caller the user asked to be *called back*
+    about must not have that outcome spoken or messaged out from under the
+    dispatcher: the callback is the channel they chose.
+    """
     params: list[object] = list(TERMINAL_STATUSES)
     where = f"status IN ({_terminal_placeholders()}) AND notified_at IS NULL"
     if session_key is not None:
@@ -612,6 +689,8 @@ def pending_notifications(
     scope_sql, scope_params = _scope_clause(user_id)
     where += scope_sql
     params.extend(scope_params)
+    if exclude_callback_armed:
+        where += _CALLBACK_ARMED_EXCLUSION
     params.append(max(1, min(int(limit), MAX_LIST)))
     with _connect() as connection:
         rows = connection.execute(
@@ -621,17 +700,27 @@ def pending_notifications(
     return [_from_row(row) for row in rows]
 
 
-def claim_notification(task_id: str, claimant: str) -> BackgroundTask | None:
+def claim_notification(
+    task_id: str, claimant: str, *, exclude_callback_armed: bool = False
+) -> BackgroundTask | None:
     """Exactly one caller wins the right to announce a finished task.
 
     The claim is a single conditional UPDATE, so concurrent claimants across
-    threads or processes cannot both succeed.
+    threads or processes cannot both succeed. ``exclude_callback_armed``
+    additionally refuses the claim while an unclaimed callback authorization
+    covers the task, in the same statement: the dispatcher and a live session
+    race for one outcome, and the callback the user asked for wins.
     """
     moment = _now()
+    guard = _CALLBACK_ARMED_EXCLUSION if exclude_callback_armed else ""
+    statuses = _terminal_placeholders()
     with _connect() as connection:
         cursor = connection.execute(
             "UPDATE background_tasks SET notified_at = ?, notified_by = ?, updated_at = ? "
-            f"WHERE task_id = ? AND notified_at IS NULL AND status IN ({_terminal_placeholders()})",
+            "WHERE task_id = ? AND notified_at IS NULL AND status IN ("
+            + statuses
+            + ")"
+            + guard,
             (moment, claimant, moment, task_id, *TERMINAL_STATUSES),
         )
         if cursor.rowcount != 1:
@@ -642,11 +731,19 @@ def claim_notification(task_id: str, claimant: str) -> BackgroundTask | None:
 
 
 def claim_next_notification(
-    session_key: str | None, claimant: str, *, user_id: object = UNSCOPED
+    session_key: str | None,
+    claimant: str,
+    *,
+    user_id: object = UNSCOPED,
+    exclude_callback_armed: bool = False,
 ) -> BackgroundTask | None:
     """Claim the oldest unannounced finished task for a session (and user), if any."""
-    for candidate in pending_notifications(session_key=session_key, user_id=user_id):
-        claimed = claim_notification(candidate.task_id, claimant)
+    for candidate in pending_notifications(
+        session_key=session_key, user_id=user_id, exclude_callback_armed=exclude_callback_armed
+    ):
+        claimed = claim_notification(
+            candidate.task_id, claimant, exclude_callback_armed=exclude_callback_armed
+        )
         if claimed is not None:
             return claimed
     return None
@@ -680,16 +777,29 @@ class BackgroundTaskRunner:
         *,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         on_settled: Settled | None = None,
+        owner: str | None = None,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ):
         if not 1 <= int(max_concurrency) <= MAX_CONCURRENCY_LIMIT:
-            raise ValueError(f"max_concurrency must be in 1..{MAX_CONCURRENCY_LIMIT}")
+            raise ValueError("max_concurrency must be in 1.." + str(MAX_CONCURRENCY_LIMIT))
         self._worker = worker
         self._on_settled = on_settled
         self._max_concurrency = int(max_concurrency)
+        # Work this runner takes is leased, not seized: if this process ends,
+        # the lease lapses and the durable supervisor resumes the task rather
+        # than the user losing it.
+        self._owner = owner or new_runner_id()
+        self._lease_seconds = max(2, int(lease_seconds))
         self._active: dict[str, asyncio.Task[None]] = {}
         self._waiters: dict[str, asyncio.Event] = {}
+        self._heartbeat: asyncio.Task[None] | None = None
         self._started = False
         self._stopping = False
+
+    @property
+    def owner(self) -> str:
+        """The opaque lease owner this runner takes work under."""
+        return self._owner
 
     @property
     def running_count(self) -> int:
@@ -698,16 +808,19 @@ class BackgroundTaskRunner:
     async def start(self, *, recover: bool = True) -> None:
         """Begin draining the queue.
 
-        ``recover`` marks tasks left running by a previous process as
-        interrupted first. Pass ``False`` when that already happened at process
-        boot and other runners in sibling processes may legitimately be mid-task.
+        ``recover`` first returns work whose lease has expired to the queue, so
+        a task abandoned by a dead process is resumed rather than lost. It is
+        lease-aware on purpose: a sibling process that is legitimately mid-task
+        holds a live lease and is never disturbed, and work that predates
+        leases is left for explicit operator adoption.
         """
         if self._started:
             return
         if recover:
-            recover_interrupted()
+            requeue_expired_leases()
         self._started = True
         self._stopping = False
+        self._heartbeat = asyncio.get_running_loop().create_task(self._renew_leases())
         self._pump()
 
     def poke(self) -> None:
@@ -719,9 +832,20 @@ class BackgroundTaskRunner:
         if not self._started:
             return
         self._stopping = True
+        if self._heartbeat is not None:
+            self._heartbeat.cancel()
+            try:
+                await self._heartbeat
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._heartbeat = None
         active = list(self._active.items())
         for task_id, aio_task in active:
-            _finish(task_id, INTERRUPTED, error="interrupted by shutdown")
+            # Hand the work back rather than declaring it interrupted: this
+            # process is going away, the work is not. Releasing first also
+            # takes the task out of ``running``, so the cancellation below
+            # cannot be mistaken for a user-requested cancel.
+            release_lease(task_id, self._owner)
             aio_task.cancel()
         for _, aio_task in active:
             try:
@@ -773,12 +897,25 @@ class BackgroundTaskRunner:
         if not self._started or self._stopping:
             return
         while len(self._active) < self._max_concurrency:
-            task = _claim_next_queued()
+            task = lease_next_queued(self._owner, lease_seconds=self._lease_seconds)
             if task is None:
                 return
             aio_task = asyncio.get_running_loop().create_task(self._run(task))
             self._active[task.task_id] = aio_task
             aio_task.add_done_callback(lambda _done, task_id=task.task_id: self._on_done(task_id))
+
+    async def _renew_leases(self) -> None:
+        """Keep this runner's leases alive while its work is in flight."""
+        interval = max(1.0, self._lease_seconds / 3.0)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                for task_id in list(self._active):
+                    renew_lease(task_id, self._owner, lease_seconds=self._lease_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("background task lease renewal failed", exc_info=False)
 
     def _wake(self, task_id: str) -> None:
         event = self._waiters.get(task_id)
@@ -795,8 +932,13 @@ class BackgroundTaskRunner:
         try:
             result = await self._worker(task)
         except asyncio.CancelledError:
-            _finish(task.task_id, CANCELLED)
-            logger.info("background task cancelled while running")
+            # A shutdown releases the lease before cancelling, so the task is no
+            # longer running and this conditional finish does nothing: the work
+            # goes back to the queue instead of being recorded as cancelled.
+            if _finish(task.task_id, CANCELLED):
+                logger.info("background task cancelled while running")
+            else:
+                logger.info("background task handed back to the durable queue")
             raise
         except Exception as exc:
             settled = _finish(task.task_id, FAILED, error=f"{type(exc).__name__}: {exc}")
@@ -812,6 +954,481 @@ class BackgroundTaskRunner:
                 await self._on_settled(task.task_id)
             except Exception:
                 logger.warning("background task settlement hook failed", exc_info=True)
+
+
+
+# ---------------------------------------------------------------------------
+# Leases: durable ownership of running work
+# ---------------------------------------------------------------------------
+#
+# The queue is the source of truth about who is running what. A process that
+# takes work takes a *lease* on it: a short, renewable claim. If that process
+# dies -- because a LiveKit room was deleted, a job exited, or the container
+# restarted -- the lease simply expires and the work returns to the queue for
+# whoever is supervising next. Nothing about this depends on a session, a
+# room, or a job being alive, which is precisely the failure it exists to fix.
+
+
+def lease_next_queued(
+    owner: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, now: int | None = None
+) -> BackgroundTask | None:
+    """Atomically take the oldest queued task under a renewable lease."""
+    if not owner:
+        raise ValueError("a lease needs an owner")
+    moment = _now() if now is None else int(now)
+    expires = moment + max(1, int(lease_seconds))
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = connection.execute(
+                "SELECT task_id FROM background_tasks WHERE status = ? "
+                "ORDER BY created_at, rowid LIMIT 1",
+                (QUEUED,),
+            ).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return None
+            connection.execute(
+                "UPDATE background_tasks SET status = ?, started_at = COALESCE(started_at, ?), "
+                "updated_at = ?, lease_owner = ?, lease_expires_at = ?, attempts = attempts + 1 "
+                "WHERE task_id = ?",
+                (RUNNING, moment, moment, owner, expires, row["task_id"]),
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        return _fetch(connection, row["task_id"])
+
+
+def renew_lease(
+    task_id: str, owner: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, now: int | None = None
+) -> bool:
+    """Extend a lease this process still holds. False means it was lost."""
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_tasks SET lease_expires_at = ?, updated_at = ? "
+            "WHERE task_id = ? AND status = ? AND lease_owner = ?",
+            (moment + max(1, int(lease_seconds)), moment, task_id, RUNNING, owner),
+        )
+    return cursor.rowcount == 1
+
+
+def release_lease(task_id: str, owner: str) -> bool:
+    """Hand running work back to the queue without interrupting or losing it.
+
+    This is what a session, a job, or a worker does on its way out: the task
+    returns to ``queued``, keeps its callback authorization, and is picked up
+    by the durable supervisor. It is never reported to the user as finished.
+    """
+    moment = _now()
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_tasks SET status = ?, updated_at = ?, "
+            "lease_owner = NULL, lease_expires_at = NULL "
+            "WHERE task_id = ? AND status = ? AND lease_owner = ?",
+            (QUEUED, moment, task_id, RUNNING, owner),
+        )
+    if cursor.rowcount == 1:
+        logger.info("background task lease released back to the queue")
+        return True
+    return False
+
+
+def requeue_expired_leases(
+    *, now: int | None = None, max_attempts: int = MAX_TASK_ATTEMPTS
+) -> tuple[int, int]:
+    """Reclaim work whose holder is gone. Returns (requeued, dead-lettered).
+
+    Only leased work is reclaimed. Work left ``running`` by a process that
+    predates leases carries no lease at all and is never adopted automatically
+    (see :func:`adopt_orphaned_running`): re-running it silently could place a
+    callback nobody is expecting right now.
+
+    Work that has already been resumed ``max_attempts`` times is failed rather
+    than requeued, so a task that keeps killing its runner stops. Failure is a
+    settled outcome, so a caller waiting on a callback still hears from JARVIS.
+    """
+    moment = _now() if now is None else int(now)
+    requeued = 0
+    dead = 0
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT task_id, attempts FROM background_tasks "
+            "WHERE status = ? AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND lease_expires_at <= ?",
+            (RUNNING, moment),
+        ).fetchall()
+    for row in rows:
+        if int(row["attempts"] or 0) >= max(1, int(max_attempts)):
+            if _finish(
+                row["task_id"], FAILED, error="exceeded the durable retry budget"
+            ):
+                dead += 1
+            continue
+        with _connect() as connection:
+            cursor = connection.execute(
+                "UPDATE background_tasks SET status = ?, updated_at = ?, "
+                "lease_owner = NULL, lease_expires_at = NULL "
+                "WHERE task_id = ? AND status = ? AND lease_expires_at <= ?",
+                (QUEUED, moment, row["task_id"], RUNNING, moment),
+            )
+        requeued += 1 if cursor.rowcount == 1 else 0
+    if requeued or dead:
+        logger.warning(
+            "reclaimed %d background task lease(s); %d exceeded the retry budget", requeued, dead
+        )
+    return requeued, dead
+
+
+def orphaned_running_count() -> int:
+    """Rows left ``running`` by a runner that predates leases."""
+    with _connect() as connection:
+        (count,) = connection.execute(
+            "SELECT COUNT(*) FROM background_tasks WHERE status = ? AND lease_owner IS NULL",
+            (RUNNING,),
+        ).fetchone()
+    return int(count)
+
+
+def adopt_orphaned_running() -> int:
+    """Operator action: return lease-less running work to the queue.
+
+    Deliberately never automatic. Such a row may carry an armed callback, and
+    resuming it can end in JARVIS phoning its owner; that is the operator's
+    decision to make, not a side effect of a restart.
+    """
+    moment = _now()
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_tasks SET status = ?, updated_at = ? "
+            "WHERE status = ? AND lease_owner IS NULL",
+            (QUEUED, moment, RUNNING),
+        )
+    count = cursor.rowcount
+    if count:
+        logger.warning("adopted %d orphaned background task(s) into the durable queue", count)
+    return count
+
+
+def queue_counts() -> dict[str, int]:
+    """Counts only: safe to log, probe, and show an operator."""
+    counts = {name: 0 for name in sorted(ALL_STATUSES)}
+    with _connect() as connection:
+        grouped = connection.execute(
+            "SELECT status, COUNT(*) AS n FROM background_tasks GROUP BY status"
+        )
+        for row in grouped:
+            if row["status"] in counts:
+                counts[row["status"]] = int(row["n"])
+        (orphaned,) = connection.execute(
+            "SELECT COUNT(*) FROM background_tasks WHERE status = ? AND lease_owner IS NULL",
+            (RUNNING,),
+        ).fetchone()
+        (pending,) = connection.execute(
+            "SELECT COUNT(*) FROM background_callbacks WHERE claimed_at IS NULL"
+        ).fetchone()
+        (dispatched,) = connection.execute(
+            "SELECT COUNT(*) FROM background_callbacks WHERE dispatched_at IS NOT NULL"
+        ).fetchone()
+        (unannounced,) = connection.execute(
+            "SELECT COUNT(*) FROM background_tasks WHERE notified_at IS NULL AND status IN ("
+            + _terminal_placeholders()
+            + ")",
+            tuple(TERMINAL_STATUSES),
+        ).fetchone()
+    counts["orphaned_running"] = int(orphaned)
+    counts["pending_callbacks"] = int(pending)
+    counts["dispatched_callbacks"] = int(dispatched)
+    counts["unannounced"] = int(unannounced)
+    return counts
+
+
+
+# ---------------------------------------------------------------------------
+# Durable callback dispatch
+# ---------------------------------------------------------------------------
+#
+# An armed callback is an authorization, not a queued phone call. Dispatching
+# it means: win the authorization atomically together with the right to
+# announce the outcome, build a server-side outbound request, and hand it to
+# LiveKit. Nothing here dials, and nothing here ever sees a number chosen by a
+# model or a caller. If the hand-off fails before a SIP participant can exist,
+# the authorization is released for a later, backed-off attempt, and the
+# outcome is *not* marked as delivered.
+
+
+@dataclass(frozen=True)
+class CallbackDispatch:
+    """A won callback authorization. The number never prints."""
+
+    task_id: str = field(repr=False)
+    user_id: str | None = field(default=None, repr=False)
+    destination: str | None = field(default=None, repr=False)
+    attempts: int = 0
+    task_user_id: str | None = field(default=None, repr=False)
+    status: str = ""
+
+
+def callback_backoff_seconds(attempts: int) -> int:
+    """Exponential, capped, and never zero: a failed hand-off waits its turn."""
+    step = max(1, int(attempts))
+    delay = CALLBACK_BACKOFF_BASE_SECONDS * (2 ** (step - 1))
+    return int(min(delay, CALLBACK_BACKOFF_MAX_SECONDS))
+
+
+def callback_pending(task_id: str) -> bool:
+    """Whether an unclaimed callback authorization still covers this task."""
+    return callback_armed(task_id)
+
+
+def due_callbacks(*, now: int | None = None, limit: int = MAX_LIST) -> list[str]:
+    """Task ids whose callback is authorized, settled, and due for an attempt."""
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT c.task_id AS task_id FROM background_callbacks c "
+            "JOIN background_tasks t ON t.task_id = c.task_id "
+            "WHERE c.claimed_at IS NULL AND t.status IN (?, ?) "
+            "AND (c.next_attempt_at IS NULL OR c.next_attempt_at <= ?) "
+            "ORDER BY c.armed_at, c.rowid LIMIT ?",
+            (SUCCEEDED, FAILED, moment, max(1, min(int(limit), MAX_LIST))),
+        ).fetchall()
+    return [row["task_id"] for row in rows]
+
+
+def claim_callback_dispatch(
+    task_id: str, claimant: str, *, now: int | None = None
+) -> CallbackDispatch | None:
+    """Win the authorization and the right to announce, in one transaction.
+
+    Returns ``None`` when the callback is not due, was already claimed, or the
+    outcome has already been announced on another channel -- in which case the
+    authorization is consumed as superseded rather than dialed, so the owner
+    hears about the work exactly once, on one channel.
+    """
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = connection.execute(
+                "SELECT c.destination AS destination, c.user_id AS callback_user_id, "
+                "c.attempts AS attempts, t.user_id AS task_user_id, t.status AS status "
+                "FROM background_callbacks c JOIN background_tasks t ON t.task_id = c.task_id "
+                "WHERE c.task_id = ? AND c.claimed_at IS NULL AND t.status IN (?, ?) "
+                "AND (c.next_attempt_at IS NULL OR c.next_attempt_at <= ?)",
+                (task_id, SUCCEEDED, FAILED, moment),
+            ).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return None
+            claimed = connection.execute(
+                "UPDATE background_callbacks SET claimed_at = ?, claimed_by = ?, "
+                "attempts = attempts + 1 WHERE task_id = ? AND claimed_at IS NULL",
+                (moment, claimant, task_id),
+            )
+            if claimed.rowcount != 1:
+                connection.execute("ROLLBACK")
+                return None
+            announced = connection.execute(
+                "UPDATE background_tasks SET notified_at = ?, notified_by = ?, updated_at = ? "
+                "WHERE task_id = ? AND notified_at IS NULL",
+                (moment, claimant, moment, task_id),
+            )
+            if announced.rowcount != 1:
+                connection.execute(
+                    "UPDATE background_callbacks SET dispatch_state = ?, dispatched_at = ? "
+                    "WHERE task_id = ?",
+                    (DISPATCH_SUPERSEDED, moment, task_id),
+                )
+                connection.execute("COMMIT")
+                logger.info("background task callback superseded by an earlier announcement")
+                return None
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+    logger.info("background task callback claimed for dispatch")
+    return CallbackDispatch(
+        task_id=task_id,
+        user_id=row["callback_user_id"],
+        destination=row["destination"] or None,
+        attempts=int(row["attempts"] or 0) + 1,
+        task_user_id=row["task_user_id"],
+        status=row["status"],
+    )
+
+
+def release_callback_dispatch(
+    task_id: str,
+    claimant: str,
+    *,
+    delay_seconds: int,
+    now: int | None = None,
+    reset_attempts: bool = False,
+) -> bool:
+    """Give the authorization back after a hand-off that certainly did not happen.
+
+    The outcome's announcement claim is released with it, so a dispatch that
+    failed never leaves the store claiming the user was told anything.
+    """
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            # ``reset_attempts`` is for a release that was never a real attempt
+            # (verification mode): it must not spend the retry budget a genuine
+            # dispatch will need later.
+            attempts_sql = ", attempts = 0" if reset_attempts else ""
+            cursor = connection.execute(
+                "UPDATE background_callbacks SET claimed_at = NULL, claimed_by = NULL, "
+                "next_attempt_at = ?"
+                + attempts_sql
+                + " WHERE task_id = ? AND claimed_by = ? "
+                "AND claimed_at IS NOT NULL AND dispatched_at IS NULL",
+                (moment + max(0, int(delay_seconds)), task_id, claimant),
+            )
+            if cursor.rowcount == 1:
+                connection.execute(
+                    "UPDATE background_tasks SET notified_at = NULL, notified_by = NULL, "
+                    "updated_at = ? WHERE task_id = ? AND notified_by = ?",
+                    (moment, task_id, claimant),
+                )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+    if cursor.rowcount == 1:
+        logger.info("background task callback released for a later attempt")
+        return True
+    return False
+
+
+def complete_callback_dispatch(
+    task_id: str, claimant: str, *, state: str = DISPATCH_SENT, now: int | None = None
+) -> bool:
+    """Record that this authorization has been acted on and must never be reused."""
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_callbacks SET dispatched_at = ?, dispatch_state = ? "
+            "WHERE task_id = ? AND claimed_by = ? AND dispatched_at IS NULL",
+            (moment, state, task_id, claimant),
+        )
+    if cursor.rowcount == 1:
+        logger.info("background task callback dispatch recorded (%s)", state)
+        return True
+    return False
+
+
+def abandon_callback_dispatch(
+    task_id: str, claimant: str, *, state: str = DISPATCH_ABANDONED, now: int | None = None
+) -> bool:
+    """Stop trying to call, and let the ordinary channels report the outcome.
+
+    The authorization stays consumed, so nothing dials later; the outcome's
+    announcement claim is released, so the session or the fallback still
+    delivers it. Nothing is ever recorded as delivered that was not.
+    """
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = connection.execute(
+                "UPDATE background_callbacks SET dispatch_state = ?, dispatched_at = ? "
+                "WHERE task_id = ? AND claimed_by = ?",
+                (state, moment, task_id, claimant),
+            )
+            connection.execute(
+                "UPDATE background_tasks SET notified_at = NULL, notified_by = NULL, "
+                "updated_at = ? WHERE task_id = ? AND notified_by = ?",
+                (moment, task_id, claimant),
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+    if cursor.rowcount == 1:
+        logger.warning("background task callback abandoned (%s); falling back", state)
+        return True
+    return False
+
+
+def release_callback_announcement(task_id: str) -> bool:
+    """Hand a dispatched callback outcome back to the ordinary channels.
+
+    A callback that was placed but reached no human has consumed both its
+    authorization and the right to announce the outcome, so without this the
+    outcome would sit unannounced forever and the leg would have to message the
+    owner itself -- which is exactly the per-attempt chat prompt this policy
+    forbids. Clearing the announcement claim lets the session, the dashboard or
+    the ordinary out-of-session channel deliver the result once, later, through
+    the same deduplicated path everything else uses. It queues no notice.
+    """
+    moment = _now()
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_tasks SET notified_at = NULL, notified_by = NULL, updated_at = ? "
+            "WHERE task_id = ? AND notified_at IS NOT NULL",
+            (moment, task_id),
+        )
+    if cursor.rowcount == 1:
+        logger.info("callback outcome returned to the ordinary announcement channel")
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Terminal callback notices
+# ---------------------------------------------------------------------------
+#
+# The one message a user may receive about a callback that will not happen.
+# It is queued only when the callback is finished failing -- its bounded retry
+# budget is spent, or it was explicitly cancelled -- never for an attempt, a
+# restart, a reclaimed lease, or a hand-off whose fate is unknown. One row per
+# task and one atomic claim mean it is delivered at most once even with several
+# sessions and several workers running.
+
+
+def mark_callback_notice(task_id: str, *, user_id: str | None, now: int | None = None) -> bool:
+    """Queue the terminal notice for one task. True only the first time."""
+    if not is_valid_task_id(task_id):
+        return False
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO background_callback_notices "
+            "(task_id, user_id, created_at) VALUES (?, ?, ?)",
+            (task_id, user_id, moment),
+        )
+    if cursor.rowcount == 1:
+        logger.warning("a callback was abandoned; one terminal notice is owed to its owner")
+        return True
+    return False
+
+
+def pending_callback_notices(*, user_id: str | None, limit: int = MAX_LIST) -> list[str]:
+    """Undelivered terminal notices in one user scope, oldest first."""
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT task_id FROM background_callback_notices "
+            "WHERE claimed_at IS NULL AND user_id IS ? ORDER BY created_at, rowid LIMIT ?",
+            (user_id, max(1, min(int(limit), MAX_LIST))),
+        ).fetchall()
+    return [row["task_id"] for row in rows]
+
+
+def claim_callback_notice(task_id: str, claimant: str, *, now: int | None = None) -> bool:
+    """Win the right to send one terminal notice. Exactly one caller can."""
+    moment = _now() if now is None else int(now)
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE background_callback_notices SET claimed_at = ?, claimed_by = ? "
+            "WHERE task_id = ? AND claimed_at IS NULL",
+            (moment, claimant, task_id),
+        )
+    return cursor.rowcount == 1
 
 
 # ---------------------------------------------------------------------------

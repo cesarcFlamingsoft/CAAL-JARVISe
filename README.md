@@ -104,6 +104,22 @@ CAAL runs on Apple Silicon Macs using [mlx-audio](https://github.com/Blaizzy/mlx
 
 ---
 
+## Frontend Deployment
+
+Nothing in the stack rebuilds the frontend image on a normal `docker compose
+up -d`, so the frontend containers serve the build you publish, not the one
+baked into the image:
+
+```bash
+cd frontend && pnpm build && cd ..
+./publish-frontend-build.sh
+docker compose up -d --force-recreate frontend
+```
+
+**See [docs/FRONTEND-DEPLOYMENT.md](docs/FRONTEND-DEPLOYMENT.md).**
+
+---
+
 ## Distributed Deployment
 
 Run the GPU-intensive backend on a Linux server while using the frontend on a Mac or another device.

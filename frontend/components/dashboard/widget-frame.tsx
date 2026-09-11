@@ -13,6 +13,9 @@ import { cn } from '@/lib/utils';
 
 export type GestureKind = 'move' | 'resize';
 
+/** How the hand cursor relates to this widget, if hand control is on. */
+export type HandState = 'hover' | 'selected';
+
 export interface WidgetHandleProps {
   onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -29,6 +32,7 @@ interface WidgetFrameProps {
   meta?: ReactNode;
   instructionsId: string;
   active: GestureKind | null;
+  hand?: HandState | null;
   moveHandle: WidgetHandleProps;
   resizeHandle: WidgetHandleProps;
   children: ReactNode;
@@ -49,6 +53,7 @@ export function WidgetFrame({
   meta,
   instructionsId,
   active,
+  hand = null,
   moveHandle,
   resizeHandle,
   children,
@@ -67,10 +72,14 @@ export function WidgetFrame({
       aria-labelledby={headingId}
       data-widget={placement.id}
       data-active={active ?? undefined}
+      data-hand={hand ?? undefined}
       style={style}
       className={cn(
         'bg-card text-card-foreground border-border relative flex min-h-56 min-w-0 flex-col overflow-hidden rounded-2xl border shadow-sm',
         'md:[grid-column:var(--widget-column)] md:[grid-row:var(--widget-row)] md:min-h-0',
+        'transition-shadow duration-150 motion-reduce:transition-none',
+        !active && hand === 'hover' && 'ring-ring/40 ring-1',
+        !active && hand === 'selected' && 'ring-foreground/50 ring-2',
         active && 'ring-ring/60 z-10 shadow-xl ring-2'
       )}
     >
@@ -79,6 +88,7 @@ export function WidgetFrame({
           type="button"
           aria-label={`Move ${title}`}
           aria-describedby={instructionsId}
+          data-handle="move"
           className={cn(HANDLE_CLASSES, 'cursor-grab p-1 active:cursor-grabbing')}
           {...moveHandle}
         >
@@ -101,6 +111,7 @@ export function WidgetFrame({
         type="button"
         aria-label={`Resize ${title}`}
         aria-describedby={instructionsId}
+        data-handle="resize"
         className={cn(HANDLE_CLASSES, 'absolute right-1 bottom-1 cursor-nwse-resize p-1')}
         {...resizeHandle}
       >

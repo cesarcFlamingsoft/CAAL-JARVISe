@@ -448,6 +448,84 @@ _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             """,
         ),
     ),
+    (
+        6,
+        (
+            # The per-user knowledge index behind the email and calendar answers
+            # JARVIS gives by voice: the same bounded, dashboard-safe fields the
+            # connected-account feeds already show (never a body, an attendee, a
+            # recipient list, or a raw payload), one row per item of one
+            # connection, with the text encrypted under the profile key ring and
+            # bound to its exact (user, connection, item). Owned by
+            # caal.knowledge_store. Numeric columns are plain so time windows
+            # and recency are answered from the indexes below.
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_messages (
+                user_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                received_ts INTEGER NOT NULL,
+                unread INTEGER NOT NULL DEFAULT 0,
+                payload_enc TEXT NOT NULL,
+                indexed_at INTEGER NOT NULL,
+                PRIMARY KEY (connection_id, item_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS knowledge_messages_recency "
+            "ON knowledge_messages (user_id, connection_id, received_ts DESC)",
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_events (
+                user_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                start_ts INTEGER NOT NULL,
+                end_ts INTEGER NOT NULL,
+                all_day INTEGER NOT NULL DEFAULT 0,
+                payload_enc TEXT NOT NULL,
+                indexed_at INTEGER NOT NULL,
+                PRIMARY KEY (connection_id, item_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS knowledge_events_window "
+            "ON knowledge_events (user_id, connection_id, start_ts, end_ts)",
+            # When each connection was last read for each kind of data, what
+            # window that read covered, and how it went: the freshness ledger
+            # that decides whether a question is answered from the index or
+            # after one bounded provider read.
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_sync (
+                connection_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('calendar', 'inbox')),
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                synced_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                item_count INTEGER NOT NULL DEFAULT 0,
+                window_start_ts INTEGER,
+                window_end_ts INTEGER,
+                last_ok_at INTEGER,
+                PRIMARY KEY (connection_id, kind)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS knowledge_sync_user ON knowledge_sync (user_id)",
+        ),
+    ),
+    (
+        7,
+        (
+            # The names a user gives their own connected accounts ("work",
+            # "university", "wife"), so JARVIS can be asked about one account
+            # by a name the user chose. Nullable columns beside the provider's
+            # own `account_label`, which they never replace: every existing row
+            # keeps its OAuth data and its provider-discovered label and simply
+            # carries no user name yet. Owned by caal.provider_connections.
+            "ALTER TABLE provider_connections ADD COLUMN user_label TEXT",
+            "ALTER TABLE provider_connections ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'",
+        ),
+    ),
 )
 
 

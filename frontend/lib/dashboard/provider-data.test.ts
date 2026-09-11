@@ -334,6 +334,16 @@ describe('account status words', () => {
       });
       assert.ok(words.length > 0, status);
     }
+    assert.ok((ACCOUNT_STATUSES as readonly string[]).includes('stale'));
+    const stale = describeAccountStatus({
+      connectionId: CONNECTION,
+      provider: 'google',
+      accountLabel: null,
+      status: 'stale',
+      reason: 'provider_refused',
+      count: 1,
+    });
+    assert.match(stale, /last saw/);
     const feed = browserCalendarFeed(CALENDAR_PAYLOAD)!;
     assert.deepEqual(
       accountIssues(feed.accounts).map((account) => account.status),

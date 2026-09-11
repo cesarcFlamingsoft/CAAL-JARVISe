@@ -24,10 +24,13 @@ import logging
 import os
 from typing import Any
 
+from caal.local_ollama import configured_endpoint
+
 from .base import LLMProvider, LLMResponse, ToolCall
 from .groq_provider import GroqProvider
 from .hermes_provider import HermesProvider
 from .ollama_provider import OllamaProvider
+from .routed_provider import RoutedProvider
 
 __all__ = [
     "LLMProvider",
@@ -36,7 +39,9 @@ __all__ = [
     "OllamaProvider",
     "GroqProvider",
     "HermesProvider",
+    "RoutedProvider",
     "create_provider",
+    "create_provider_from_settings",
 ]
 
 logger = logging.getLogger(__name__)
@@ -76,8 +81,38 @@ def create_provider(
         return HermesProvider(**kwargs)
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider_name}. Supported providers: ollama, groq, hermes"
+            f"Unknown LLM provider: {provider_name}. "
+            "Supported providers: routed, ollama, groq, hermes"
         )
+
+
+def _ollama_from_settings(settings: dict[str, Any]) -> OllamaProvider:
+    # The endpoint an operator saved in the settings UI wins over OLLAMA_HOST,
+    # and one that is no longer acceptable falls back rather than being used.
+    return OllamaProvider(
+        model=settings.get("ollama_model", "qwen3:8b"),
+        base_url=configured_endpoint(settings),
+        think=settings.get("think", False),
+        temperature=settings.get("temperature", 0.7),
+        num_ctx=settings.get("num_ctx", 8192),
+    )
+
+
+def _hermes_from_settings(settings: dict[str, Any]) -> HermesProvider | None:
+    """The Hermes escalation, or ``None`` when this deployment has no credentials.
+
+    A missing key is not an error: the local model is the main model, and a
+    deployment that has not configured Hermes simply keeps every turn local.
+    """
+    api_key = settings.get("hermes_api_key") or os.environ.get("HERMES_API_KEY")
+    if not api_key:
+        logger.info("No Hermes credentials configured; every turn stays on the local model")
+        return None
+    return HermesProvider(
+        base_url=settings.get("hermes_api_url", "http://host.docker.internal:8642/v1"),
+        api_key=api_key,
+        model=settings.get("hermes_model", "hermes-agent"),
+    )
 
 
 def create_provider_from_settings(settings: dict[str, Any]) -> LLMProvider:
@@ -88,7 +123,7 @@ def create_provider_from_settings(settings: dict[str, Any]) -> LLMProvider:
 
     Args:
         settings: Runtime settings dict with keys like:
-            - llm_provider: "ollama" or "groq"
+            - llm_provider: "routed" (default), "ollama", "hermes" or "groq"
             - model: Ollama model name
             - groq_model: Groq model name
             - temperature: Sampling temperature
@@ -102,16 +137,17 @@ def create_provider_from_settings(settings: dict[str, Any]) -> LLMProvider:
         >>> settings = load_settings()
         >>> provider = create_provider_from_settings(settings)
     """
-    provider_name = settings.get("llm_provider", "ollama").lower()
+    provider_name = settings.get("llm_provider", "routed").lower()
 
-    if provider_name == "ollama":
-        return OllamaProvider(
-            model=settings.get("ollama_model", "qwen3:8b"),
-            base_url=settings.get("ollama_host"),
-            think=settings.get("think", False),
-            temperature=settings.get("temperature", 0.7),
-            num_ctx=settings.get("num_ctx", 8192),
+    if provider_name == "routed":
+        # The default: the local model is JARVIS' main model, and Hermes is
+        # the escalation for work that needs an agent harness.
+        return RoutedProvider(
+            primary=_ollama_from_settings(settings),
+            escalation=_hermes_from_settings(settings),
         )
+    elif provider_name == "ollama":
+        return _ollama_from_settings(settings)
     elif provider_name == "groq":
         # API key from settings, fallback to environment variable
         api_key = settings.get("groq_api_key") or os.environ.get("GROQ_API_KEY")
@@ -128,5 +164,6 @@ def create_provider_from_settings(settings: dict[str, Any]) -> LLMProvider:
         )
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider_name}. Supported providers: ollama, groq, hermes"
+            f"Unknown LLM provider: {provider_name}. "
+            "Supported providers: routed, ollama, groq, hermes"
         )

@@ -13,7 +13,12 @@ Two tables in the shared ``assistant.sqlite3`` (schema version 4 in
   an account that is already linked updates that row and no other. Rows
   written before schema version 4 carry no account id; the first identified
   reconnect whose label matches such a row claims it, so a legacy connection
-  keeps its id rather than being duplicated.
+  keeps its id rather than being duplicated. Since schema version 7 a row
+  also carries the names *the owner* gave the account -- a short
+  ``user_label`` and a small list of ``aliases`` -- which are what JARVIS
+  matches when a question says "my work inbox". They are written only by the
+  owner, they never overwrite the provider's ``account_label``, and a
+  reconnect leaves them in place.
 * ``oauth_states``  pending authorizations: who started one, for which
   provider, until when, whether it has been redeemed, and the PKCE verifier
   (encrypted, bound to the row).
@@ -26,7 +31,7 @@ is presented -- by anyone. A state presented by the wrong user or with a bad
 signature is treated as compromised and is burned along with the row it named.
 
 Nothing here models a password. Nothing here logs a token, a state, a code,
-a label, or an email.
+a label, an alias, or an email.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ import re
 import secrets
 import sqlite3
 import time
+import unicodedata
 from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any
@@ -54,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONNECTED",
+    "MAX_ALIASES",
+    "MAX_ALIAS_LENGTH",
+    "MAX_USER_LABEL_LENGTH",
     "MAX_LIVE_STATES_PER_USER",
     "REVOKED",
     "STATE_TTL_SECONDS",
@@ -65,7 +74,10 @@ __all__ = [
     "ProviderConnection",
     "StateError",
     "is_valid_connection_id",
+    "label_key",
     "new_connection_id",
+    "normalize_aliases",
+    "normalize_user_label",
 ]
 
 CONNECTED = "connected"
@@ -75,6 +87,12 @@ MAX_LIVE_STATES_PER_USER = 10
 MAX_STATE_LENGTH = 256
 MAX_TOKEN_LENGTH = 8192
 MAX_ACCOUNT_LABEL_LENGTH = 254
+# What the *user* may call one of their own accounts: a short name ("work",
+# "university", "wife") plus a few spoken alternatives for it. Short on
+# purpose -- these are said out loud, not written down.
+MAX_USER_LABEL_LENGTH = 48
+MAX_ALIAS_LENGTH = 48
+MAX_ALIASES = 8
 MAX_PROVIDER_ACCOUNT_ID_LENGTH = 256
 MAX_TOKEN_LIFETIME_SECONDS = 10 * 365 * 86400
 
@@ -83,7 +101,10 @@ _STATE_ID_BYTES = 24  # token_urlsafe(24) -> 32 characters
 _STATE_ID = re.compile(r"^[A-Za-z0-9_-]{32}$")
 _SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _SCOPE = re.compile(r"^[A-Za-z0-9_.:/\-]{1,256}$")
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+_APOSTROPHE = re.compile(r"[\u0027\u2019\u02bc\u00b4`]")
 _STATE_KEY_DOMAIN = b"caal.provider_connections.oauth_state.v1"
+_UNCHANGED = object()
 _VERIFIER_BYTES = 64  # token_urlsafe(64) -> 86 characters, within RFC 7636's 43..128
 
 
@@ -148,6 +169,95 @@ def _normalize_label(value: object) -> str | None:
     if len(label) > MAX_ACCOUNT_LABEL_LENGTH:
         raise ValueError("Account label is too long")
     return label
+
+
+def label_key(value: object) -> str:
+    """The normalized form a spoken name is matched by: accent- and case-free words.
+
+    ``"Wife\u2019s  Mail"`` and ``"wifes mail"`` share a key, so a name the
+    user typed in Settings is found by the words JARVIS heard. An empty key
+    means there was nothing matchable in the value at all.
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    # An apostrophe joins rather than separates, as the spoken reading of a
+    # turn already assumes: "wife\u2019s" and "wifes" are the same name.
+    without_marks = _APOSTROPHE.sub("", stripped.casefold())
+    return " ".join(_NON_ALNUM.sub(" ", without_marks).split())
+
+
+def _normalize_name(value: object, *, limit: int, name: str) -> str:
+    """One trimmed, whitespace-collapsed, printable name; never a control character."""
+    if not isinstance(value, str) or not value.isprintable():
+        raise ValueError(f"{name} must be plain text")
+    text = " ".join(value.split())
+    if len(text) > limit:
+        raise ValueError(f"{name} is too long")
+    return text
+
+
+def normalize_user_label(value: object) -> str | None:
+    """The user's own short name for a connection, or None for "no name".
+
+    Empty text clears the name. A name that normalizes to nothing matchable
+    (punctuation only) is refused rather than stored as a name JARVIS could
+    never resolve.
+    """
+    if value is None:
+        return None
+    text = _normalize_name(value, limit=MAX_USER_LABEL_LENGTH, name="The account name")
+    if not text:
+        return None
+    if not label_key(text):
+        raise ValueError("The account name must contain a letter or a number")
+    return text
+
+
+def normalize_aliases(value: object) -> tuple[str, ...]:
+    """The user's other names for a connection: bounded, ordered, deduplicated.
+
+    Duplicates are decided on the normalized key, so "Work" and "work " are
+    one alias (the first spelling is kept). Blank entries are dropped, which
+    is what a trailing comma in the Settings field means.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError("Account names must be a list of text")
+    if len(value) > MAX_ALIASES * 4:
+        raise ValueError("Too many account names")
+    kept: dict[str, str] = {}
+    for entry in value:
+        text = _normalize_name(entry, limit=MAX_ALIAS_LENGTH, name="An account name")
+        if not text:
+            continue
+        key = label_key(text)
+        if not key:
+            raise ValueError("An account name must contain a letter or a number")
+        kept.setdefault(key, text)
+    if len(kept) > MAX_ALIASES:
+        raise ValueError("Too many account names")
+    return tuple(kept.values())
+
+
+def _render_aliases(aliases: tuple[str, ...]) -> str:
+    return json.dumps(list(aliases), separators=(",", ":"))
+
+
+def _read_aliases(row: sqlite3.Row) -> tuple[str, ...]:
+    """The stored aliases of a row, tolerating a row written before schema 7."""
+    raw = row["aliases"] if "aliases" in row.keys() else None
+    if not raw:
+        return ()
+    try:
+        loaded = json.loads(raw)
+    except ValueError:
+        return ()
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(str(item) for item in loaded if isinstance(item, str))
 
 
 def _normalize_provider_account_id(value: object) -> str | None:
@@ -223,6 +333,9 @@ class ProviderConnection:
     status: str
     account_label: str | None = field(repr=False)
     provider_account_id: str | None = field(default=None, repr=False)
+    # What the owner calls this account. Never replaces `account_label`.
+    user_label: str | None = field(default=None, repr=False)
+    aliases: tuple[str, ...] = field(default=(), repr=False)
     scopes: tuple[str, ...] = ()
     token_expires_at: int | None = None
     has_refresh_token: bool = False
@@ -238,6 +351,8 @@ class ProviderConnection:
             "provider": self.provider,
             "status": self.status,
             "account_label": self.account_label,
+            "user_label": self.user_label,
+            "aliases": list(self.aliases),
             "scopes": list(self.scopes),
             "token_expires_at": self.token_expires_at,
             "has_refresh_token": self.has_refresh_token,
@@ -445,6 +560,8 @@ class ConnectionStore:
             status=row["status"],
             account_label=row["account_label"],
             provider_account_id=row["provider_account_id"],
+            user_label=row["user_label"] if "user_label" in row.keys() else None,
+            aliases=_read_aliases(row),
             scopes=scopes,
             token_expires_at=row["token_expires_at"],
             has_refresh_token=row["refresh_token_enc"] is not None,
@@ -715,6 +832,61 @@ class ConnectionStore:
                             CONNECTED,
                         ),
                     )
+                updated = connection.execute(
+                    "SELECT * FROM provider_connections WHERE connection_id = ?", (owned_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+        return self._connection(updated)
+
+    def set_labels(
+        self,
+        user_id: object,
+        connection_id: object,
+        *,
+        user_label: object = _UNCHANGED,
+        aliases: object = _UNCHANGED,
+        now: int | None = None,
+    ) -> ProviderConnection | None:
+        """Name one of the owner's live connections, or rename it.
+
+        Only the fields given are written, so a caller may set a label without
+        touching the aliases. Nothing else on the row is read or rewritten:
+        the OAuth tokens, the granted scopes and the provider's own
+        ``account_label`` are exactly as they were. ``None`` -- and no write
+        at all -- unless ``user_id`` owns a live ``connection_id``; a malformed
+        name raises :class:`ValueError` before the database is touched.
+        """
+        label = _UNCHANGED if user_label is _UNCHANGED else normalize_user_label(user_label)
+        names = _UNCHANGED if aliases is _UNCHANGED else normalize_aliases(aliases)
+        if not is_valid_user_id(user_id) or not is_valid_connection_id(connection_id):
+            return None
+        moment = _now(now)
+        assignments = ["updated_at = ?"]
+        values: list[Any] = [moment]
+        if label is not _UNCHANGED:
+            assignments.append("user_label = ?")
+            values.append(label)
+        if names is not _UNCHANGED:
+            assignments.append("aliases = ?")
+            values.append(_render_aliases(names))  # type: ignore[arg-type]
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._fetch_owned(connection, user_id, connection_id)
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                owned_id = row["connection_id"]
+                connection.execute(
+                    "UPDATE provider_connections SET "
+                    + ", ".join(assignments)
+                    + " WHERE connection_id = ? AND user_id = ? AND status = ?",
+                    (*values, owned_id, user_id, CONNECTED),
+                )
                 updated = connection.execute(
                     "SELECT * FROM provider_connections WHERE connection_id = ?", (owned_id,)
                 ).fetchone()

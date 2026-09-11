@@ -51,7 +51,15 @@ from livekit.protocol.models import DataPacket
 from livekit.protocol.room import SendDataRequest
 from pydantic import BaseModel
 
-from . import connections_api, dashboard_api, device_registry, user_api, weather_api
+from . import (
+    connections_api,
+    dashboard_api,
+    device_registry,
+    local_model_api,
+    local_ollama,
+    user_api,
+    weather_api,
+)
 from . import settings as settings_module
 from .outbound_calls import OutboundCallCoordinator, OutboundCallPolicy, verify_control_token
 from .tools import calendar_tools, create_default_registry, email_tools
@@ -85,6 +93,28 @@ app.include_router(connections_api.router)
 # mail) under /users/me/dashboard, behind the same boundary.
 app.include_router(dashboard_api.router)
 app.include_router(weather_api.router)
+# Which local Ollama JARVIS runs on, and which model: an operator setting,
+# read by any signed-in user and changed by an administrator only.
+app.include_router(local_model_api.router)
+
+
+# Discovery of the models installed on the local Ollama. Tests replace the
+# transport; in production it stays None and httpx opens a real socket. Every
+# endpoint is checked by caal.local_ollama before a request is made.
+MODEL_DISCOVERY_TRANSPORT: httpx.BaseTransport | None = None
+
+
+async def _installed_models(endpoint: str) -> list[str]:
+    """The models installed at an accepted local endpoint. Never logs the address."""
+    client = httpx.AsyncClient(
+        timeout=local_ollama.DISCOVERY_TIMEOUT,
+        trust_env=False,
+        transport=MODEL_DISCOVERY_TRANSPORT,
+    )
+    try:
+        return await local_ollama.discover_models(endpoint, client=client)
+    finally:
+        await client.aclose()
 
 
 def get_livekit_api() -> api.LiveKitAPI:
@@ -745,25 +775,13 @@ async def get_models() -> ModelsResponse:
     Returns:
         ModelsResponse with list of model names
     """
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-
+    # The endpoint an operator saved in the settings UI, not merely OLLAMA_HOST.
+    endpoint = local_ollama.configured_endpoint(settings_module.load_settings())
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{ollama_host}/api/tags",
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            # Ollama returns {"models": [{"name": "...", ...}, ...]}
-            models = [m.get("name") for m in data.get("models", [])]
-            models = [m for m in models if m]  # Filter None values
-
-            return ModelsResponse(models=models)
-    except Exception as e:
-        logger.warning(f"Failed to fetch models from Ollama: {e}")
-        # Return empty list on failure
+        return ModelsResponse(models=await _installed_models(endpoint))
+    except (local_ollama.EndpointError, local_ollama.DiscoveryError) as exc:
+        # No address and no upstream text: an empty list is the honest answer.
+        logger.warning("Could not list local models (%s)", exc.code)
         return ModelsResponse(models=[])
 
 
@@ -1070,25 +1088,17 @@ async def test_ollama(req: TestOllamaRequest) -> TestConnectionResponse:
     Returns:
         TestConnectionResponse with success status and model list
     """
+    # The host is typed by whoever is in front of the setup wizard, so it is
+    # checked as a local endpoint before anything is requested; see
+    # caal.local_ollama. The refusal says why without echoing what was typed.
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{req.host}/api/tags",
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            models = [m.get("name") for m in data.get("models", [])]
-            models = [m for m in models if m]
-
-            return TestConnectionResponse(success=True, models=models)
-    except httpx.ConnectError:
-        return TestConnectionResponse(
-            success=False, error=f"Cannot connect to Ollama at {req.host}"
-        )
-    except Exception as e:
-        return TestConnectionResponse(success=False, error=str(e))
+        endpoint = local_ollama.normalize_endpoint(req.host)
+        models = await _installed_models(endpoint)
+    except local_ollama.EndpointError as exc:
+        return TestConnectionResponse(success=False, error=exc.message)
+    except local_ollama.DiscoveryError as exc:
+        return TestConnectionResponse(success=False, error=exc.message)
+    return TestConnectionResponse(success=True, models=models)
 
 
 @app.post("/setup/test-groq", response_model=TestConnectionResponse)
@@ -1343,7 +1353,7 @@ async def prewarm() -> PrewarmResponse:
             # Import here to avoid circular imports
             from voice_agent import preload_models
 
-            ollama_host = settings.get("ollama_host", "http://localhost:11434")
+            ollama_host = local_ollama.configured_endpoint(settings)
             ollama_model = settings.get("ollama_model", "ministral-3:8b")
             await preload_models(ollama_host, ollama_model)
             logger.info("Model prewarm completed")

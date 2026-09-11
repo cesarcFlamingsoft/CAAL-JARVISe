@@ -58,12 +58,25 @@ describe('connections BFF routes', () => {
 
   it('guard every mutation with the origin, CSRF and rate-limit checks', () => {
     for (const key of ['start', 'disconnect'] as const) {
-      assert.match(read(ROUTES[key]), /guardMutation\(req, auth\.config, auth\.user\.userId\)/, key);
+      const source = read(ROUTES[key]);
+      const guards = source.match(/guardMutation\(req, auth\.config, auth\.user\.userId\)/g) ?? [];
+      const mutations = source.match(/export async function (POST|PATCH|PUT|DELETE)\(/g) ?? [];
+      assert.equal(guards.length, mutations.length, `${key} must guard every mutation`);
+      assert.ok(guards.length > 0, key);
     }
     assert.match(read(ROUTES.start), /isProvider\(/);
     assert.match(read(ROUTES.disconnect), /isConnectionId\(/);
     assert.match(read(ROUTES.disconnect), /export async function DELETE\(/);
-    assert.ok(!/export async function (GET|POST|PATCH|PUT)\(/.test(read(ROUTES.disconnect)));
+    // Renaming an account is the one other thing that route does, and it is a
+    // mutation on the caller's own connection like the delete beside it.
+    const disconnect = read(ROUTES.disconnect);
+    assert.match(disconnect, /export async function PATCH\(/);
+    assert.match(disconnect, /accountNamesFrom\(/);
+    assert.match(disconnect, /accountNamesRequest\(/);
+    assert.match(disconnect, /readJsonObject\(req\)/);
+    // The names are validated here; the backend body carries nothing else.
+    assert.ok(!/user_label:\s*body/.test(disconnect));
+    assert.ok(!/export async function (GET|POST|PUT)\(/.test(disconnect));
     assert.ok(!/export async function (GET|PATCH|PUT|DELETE)\(/.test(read(ROUTES.start)));
     assert.ok(!/export async function (POST|PATCH|PUT|DELETE)\(/.test(read(ROUTES.list)));
   });
@@ -140,6 +153,28 @@ describe('connected accounts panel', () => {
     assert.match(panel, /explainConnectionError\(/);
     assert.match(panel, /'\/api\/connections'/);
     assert.match(panel, /\/api\/connections\/start\//);
+  });
+
+  it('lets the owner name each account, and says what the names are for', () => {
+    const panel = read(PANEL);
+    // One PATCH, on the caller's own connection, with the checked names only.
+    assert.equal((panel.match(/method: 'PATCH'/g) ?? []).length, 1, 'exactly one PATCH call');
+    assert.match(panel, /async function saveNames[\s\S]*?method: 'PATCH'/);
+    assert.match(panel, /accountNamesFrom\(/);
+    assert.match(panel, /parseAliasInput\(/);
+    // The control is reachable and labelled, and cancelling is offered.
+    assert.match(panel, /aria-expanded=\{isNaming\}/);
+    assert.match(panel, /htmlFor=/);
+    assert.match(panel, /Name this account/);
+    assert.match(panel, /Edit names/);
+    assert.match(panel, /Cancel/);
+    assert.match(panel, /role="alert"/);
+    // The promise the slice makes to the user, in the panel's own words.
+    assert.match(panel, /provider account identity remains unchanged/i);
+    // Connect and Disconnect are still there, and no token ever is.
+    assert.match(panel, /Disconnect/);
+    assert.match(panel, /Connect another/);
+    assert.ok(!/accessToken|access_token|refresh/i.test(panel));
   });
 
   it('renders only a validated outcome on the result page', () => {

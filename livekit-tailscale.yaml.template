@@ -1,13 +1,15 @@
 port: 7880
 log_level: info
 keys:
-  devkey: secret
+  ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
 
 rtc:
   use_external_ip: false
   tcp_port: 7881
-  port_range_start: 50000
-  port_range_end: 50100
+  # Must match the published Docker UDP range exactly.  These values are sent
+  # to browsers as ICE candidates, not translated through Docker's mapping.
+  port_range_start: 50100
+  port_range_end: 50200
 
 # TURN/TLS for remote access (Tailscale or mkcert)
 turn:

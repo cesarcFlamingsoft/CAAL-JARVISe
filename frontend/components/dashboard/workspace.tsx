@@ -5,7 +5,7 @@
  * beneath it. Nothing here is gated on a LiveKit call; starting or ending one
  * only changes the dock.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   BellSimple,
   CalendarBlank,
@@ -19,10 +19,13 @@ import { useDashboardCapabilities } from '@/hooks/useDashboardCapabilities';
 import { useDashboardFeed } from '@/hooks/useDashboardFeed';
 import { useDashboardLayout } from '@/hooks/useDashboardLayout';
 import { useMe } from '@/hooks/useMe';
-import { useWeather } from '@/hooks/useWeather';
 import { useNow } from '@/hooks/useNow';
+import { useWeather } from '@/hooks/useWeather';
 import { type WidgetId, layoutScopeFor } from '@/lib/dashboard/layout';
 import { browserCalendarFeed, browserInboxFeed } from '@/lib/dashboard/provider-data';
+import { browserReminders } from '@/lib/dashboard/reminders';
+import type { HandSurfaceController } from '@/lib/hands/surface';
+import { HandsDock } from './hands-dock';
 import { MonitorDashboard } from './monitor-dashboard';
 import { VoiceDock } from './voice-dock';
 import { CalendarWidget } from './widgets/calendar-widget';
@@ -59,8 +62,12 @@ export function Workspace({ appConfig }: WorkspaceProps) {
   const capabilities = useDashboardCapabilities();
   const calendar = useDashboardFeed('/api/dashboard/calendar', browserCalendarFeed);
   const inbox = useDashboardFeed('/api/dashboard/inbox', browserInboxFeed);
+  const reminders = useDashboardFeed('/api/dashboard/reminders', browserReminders);
   const weather = useWeather();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Hand control is opt-in for this visit only; the camera is never opened unasked.
+  const [handsEnabled, setHandsEnabled] = useState(false);
+  const handController = useRef<HandSurfaceController | null>(null);
 
   // Undefined while identity resolves: the layout waits rather than flashing
   // a default and then someone's saved arrangement.
@@ -80,7 +87,8 @@ export function Workspace({ appConfig }: WorkspaceProps) {
       case 'weather':
         return {
           icon: <CloudSun className="size-4" weight="bold" />,
-          meta: weather.status === 'ready' ? (weather.data.location?.label ?? undefined) : undefined,
+          meta:
+            weather.status === 'ready' ? (weather.data.location?.label ?? undefined) : undefined,
           body: (
             <WeatherWidget
               weather={weather}
@@ -127,18 +135,10 @@ export function Workspace({ appConfig }: WorkspaceProps) {
         return {
           icon: <BellSimple className="size-4" weight="bold" />,
           meta:
-            capabilities.status === 'ready' && capabilities.data.reminders.provider
-              ? capabilities.data.reminders.provider === 'apple'
-                ? 'Apple'
-                : 'Local'
+            reminders.status === 'ready'
+              ? countLabel(reminders.data.reminders.length, 'reminder')
               : undefined,
-          body: (
-            <RemindersWidget
-              capabilities={capabilities}
-              passwordLogin={passwordLogin}
-              onOpenSettings={openSettings}
-            />
-          ),
+          body: <RemindersWidget feed={reminders} passwordLogin={passwordLogin} now={now} />,
         };
       case 'work':
         return {
@@ -155,6 +155,8 @@ export function Workspace({ appConfig }: WorkspaceProps) {
         <WorkspaceHeader
           now={now}
           displayName={displayName}
+          handsEnabled={handsEnabled}
+          onHandsChange={setHandsEnabled}
           onResetLayout={layout.reset}
           onOpenSettings={openSettings}
         />
@@ -175,12 +177,17 @@ export function Workspace({ appConfig }: WorkspaceProps) {
           </p>
         )}
 
+        {handsEnabled && (
+          <HandsDock controller={handController} onClose={() => setHandsEnabled(false)} />
+        )}
+
         {layout.ready ? (
           <MonitorDashboard
             layout={layout.layout}
             onPreview={layout.preview}
             onCommit={layout.commit}
             renderWidget={renderWidget}
+            handController={handController}
           />
         ) : (
           <p role="status" className="text-muted-foreground text-sm">

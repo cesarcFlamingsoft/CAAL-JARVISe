@@ -55,7 +55,7 @@ from livekit.plugins import groq as groq_plugin
 from livekit.plugins import openai, silero
 
 from caal import CAALLLM, conversation_ledger, user_api
-from caal.alarm_delivery import announce_due_alarms
+from caal.alarm_delivery import announce_due_alarms, may_deliver
 from caal.audio import (
     AudioEnergyGate,
     NoiseSuppressedSTT,
@@ -69,16 +69,21 @@ from caal.background_task_session import (
     DialUserCallback,
     LLMBackgroundWorker,
     callback_outcome_message,
-    callback_unanswered_notification,
     capture_task_context,
 )
-from caal.background_tasks import MAX_CONCURRENCY_LIMIT, recover_interrupted
+from caal.background_tasks import (
+    MAX_CONCURRENCY_LIMIT,
+    orphaned_running_count,
+    release_callback_announcement,
+    requeue_expired_leases,
+)
 from caal.call_termination import (
     acknowledge_and_end_call,
     callback_requested,
     end_call_requested,
     end_livekit_room,
 )
+from caal.coding_delegation import build_coding_delegate
 from caal.conversation import AdaptiveEndpointer
 from caal.conversation_ledger import SESSION_LIVENESS_INTERVAL_SECONDS, ConversationRecorder
 from caal.document_work import DocumentWorker
@@ -96,17 +101,24 @@ from caal.integrations import (
     load_mcp_config,
 )
 from caal.internal_auth import AUDIENCE_AGENT, PrincipalError, verify_principal
+from caal.knowledge_router import KnowledgeTurnHandler, LocalToolPath
 from caal.llm import ToolDataCache, llm_node
+from caal.local_ollama import configured_endpoint
+from caal.log_privacy import install_pii_redaction
 from caal.outbound_calls import OutboundCallCoordinator, OutboundCallPolicy
 from caal.outbound_runtime import (
+    HANDOFF_FAILURE_NOTICE,
     OutboundRoomConfig,
     call_timeouts,
+    handoff_failure_notice_enabled,
     requires_fallback_notification,
+    shutdown_job,
 )
 from caal.security_config import load_multi_user_config, log_startup_status
 from caal.settings import get_setting
 from caal.stt import WakeWordGatedSTT
 from caal.telegram_notify import TelegramCallNotifier
+from caal.tools import reminders_tools
 from caal.telephony_auth import CallAccessGate, GateState
 from caal.user_scope import UserScope
 from caal.work_router import (
@@ -116,7 +128,12 @@ from caal.work_router import (
 )
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
-# so we use non-propagating loggers with our own handler to avoid duplicates
+# so we use non-propagating loggers with our own handler to avoid duplicates.
+# Before anything logs: the LiveKit framework attaches raw transcripts and tool
+# arguments to some of its records as lk.pii.* extras, and its own production
+# formatter serialises them. Strip them process-wide (see caal.log_privacy).
+install_pii_redaction()
+
 _log_handler = logging.StreamHandler()
 _log_handler.setFormatter(logging.Formatter("%(message)s"))
 
@@ -617,6 +634,38 @@ def build_phone_handoff_controller(
     )
 
 
+def build_knowledge_turn_handler(
+    user_scope: UserScope,
+    *,
+    provider: Any | None = None,
+    tool_data_cache: ToolDataCache | None = None,
+    on_tool_status: Callable[..., Awaitable[None]] | None = None,
+) -> KnowledgeTurnHandler | None:
+    """The safe fallback for questions about the connected email and calendar accounts.
+
+    Only a multi-user deployment has connected (OAuth) accounts to answer from:
+    a legacy single-user session keeps the LLM and its settings-configured
+    IMAP/ICS tools. Under multi-user the route exists for every session, so an
+    anonymous one is refused truthfully by the tools instead of guessed at by
+    the LLM.
+
+    It is a fallback, not the ordinary path. When the local model is the one
+    answering the turn -- it holds the user-scoped ``inbox.*`` and
+    ``schedule.*`` schemas and reads the request itself -- this route stands
+    aside. It answers only for a turn going to Hermes, which runs its own tool
+    loop and never receives CAAL schemas, or when the local model is not
+    reachable at all.
+    """
+    if not user_scope.identity_configured:
+        return None
+    return KnowledgeTurnHandler(
+        scope=user_scope,
+        tool_data_cache=tool_data_cache,
+        on_tool_status=on_tool_status,
+        local_tools=LocalToolPath(provider),
+    )
+
+
 class LocalTurnHandler:
     """Route each user turn to the commands CAAL answers itself, exactly once.
 
@@ -643,9 +692,13 @@ class LocalTurnHandler:
         end_call: Callable[[], Awaitable[None]],
         background: BackgroundTaskBridge | None = None,
         arm_callback_and_end_call: Callable[[], Awaitable[None]] | None = None,
+        knowledge: KnowledgeTurnHandler | None = None,
     ) -> None:
         self._phone_handoff = phone_handoff
         self._background = background
+        # Questions about the connected email and calendar accounts are answered
+        # here from the per-user index; Hermes never receives those tools.
+        self._knowledge = knowledge
         self._session = session
         self._end_call = end_call
         # "Hang up and call me back when you're done" is only a local command
@@ -736,6 +789,16 @@ class LocalTurnHandler:
             except Exception:
                 logger.exception("Phone handoff handling failed")
                 return False
+        if self._knowledge is not None:
+            try:
+                if await self._knowledge.handle(text, self._session):
+                    # A fresh question replaces a pending exit question rather
+                    # than answering it.
+                    self._end_call_intent.reset()
+                    return True
+            except Exception as exc:
+                # No exception text: it could carry the question back into the log.
+                logger.error("Connected-account question handling failed (%s)", type(exc).__name__)
         if self._background is not None:
             try:
                 # A file request has a bounded, real delivery path. On an
@@ -869,10 +932,20 @@ CALLBACK_GREETING_INSTRUCTIONS = (
 )
 
 
+REMINDER_GREETING_INSTRUCTIONS = (
+    "You are calling the user because a reminder they set has come due and they "
+    "asked to be called about it. Greet them in one short sentence and stop; the "
+    "reminder itself is spoken right after your greeting, so do not guess at what "
+    "it says."
+)
+
+
 def greeting_instructions(config: OutboundRoomConfig | None) -> str:
-    """Pick the opening line: a callback or continuation greeting only when warranted."""
+    """Pick the opening line: a callback, reminder or continuation greeting only when warranted."""
     if config is not None and config.is_callback:
         return CALLBACK_GREETING_INSTRUCTIONS
+    if config is not None and config.is_reminder:
+        return REMINDER_GREETING_INSTRUCTIONS
     if config is not None and config.carries_continuation:
         return HANDOFF_GREETING_INSTRUCTIONS
     return DEFAULT_GREETING_INSTRUCTIONS
@@ -892,6 +965,28 @@ async def announce_callback_outcome(
         await session.say(callback_outcome_message(config.callback_task_id))
     except Exception:
         logger.warning("Could not speak background task callback outcome", exc_info=False)
+        return False
+    return True
+
+
+async def announce_due_reminder(
+    session: AgentSession, config: OutboundRoomConfig | None
+) -> bool:
+    """Speak the reminder this call exists to deliver, once, after the greeting.
+
+    Only ever runs on the human-answered path of a reminder call, and only
+    reads the reminder of the owner the call was placed for. A failure to
+    speak is logged without content and never fails the call.
+    """
+    if config is None or config.reminder_id is None:
+        return False
+    try:
+        words = reminders_tools.announcement_for(config.reminder_id, config.user_id)
+        if words is None:
+            return False
+        await session.say(words)
+    except Exception:
+        logger.warning("Could not speak the due reminder on its call", exc_info=False)
         return False
     return True
 
@@ -919,7 +1014,7 @@ async def run_outbound_call(
     trunk_id = os.getenv("LIVEKIT_OUTBOUND_TRUNK_ID", "")
     if not trunk_id:
         logger.error("Outbound call cancelled: outbound trunk is not configured")
-        await ctx.shutdown("outbound trunk unavailable")
+        await shutdown_job(ctx, "outbound trunk unavailable")
         return False
 
     identity = f"caal-outbound-{config.attempt_id}"
@@ -969,7 +1064,21 @@ async def run_outbound_call(
         except Exception:
             logger.warning("Could not release conversation continuation", exc_info=False)
 
-    if requires_fallback_notification(category):
+    if config.callback_task_id is not None:
+        # A callback leg that reached no human says nothing at all here. It used
+        # to message the owner on the spot, which meant one chat line per
+        # attempt; instead the outcome goes back to the ordinary, deduplicated
+        # announcement channel (this session, the dashboard, or the ordinary
+        # out-of-session delivery), and only a callback that is finished failing
+        # is ever announced, once, by the dispatcher policy.
+        try:
+            release_callback_announcement(config.callback_task_id)
+        except Exception:
+            logger.warning("Could not return an unanswered callback outcome to its owner")
+    elif requires_fallback_notification(category, notify_enabled=handoff_failure_notice_enabled()):
+        # Opt-in only, and never a prompt: the text names nothing and asks for
+        # nothing. Outbound destinations are profile-administered, so a chat
+        # reply could not change one even if the user sent it.
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 notifier = TelegramCallNotifier(
@@ -977,17 +1086,11 @@ async def run_outbound_call(
                     chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
                     client=client,
                 )
-                if config.callback_task_id is not None:
-                    # A callback nobody answered still owes the user its outcome.
-                    text = callback_unanswered_notification(config.callback_task_id)
-                    if text:
-                        await notifier.notify_text(text)
-                else:
-                    await notifier.notify_unanswered(category)
+                await notifier.notify_text(HANDOFF_FAILURE_NOTICE)
         except Exception:
-            logger.warning("Could not deliver Telegram outbound-call fallback")
+            logger.warning("Could not deliver the outbound hand-off notice")
     logger.info("Outbound call ended silently category=%s attempt=%s", category, config.attempt_id)
-    await ctx.shutdown("outbound call not answered by a human")
+    await shutdown_job(ctx, "outbound call not answered by a human")
     return False
 
 
@@ -1057,11 +1160,12 @@ def get_runtime_settings() -> dict:
         # STT Provider settings
         "stt_provider": user_settings.get("stt_provider") or os.getenv("STT_PROVIDER", "speaches"),
         # LLM Provider settings - .env overrides default, user setting overrides .env
-        "llm_provider": user_settings.get("llm_provider") or os.getenv("LLM_PROVIDER", "hermes"),
+        "llm_provider": user_settings.get("llm_provider") or os.getenv("LLM_PROVIDER", "routed"),
         "temperature": settings.get("temperature", float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))),
         # Ollama settings
-        "ollama_host": user_settings.get("ollama_host")
-        or os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        # The endpoint an operator saved in the settings UI, checked as a
+        # local one; OLLAMA_HOST is only the fallback. See caal.local_ollama.
+        "ollama_host": configured_endpoint(user_settings),
         "ollama_model": user_settings.get("ollama_model")
         or os.getenv("OLLAMA_MODEL", "ministral-3:8b"),
         "num_ctx": settings.get("num_ctx", int(os.getenv("OLLAMA_NUM_CTX", "8192"))),
@@ -1076,6 +1180,11 @@ def get_runtime_settings() -> dict:
         "hermes_api_key": settings.get("hermes_api_key") or os.getenv("HERMES_API_KEY", ""),
         "hermes_model": user_settings.get("hermes_model")
         or settings.get("hermes_model", "hermes-agent"),
+        # Coding delegation: the only path from a coding request to code. It
+        # rides the Hermes credentials configured above and has none of its own,
+        # and it names no path, no command, and no workspace.
+        "coding_delegation_enabled": settings.get("coding_delegation_enabled", True),
+        "coding_delegation_timeout_seconds": settings.get("coding_delegation_timeout_seconds", 900),
         # Shared settings
         "max_turns": settings.get("max_turns", int(os.getenv("OLLAMA_MAX_TURNS", "20"))),
         "tool_cache_size": settings.get("tool_cache_size", int(os.getenv("TOOL_CACHE_SIZE", "3"))),
@@ -1218,6 +1327,29 @@ def build_callback_arming(
     return _arm_callback_and_end_call
 
 
+def background_worker_provider(provider: Any) -> Any:
+    """The provider durable background work runs on.
+
+    Work that reached the queue is, by definition, the long multi-step kind the
+    agent harness exists for, so it goes straight to the escalation provider
+    when one is configured rather than being re-read turn by turn. Without one
+    (or with a single-backend provider) this is the configured provider itself.
+    """
+    return getattr(provider, "escalation", None) or provider
+
+
+def work_router_provider(provider: Any) -> Any:
+    """The provider the semantic turn classifier runs on: always the local one.
+
+    ``provider`` may be CAALLLM (whose ``chat`` has the LiveKit streaming
+    signature) or the routed provider. The classifier needs the small
+    completion API of the local model: sending its prompt through the router
+    could escalate a one-word label into a full agent turn while the user waits.
+    """
+    inner = getattr(provider, "provider_instance", provider)
+    return getattr(inner, "primary", inner)
+
+
 def build_background_task_bridge(
     runtime: dict,
     *,
@@ -1273,7 +1405,8 @@ def build_background_task_bridge(
         fallback = _send_telegram
         document_delivery = _send_telegram_document
     compose = LLMBackgroundWorker(
-        provider, timeout_seconds=runtime.get("background_task_timeout_seconds", 600)
+        background_worker_provider(provider),
+        timeout_seconds=runtime.get("background_task_timeout_seconds", 600),
     )
     artifact_dir = Path(os.getenv("CAAL_DATA_DIR", "/app/data")) / "documents"
     worker = DocumentWorker(
@@ -1282,10 +1415,10 @@ def build_background_task_bridge(
         artifact_dir=artifact_dir,
     )
     router_enabled = bool(runtime.get("work_router_enabled", True))
-    # ``provider`` is normally CAALLLM for LiveKit, whose ``chat`` method has
-    # the LiveKit streaming signature. The router needs the configured CAAL
-    # provider's small completion API instead.
-    router_provider = getattr(provider, "provider_instance", provider)
+    # The turn classifier answers with one word and the user waits on it, so it
+    # always runs on the local model: routing it would risk turning a
+    # sub-second label into a full Hermes agent turn.
+    router_provider = work_router_provider(provider)
     work_router = SemanticWorkRouter(
         classify=provider_classifier(router_provider) if router_enabled else None,
         timeout_seconds=runtime.get(
@@ -1293,6 +1426,13 @@ def build_background_task_bridge(
         ),
         enabled=router_enabled,
     )
+    # Coding requests are never answered by a chat model. They are queued for
+    # the Hermes agent runtime with a server-side contract telling it to use its
+    # own Claude Code capability, at its default model and medium effort: the
+    # same delegation Hermes already uses for code. The CAAL container holds no
+    # coding tool and no checkout, so with no Hermes runtime configured there is
+    # no coding worker at all and those turns stay unclaimed.
+    coding_worker = build_coding_delegate(runtime, provider=provider)
     return BackgroundTaskBridge(
         execute=worker,
         session_key=session_key,
@@ -1303,6 +1443,7 @@ def build_background_task_bridge(
         user_id=scope.user_id,
         dial_user_callback=dial_user_callback,
         work_router=work_router,
+        coding_execute=coding_worker,
     )
 
 
@@ -1574,6 +1715,7 @@ class VoiceAssistant(WebSearchTools, Agent):
         turn_consumed: Callable[[str], Awaitable[bool]] | None = None,
         sync_return_context: Callable[[Any, Any], Awaitable[bool]] | None = None,
         user_scope: UserScope | None = None,
+        tool_data_cache: ToolDataCache | None = None,
     ) -> None:
         super().__init__(
             instructions=load_prompt(),
@@ -1608,7 +1750,13 @@ class VoiceAssistant(WebSearchTools, Agent):
         self._on_tool_status = on_tool_status
 
         # Context management: tool data cache and sliding window
-        self._tool_data_cache = ToolDataCache(max_entries=tool_cache_size)
+        # Shared with the local knowledge route when the session provides one,
+        # so an answer spoken by CAAL is in the model's context on the next turn.
+        self._tool_data_cache = (
+            tool_data_cache
+            if tool_data_cache is not None
+            else ToolDataCache(max_entries=tool_cache_size)
+        )
         self._max_turns = max_turns
 
         # Asks whether CAAL already handled the turn locally (e.g. phone handoff)
@@ -1847,6 +1995,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             f"  LLM: Ollama ({runtime['ollama_model']}, think={runtime['think']}, "
             f"num_ctx={runtime['num_ctx']})"
         )
+    elif runtime["llm_provider"] == "routed":
+        logger.info(
+            f"  LLM: local {runtime['ollama_model']} at {runtime['ollama_host']} "
+            f"(main model), Hermes escalation "
+            f"{'configured' if runtime.get('hermes_api_key') else 'not configured'}"
+        )
     elif runtime["llm_provider"] == "hermes":
         logger.info(
             f"  LLM: Hermes Agent ({runtime['hermes_api_url']}, model={runtime['hermes_model']})"
@@ -2041,7 +2195,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             outbound_config = parse_outbound_config(ctx.job.metadata, identity=identity)
         except (PermissionError, ValueError):
             logger.error("Rejected invalid outbound room configuration", exc_info=True)
-            await ctx.shutdown("invalid outbound room configuration")
+            await shutdown_job(ctx, "invalid outbound room configuration")
             return
         user_scope = outbound_scope(outbound_config, identity=identity)
     elif has_sip_participant(ctx.room):
@@ -2158,19 +2312,37 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         outbound_config=lambda: outbound_config,
     )
 
+    # Questions about the connected email and calendar accounts are answered by
+    # CAAL itself from the per-user index, under the verified scope above. The
+    # structured answer is shared with the LLM node so follow-ups have context.
+    tool_data_cache = ToolDataCache(max_entries=runtime["tool_cache_size"])
+    knowledge_route = build_knowledge_turn_handler(
+        user_scope,
+        provider=caal_llm.provider_instance,
+        tool_data_cache=tool_data_cache,
+    )
+    logger.info(
+        "  Connected-account knowledge route: %s",
+        "fallback only (the local model reads these itself)"
+        if knowledge_route is not None
+        else "disabled (legacy single-user)",
+    )
+
     local_turn_handler = LocalTurnHandler(
         phone_handoff=phone_handoff,
         session=session,
         end_call=_end_call_at_caller_request,
         background=background_bridge,
         arm_callback_and_end_call=arm_callback_and_end_call,
+        knowledge=knowledge_route,
     )
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(ev) -> None:
         nonlocal _transcription_time
         _transcription_time = time.perf_counter()
-        logger.debug(f"User said: {ev.transcript[:80]}...")
+        # The transcript itself is never logged: it is what the user said.
+        logger.debug("Transcript received: final=%s", bool(ev.is_final))
         if ev.is_final:
             local_turn_handler.on_final_transcript(ev.transcript)
         else:
@@ -2273,6 +2445,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except Exception as e:
             logger.warning(f"Failed to publish tool status: {e}")
 
+    if knowledge_route is not None:
+        knowledge_route.bind_tool_status(_publish_tool_status)
+
     # ==========================================================================
 
     # Create HASS tools if Home Assistant is enabled (uses Assist API directly)
@@ -2322,6 +2497,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         turn_consumed=local_turn_handler.turn_consumed,
         sync_return_context=return_sync.hydrate if return_sync is not None else None,
         user_scope=user_scope,
+        tool_data_cache=tool_data_cache,
     )
 
     # Create event to wait for session close (BEFORE session.start to avoid race condition)
@@ -2392,10 +2568,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         asyncio.create_task(_handle_webhook_command(data))
 
     async def _alarm_delivery_loop() -> None:
-        """Deliver persisted timers once a user has an active voice session."""
+        """Announce the due alarms of this session own user, and nobody else.
+
+        An anonymous session claims nothing, so an alarm simply waits for a
+        session that is signed in as the user who set it.
+        """
+        if not may_deliver(user_scope):
+            logger.info("Alarm delivery is idle: this session has no verified user")
+            return
         while not close_event.is_set():
             try:
-                delivered = await announce_due_alarms(session)
+                delivered = await announce_due_alarms(session, user_scope)
                 if delivered:
                     logger.info(f"Delivered {delivered} due alarm(s)")
             except Exception as e:
@@ -2418,6 +2601,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 sent = await background_bridge.flush_stale_to_fallback()
                 if sent:
                     logger.info(f"Sent {sent} stale background task outcome(s) to Telegram")
+                notices = await background_bridge.flush_callback_notices()
+                if notices:
+                    logger.info(f"Sent {notices} abandoned-callback notice(s)")
             except Exception as e:
                 logger.warning(f"Background task delivery failed: {e}")
             await asyncio.sleep(BACKGROUND_NOTIFY_POLL_SECONDS)
@@ -2482,6 +2668,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         # A callback exists to deliver one settled outcome; say it right away.
         await announce_callback_outcome(session, outbound_config)
+        # A reminder call exists for exactly one reminder; say that and nothing else.
+        await announce_due_reminder(session, outbound_config)
 
         logger.info("Agent ready - listening for speech...")
 
@@ -2530,7 +2718,7 @@ def preload_models():
         return
 
     stt_provider = settings.get("stt_provider", "speaches")
-    llm_provider = settings.get("llm_provider", "ollama")
+    llm_provider = settings.get("llm_provider", "routed")
 
     logger.info("Preloading models...")
 
@@ -2554,14 +2742,13 @@ def preload_models():
         except Exception as e:
             logger.warning(f"  Failed to preload STT model: {e}")
 
-    # Warm up Ollama only when it is the active LLM. Hermes manages its own
+    # Warm up Ollama whenever the local model answers turns: on its own, or as
+    # the main model of the routed provider. Hermes manages its own
     # provider/runtime lifecycle and must not trigger a local-model preload.
-    if llm_provider != "ollama":
+    if llm_provider not in ("ollama", "routed"):
         logger.info(f"  Skipping Ollama preload (using {llm_provider})")
     else:
-        ollama_host = settings.get("ollama_host") or os.getenv(
-            "OLLAMA_HOST", "http://localhost:11434"
-        )
+        ollama_host = configured_endpoint(settings)
         ollama_model = settings.get("ollama_model") or os.getenv("OLLAMA_MODEL", "ministral-3:8b")
         ollama_num_ctx = settings.get("num_ctx", int(os.getenv("OLLAMA_NUM_CTX", "8192")))
         try:
@@ -2655,12 +2842,27 @@ if __name__ == "__main__":
     # Preload models before starting worker
     preload_models()
 
-    # Background work left running by a previous worker life can never finish;
-    # report it as interrupted once, here, rather than per job process.
+    # Background work is durable and leased, not owned by this process. Work
+    # whose holder is gone goes back to the queue here so it is resumed rather
+    # than lost; the durable work service does the same thing on its own tick.
+    # Work left running by a pre-lease runner carries no lease and is never
+    # adopted automatically: resuming it can end in an outbound call, which is
+    # an operator's decision (see docs/DURABLE-WORK.md).
     try:
-        recover_interrupted()
+        requeued, dead = requeue_expired_leases()
+        orphaned = orphaned_running_count()
+        if requeued or dead:
+            logger.info(
+                "Resumed %d background task(s); %d exceeded the retry budget", requeued, dead
+            )
+        if orphaned:
+            logger.warning(
+                "%d background task(s) predate durable leases and are awaiting explicit "
+                "operator adoption; see docs/DURABLE-WORK.md",
+                orphaned,
+            )
     except Exception:
-        logger.warning("Could not recover interrupted background tasks", exc_info=True)
+        logger.warning("Could not recover durable background tasks", exc_info=True)
 
     agents.cli.run_app(
         agents.WorkerOptions(

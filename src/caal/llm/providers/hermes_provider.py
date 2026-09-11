@@ -57,6 +57,11 @@ class HermesProvider(LLMProvider):
         """Hermes executes its own tool loop inside its own process."""
         return True
 
+    # A caller that runs work far longer than a voice turn -- a delegated
+    # coding job, for one -- can raise the bound for its own request without
+    # letting an ordinary turn hang for that long.
+    accepts_request_timeout = True
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             async with self._client_lock:
@@ -70,6 +75,12 @@ class HermesProvider(LLMProvider):
             client, self._client = self._client, None
         if client is not None:
             await client.aclose()
+
+    def _request_timeout(self, requested: float | None) -> float:
+        """The bound for one request: never shorter than the configured default."""
+        if requested is None:
+            return self._timeout
+        return max(self._timeout, float(requested))
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -109,15 +120,23 @@ class HermesProvider(LLMProvider):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        request_timeout: float | None = None,
         **_: Any,
     ) -> LLMResponse:
-        """Run a completed Hermes turn and return its spoken response."""
+        """Run a completed Hermes turn and return its spoken response.
+
+        ``request_timeout`` raises the bound for this one request only. Work
+        that legitimately outlives a voice turn needs it; the shared client
+        keeps its short default so an ordinary turn still fails fast.
+        """
         payload = self._build_payload(messages, stream=False)
         client = await self._get_client()
         response = await client.post(
             f"{self._base_url}/chat/completions",
             json=payload,
             headers=self._headers(),
+            timeout=self._request_timeout(request_timeout),
         )
         response.raise_for_status()
         data = response.json()

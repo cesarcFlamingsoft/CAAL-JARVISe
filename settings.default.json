@@ -13,6 +13,8 @@
     "What's up?"
   ],
   "temperature": 0.7,
+  "llm_provider": "routed",
+  "ollama_model": "qwen3:8b",
   "model": "ministral-3:8b",
   "num_ctx": 8192,
   "max_turns": 20,
@@ -39,5 +41,7 @@
   "friday_enabled": false,
   "friday_host": "",
   "friday_token": "",
-  "friday_agent_id": "main"
+  "friday_agent_id": "main",
+  "coding_delegation_enabled": true,
+  "coding_delegation_timeout_seconds": 900
 }

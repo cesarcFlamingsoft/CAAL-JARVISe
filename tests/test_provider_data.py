@@ -274,20 +274,22 @@ def test_google_calendar_asks_the_primary_calendar_for_the_window_and_returns_su
     assert params["maxResults"] == "25"
     assert params["showDeleted"] == "false"
 
-    assert [event.id for event in events] == ["evt1", "evt2", "evt4", "evt5"]
+    # Soonest first, whatever order the provider answered in: the all-day event
+    # on the 16th comes after everything on the 15th.
+    assert [event.id for event in events] == ["evt1", "evt4", "evt5", "evt2"]
     first = events[0]
     assert first.title == "Standup with team"
     assert first.start == "2023-11-15T16:00:00Z" and first.end == "2023-11-15T16:30:00Z"
     assert first.all_day is False and first.location == "Room 4"
     assert first.link == "https://www.google.com/calendar/event?eid=abc"
     assert first.status == "confirmed"
-    holiday = events[1]
+    holiday = events[3]
     assert holiday.all_day is True
     assert holiday.start == "2023-11-16" and holiday.end == "2023-11-17"
     assert holiday.status == "tentative"
-    untitled = events[2]
+    untitled = events[1]
     assert untitled.title is None and untitled.link is None and untitled.status is None
-    long = events[3]
+    long = events[2]
     assert long.title == "T" * MAX_TITLE_LENGTH
     assert long.location == "L" * MAX_TITLE_LENGTH
     assert long.end == "2023-11-15T22:15:00Z"

@@ -13,7 +13,10 @@ export type FeedState<T> =
 
 export type FeedController<T> = FeedState<T> & { reload: () => void };
 
-export type FeedPath = '/api/dashboard/calendar' | '/api/dashboard/inbox';
+export type FeedPath =
+  | '/api/dashboard/calendar'
+  | '/api/dashboard/inbox'
+  | '/api/dashboard/reminders';
 
 /** How often a visible dashboard re-reads a feed on its own. */
 const REFRESH_INTERVAL_MS = 60_000;

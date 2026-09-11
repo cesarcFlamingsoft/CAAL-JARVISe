@@ -20,10 +20,14 @@ import pytest
 from caal import profile_crypto
 from caal.profile_crypto import KeyRing
 from caal.provider_connections import (
+    MAX_ALIASES,
     STATE_TTL_SECONDS,
     ConnectionStore,
     StateError,
     is_valid_connection_id,
+    label_key,
+    normalize_aliases,
+    normalize_user_label,
 )
 from caal.user_store import MEMBER, Actor, UserStore
 
@@ -208,6 +212,8 @@ def test_complete_authorization_encrypts_tokens_bound_to_their_row(h) -> None:
         "provider",
         "status",
         "account_label",
+        "user_label",
+        "aliases",
         "scopes",
         "token_expires_at",
         "has_refresh_token",
@@ -480,6 +486,97 @@ def test_provider_account_ids_are_validated(h) -> None:
     assert h.rows("provider_connections") == []
 
 
+
+
+# --- the names a user gives their own accounts -----------------------------------
+
+
+def test_user_names_are_trimmed_bounded_and_deduplicated() -> None:
+    assert normalize_user_label("  Work   laptop ") == "Work laptop"
+    assert normalize_user_label("") is None
+    assert normalize_user_label("   ") is None
+    assert normalize_user_label(None) is None
+    # Unicode is welcome; control characters and punctuation-only names are not.
+    assert normalize_user_label("Universit\u00e9") == "Universit\u00e9"
+    for bad in ("x" * 49, "line\nbreak", "\u2013", 7, ["work"]):
+        with pytest.raises(ValueError):
+            normalize_user_label(bad)
+
+    assert normalize_aliases(None) == ()
+    assert normalize_aliases([]) == ()
+    # Case, spacing and accents do not make a second name; the first spelling wins.
+    assert normalize_aliases(["Work", " work ", "WORK", "", "  "]) == ("Work",)
+    assert normalize_aliases(["wife\u2019s", "wifes"]) == ("wife\u2019s",)
+    assert normalize_aliases(["office", "day job"]) == ("office", "day job")
+    for bad in ("work", ["x" * 49], [42], [None], ["#"], [["work"]]):
+        with pytest.raises(ValueError):
+            normalize_aliases(bad)
+    with pytest.raises(ValueError):
+        normalize_aliases([f"name-{index}" for index in range(MAX_ALIASES + 1)])
+    assert label_key("  W\u00f6rk\u2019s  Mail ") == "works mail"
+    assert label_key("###") == ""
+
+
+def test_naming_a_connection_leaves_the_grant_and_the_provider_label_alone(h) -> None:
+    connection = h.connect(h.ana)
+
+    named = h.store.set_labels(
+        h.ana,
+        connection.connection_id,
+        user_label="  work  ",
+        aliases=["Office", "office", "day job"],
+        now=NOW + 5,
+    )
+    assert named.user_label == "work"
+    assert named.aliases == ("Office", "day job")
+    # Everything the provider decided is exactly as it was.
+    assert named.account_label == "ana@gmail.com"
+    assert named.scopes == ("openid", "email")
+    assert named.token_expires_at == connection.token_expires_at
+    assert named.updated_at == NOW + 5
+    assert h.store.credentials(h.ana, connection.connection_id).access_token == ACCESS
+    assert h.store.credentials(h.ana, connection.connection_id).refresh_token == REFRESH
+    assert named.view()["user_label"] == "work" and named.view()["aliases"] == ["Office", "day job"]
+
+    # One field at a time: the other is left as it was.
+    only_label = h.store.set_labels(h.ana, connection.connection_id, user_label="university")
+    assert only_label.user_label == "university" and only_label.aliases == ("Office", "day job")
+    only_aliases = h.store.set_labels(h.ana, connection.connection_id, aliases=["school"])
+    assert only_aliases.user_label == "university" and only_aliases.aliases == ("school",)
+    # Nothing at all is a no-op that still returns the row.
+    assert h.store.set_labels(h.ana, connection.connection_id).aliases == ("school",)
+
+    # Clearing is explicit, and reconnecting the account keeps the names.
+    cleared = h.store.set_labels(h.ana, connection.connection_id, user_label=None, aliases=[])
+    assert cleared.user_label is None and cleared.aliases == ()
+    h.store.set_labels(h.ana, connection.connection_id, user_label="work")
+    again = h.connect(h.ana, access_token="ya29.FRESH", now=NOW + 10)
+    assert again.connection_id == connection.connection_id
+    assert again.user_label == "work"
+
+
+def test_only_the_owner_of_a_live_connection_can_name_it(h) -> None:
+    mine = h.connect(h.ana)
+    theirs = h.connect(h.bo, provider_account_id="sub-bo", account_label="bo@gmail.com")
+
+    assert h.store.set_labels(h.bo, mine.connection_id, user_label="stolen") is None
+    assert h.store.set_labels(h.ana, theirs.connection_id, user_label="stolen") is None
+    assert h.store.set_labels(h.ana, "con_" + "f" * 24, user_label="ghost") is None
+    assert h.store.set_labels(h.ana, "not-an-id", user_label="ghost") is None
+    assert h.store.set_labels("usr_" + "9" * 24, mine.connection_id, user_label="ghost") is None
+    assert h.store.get_connection(h.ana, mine.connection_id).user_label is None
+    assert h.store.get_connection(h.bo, theirs.connection_id).user_label is None
+
+    # A refused name is refused before anything is written.
+    with pytest.raises(ValueError):
+        h.store.set_labels(h.ana, mine.connection_id, user_label="x" * 200)
+    assert h.store.get_connection(h.ana, mine.connection_id).user_label is None
+
+    # A revoked connection is no longer nameable.
+    h.store.revoke_connection(h.ana, mine.connection_id, now=NOW + 1)
+    assert h.store.set_labels(h.ana, mine.connection_id, user_label="work") is None
+
+
 def _build_version_3_database(path, ring, *, user_id: str, connection_id: str) -> None:
     """A database exactly as the previous slice left it: one row per (user, provider)."""
     from caal import user_store
@@ -522,6 +619,33 @@ def _build_version_3_database(path, ring, *, user_id: str, connection_id: str) -
             ),
         )
         connection.commit()
+
+
+def test_migration_to_version_7_leaves_old_rows_readable_and_nameable(tmp_path) -> None:
+    """A database written before user names keeps everything and simply has none yet."""
+    ring = KeyRing.from_env(profile_crypto.generate_key_material(version=1))
+    path = tmp_path / "assistant.sqlite3"
+    legacy_user = "usr_" + "3" * 24
+    legacy_id = "con_" + "c" * 24
+    _build_version_3_database(path, ring, user_id=legacy_user, connection_id=legacy_id)
+
+    users = UserStore(path, keyring=ring)
+    assert users.schema_version() >= 7
+    store = ConnectionStore(users, keyring=ring, state_secret=SECRET)
+
+    (legacy,) = store.list_connections(legacy_user)
+    assert legacy.account_label == "legacy@gmail.com"
+    assert legacy.user_label is None and legacy.aliases == ()
+    assert store.credentials(legacy_user, legacy_id).access_token == ACCESS
+
+    named = store.set_labels(legacy_user, legacy_id, user_label="work", aliases=["office"])
+    assert named.user_label == "work" and named.aliases == ("office",)
+    # The provider's own label is untouched by naming, and so are the tokens.
+    assert named.account_label == "legacy@gmail.com"
+    assert store.credentials(legacy_user, legacy_id).access_token == ACCESS
+    # Migrating again changes nothing.
+    assert UserStore(path, keyring=ring).schema_version() == users.schema_version()
+    assert store.get_connection(legacy_user, legacy_id).aliases == ("office",)
 
 
 def test_migration_from_version_3_keeps_legacy_connections_and_lets_them_be_claimed(

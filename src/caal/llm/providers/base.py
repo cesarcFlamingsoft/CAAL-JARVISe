@@ -72,6 +72,15 @@ class LLMProvider(ABC):
         """
         return False
 
+    async def reachable(self) -> bool:
+        """Whether this provider can be reached right now.
+
+        A cheap, bounded readiness probe. The default answers yes: a provider
+        that cannot check is assumed available, exactly as before. Callers use
+        it to decide whether a safe local fallback is needed, never to retry.
+        """
+        return True
+
     async def aclose(self) -> None:
         """Release provider-held resources (HTTP clients, sockets)."""
         return None
@@ -95,8 +104,11 @@ class LLMProvider(ABC):
         """
         ...
 
+    # Declared without ``async``: implementations are async generators, so
+    # calling one returns the iterator directly. Declaring it ``async`` here
+    # would type every call site as a coroutine that must be awaited first.
     @abstractmethod
-    async def chat_stream(
+    def chat_stream(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,

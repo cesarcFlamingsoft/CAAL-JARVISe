@@ -444,6 +444,8 @@ def test_callback_completes_the_connection_and_never_returns_tokens(
         "provider",
         "status",
         "account_label",
+        "user_label",
+        "aliases",
         "scopes",
         "token_expires_at",
         "has_refresh_token",
@@ -854,3 +856,125 @@ def test_production_runtime_gets_a_real_exchanger_only_when_a_provider_is_config
         assert connections_api.get_connections_runtime(None) is None
     finally:
         connections_api.reset_connections_runtime()
+
+
+# --- naming one of your own accounts -------------------------------------------------
+
+
+def _rename(harness, client, user_id: str, connection_id: str, **body):
+    return client.patch(
+        f"/users/me/connections/{connection_id}",
+        headers=harness.bearer(user_id),
+        json=body,
+    )
+
+
+def test_naming_a_connection_is_owner_only_and_never_touches_the_grant(
+    harness, client, caplog
+) -> None:
+    mine = _connect(harness, client, harness.ana)
+    assert mine["user_label"] is None and mine["aliases"] == []
+
+    with caplog.at_level(logging.DEBUG):
+        response = _rename(
+            harness,
+            client,
+            harness.ana,
+            mine["connection_id"],
+            user_label="  Work  ",
+            aliases=["Office", "office", " day job "],
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["user_label"] == "Work"
+    assert body["aliases"] == ["Office", "day job"]
+    # The provider decided this, and naming does not touch it.
+    assert body["account_label"] == "ana@gmail.com"
+    assert body["has_refresh_token"] is True
+    assert ACCESS not in response.text and REFRESH not in response.text
+    # What the user typed is never written to a log line.
+    for hidden in ("Work", "Office", "day job", harness.ana):
+        assert hidden not in caplog.text, hidden
+
+    listed = client.get("/users/me/connections", headers=harness.bearer(harness.ana)).json()
+    assert listed["connections"][0]["user_label"] == "Work"
+    assert listed["connections"][0]["aliases"] == ["Office", "day job"]
+
+    # Bo has nothing of his own here, and cannot rename Ana's connection.
+    bo_list = client.get("/users/me/connections", headers=harness.bearer(harness.bo)).json()
+    assert bo_list["connections"] == []
+    denied = _rename(harness, client, harness.bo, mine["connection_id"], user_label="mine now")
+    assert denied.status_code == 404 and denied.json()["detail"] == "not_found"
+    still = client.get("/users/me/connections", headers=harness.bearer(harness.ana)).json()
+    assert still["connections"][0]["user_label"] == "Work"
+
+
+def test_naming_refuses_unknown_ids_bad_payloads_and_unauthenticated_callers(
+    harness, client
+) -> None:
+    mine = _connect(harness, client, harness.ana)
+    connection_id = mine["connection_id"]
+
+    unknown = _rename(harness, client, harness.ana, "con_" + "f" * 24, user_label="ghost")
+    assert unknown.status_code == 404
+    assert _rename(harness, client, harness.ana, "not-an-id", user_label="ghost").status_code == 404
+
+    for bad in (
+        dict(user_label="x" * 200),
+        dict(user_label="line\nbreak"),
+        dict(user_label="-"),
+        dict(aliases=["x" * 200]),
+        dict(aliases=[f"n{index}" for index in range(9)]),
+        dict(aliases="work"),
+        dict(aliases=[7]),
+        dict(account_label="ana@evil.example"),
+    ):
+        refused = _rename(harness, client, harness.ana, connection_id, **bad)
+        assert refused.status_code == 422, (bad, refused.text)
+        assert ACCESS not in refused.text
+
+    # An empty body changes nothing rather than clearing anything by accident.
+    empty = client.patch(
+        f"/users/me/connections/{connection_id}",
+        headers=harness.bearer(harness.ana),
+        json=dict(),
+    )
+    assert empty.status_code == 422 and empty.json()["detail"] == "no_change"
+
+    anonymous = client.patch(f"/users/me/connections/{connection_id}", json=dict(user_label="work"))
+    assert anonymous.status_code == 401
+    agent = client.patch(
+        f"/users/me/connections/{connection_id}",
+        headers=dict(
+            Authorization="Bearer " + harness.principal(harness.ana, audience=AUDIENCE_AGENT)
+        ),
+        json=dict(user_label="work"),
+    )
+    assert agent.status_code in (401, 403)
+    unchanged = client.get("/users/me/connections", headers=harness.bearer(harness.ana)).json()
+    assert unchanged["connections"][0]["user_label"] is None
+
+
+def test_naming_shares_the_per_user_mutation_budget(tmp_path) -> None:
+    harness = Harness(tmp_path, mutation_limit=2)
+    _install(harness)
+    try:
+        with TestClient(webhooks.app) as client:
+            connection = _connect(harness, client, harness.ana)
+            limited = _rename(
+                harness, client, harness.ana, connection["connection_id"], user_label="work"
+            )
+            assert limited.status_code == 429
+    finally:
+        _uninstall()
+
+
+def test_naming_a_revoked_connection_is_not_found(harness, client) -> None:
+    connection = _connect(harness, client, harness.ana)
+    removed = client.delete(
+        f"/users/me/connections/{connection['connection_id']}",
+        headers=harness.bearer(harness.ana),
+    )
+    assert removed.status_code == 204
+    gone = _rename(harness, client, harness.ana, connection["connection_id"], user_label="work")
+    assert gone.status_code == 404 and gone.json()["detail"] == "not_found"

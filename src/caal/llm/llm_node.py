@@ -29,11 +29,23 @@ from typing import TYPE_CHECKING, Any
 
 from caal import settings as settings_module
 from caal.tools import create_default_registry
-from caal.user_scope import memory_unavailable_result, scoped_tool_arguments
+from caal.tools.errors import SafeToolError
+from caal.tools.knowledge_tools import session_unavailable_result
+from caal.user_scope import (
+    memory_unavailable_result,
+    scheduling_unavailable_result,
+    scoped_tool_arguments,
+)
 
 from ..integrations.n8n import execute_n8n_workflow
 from ..utils.formatting import strip_markdown_for_tts
 from .agent_tools import resolve_agent_method_tool
+from .context_barrier import (
+    TOOL_DATA_HEADER,
+    is_knowledge_tool,
+    record_private_answer,
+    sanitize_for_escalation,
+)
 from .providers import LLMProvider
 
 if TYPE_CHECKING:
@@ -47,29 +59,43 @@ __all__ = ["llm_node", "ToolDataCache"]
 class ToolDataCache:
     """Caches recent tool response data for context injection.
 
-    Tool responses often contain structured data (IDs, arrays) that the LLM
-    needs for follow-up calls. This cache preserves that data separately
-    from chat history and injects it into context on each LLM call.
+    Tool responses often carry structured data (ids, arrays) that the LLM needs
+    for a follow-up call. That data is preserved apart from the chat history and
+    injected into context on each LLM call.
+
+    Connected-account data is refused outright. Cached, it would be injected
+    into the context of every later turn -- including one that goes to the
+    Hermes runtime, which must never see it. The local model still gets that
+    result where it actually needs it: in the tool message of the turn that read
+    it, which is what it composes its answer from.
     """
 
     def __init__(self, max_entries: int = 3):
         self.max_entries = max_entries
         self._cache: list[dict] = []
 
-    def add(self, tool_name: str, data: Any) -> None:
-        """Add tool response data to cache."""
-        entry = {"tool": tool_name, "data": data, "timestamp": time.time()}
+    def add(self, tool_name: str, data: Any) -> bool:
+        """Add tool response data to the cache; report whether it was kept."""
+        if is_knowledge_tool(tool_name):
+            logger.debug("Connected-account data is not cached past its own turn")
+            return False
+        entry = dict(tool=tool_name, data=data, timestamp=time.time())
         self._cache.append(entry)
         if len(self._cache) > self.max_entries:
             self._cache.pop(0)  # Remove oldest
+        return True
 
     def get_context_message(self) -> str | None:
-        """Format cached data as context string for LLM injection."""
+        """Format cached data as context string for LLM injection.
+
+        One entry per line: the redaction barrier reads this block line by line
+        if it ever meets one it did not build.
+        """
         if not self._cache:
             return None
-        parts = ["Recent tool response data for reference:"]
+        parts = [TOOL_DATA_HEADER]
         for entry in self._cache:
-            parts.append(f"\n{entry['tool']}: {json.dumps(entry['data'])}")
+            parts.append(entry["tool"] + ": " + json.dumps(entry["data"]))
         return "\n".join(parts)
 
     def clear(self) -> None:
@@ -113,6 +139,13 @@ async def llm_node(
             tool_data_cache=tool_data_cache,
             max_turns=max_turns,
         )
+
+        # A provider that runs its own tool loop is a separate agent runtime
+        # with its own model: everything it is sent crosses the redaction
+        # barrier first, so no connected-account result, account label or
+        # answer composed from either travels with the turn.
+        if provider.manages_own_tools:
+            messages = sanitize_for_escalation(messages)
 
         # Discover tools from agent and MCP servers. Providers that run their
         # own tool loop (Hermes) never receive these schemas, so building the
@@ -166,14 +199,26 @@ async def llm_node(
                 # Pass tools so Ollama can validate tool_calls in message history
                 logger.info("Streaming follow-up response from LLM...")
                 chunk_count = 0
-                full_response = []
+                # An answer composed from a connected-account result is that
+                # same data in sentences, and it returns on later turns as
+                # ordinary assistant transcript. It is recorded as a salted
+                # hash so the barrier can recognise it then; the words
+                # themselves are neither stored nor logged.
+                private_turn = any(
+                    _keeps_contents_private(call.name) for call in response.tool_calls
+                )
+                spoken: list[str] = []
                 async for chunk in provider.chat_stream(messages=messages, tools=tools):
                     chunk_count += 1
-                    full_response.append(chunk)
-                    yield strip_markdown_for_tts(chunk)
-                logger.info(
-                    f"Follow-up complete: {chunk_count} chunks, content: {''.join(full_response)}"
-                )
+                    text = strip_markdown_for_tts(chunk)
+                    if private_turn:
+                        spoken.append(text)
+                    yield text
+                if private_turn:
+                    record_private_answer("".join(spoken))
+                # The answer itself is never logged: a follow-up to a knowledge
+                # tool is the user own mail and calendar, spoken back.
+                logger.info(f"Follow-up complete: {chunk_count} chunks")
                 return
 
             # No tool calls - return content directly
@@ -489,11 +534,18 @@ async def _execute_tool_calls(
     for tool_call in tool_calls:
         tool_name = tool_call.name
         arguments = tool_call.arguments
-        logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+        # A model-chosen argument is the words of the user in another shape: a
+        # search phrase, a reminder title, an address. The log names the tool
+        # and its argument *names*, never a value, for every tool.
+        logger.info(f"Executing tool: {tool_name} (argument names: {sorted(arguments)})")
 
         try:
             tool_result = await _execute_single_tool(agent, tool_name, arguments)
-            logger.info(f"Tool {tool_name} returned: {str(tool_result)[:200]}")
+            if _keeps_contents_private(tool_name) or isinstance(tool_result, dict):
+                status = tool_result.get("status") if isinstance(tool_result, dict) else None
+                logger.info(f"Tool {tool_name} returned status={status}")
+            else:
+                logger.info(f"Tool {tool_name} returned {type(tool_result).__name__}")
 
             # Capture hass_assist results for direct speech
             if tool_name == "hass_assist" and isinstance(tool_result, str):
@@ -520,16 +572,48 @@ async def _execute_tool_calls(
             messages.append(result_message)
 
         except Exception as e:
-            error_msg = f"Error executing tool {tool_name}: {e}"
-            logger.error(error_msg, exc_info=True)
+            # The model is told what to say, not what went wrong: a traceback, a
+            # provider detail or an echo of a private argument must never become
+            # part of a spoken reply.
+            if isinstance(e, SafeToolError):
+                logger.info(f"Tool {tool_name} refused the request")
+                safe = {"status": "invalid_request", "message": str(e), "data": {}}
+            else:
+                logger.error(f"Tool {tool_name} failed: {type(e).__name__}", exc_info=True)
+                safe = {
+                    "status": "error",
+                    "message": (
+                        "That did not go through on my end. Tell the user it failed, say "
+                        "nothing about why, and offer to try again."
+                    ),
+                    "data": {},
+                }
             result_message = provider.format_tool_result(
-                content=error_msg,
+                content=json.dumps(safe),
                 tool_call_id=tool_call.id,
                 tool_name=tool_name,
             )
             messages.append(result_message)
 
     return messages, hass_results
+
+
+# Local tools whose arguments and results are the private words of the user: a
+# reminder title, an alarm label, a note. They are not connected-account
+# knowledge, so they do not cross the Hermes barrier, but they do not belong in
+# the log either, and neither do the row ids they carry.
+PRIVATE_LOCAL_TOOLS = frozenset(
+    {"alarms.set", "reminders.create", "reminders.list", "reminders.set_delivery"}
+)
+
+
+def _keeps_contents_private(tool_name: str) -> bool:
+    """Whether a tool arguments and results stay out of the log.
+
+    Read from the tool catalog rather than from the agent, so a session that
+    never built its own registry still treats connected-account data as private.
+    """
+    return is_knowledge_tool(tool_name) or tool_name in PRIVATE_LOCAL_TOOLS
 
 
 async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
@@ -560,8 +644,15 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         bound = scoped_tool_arguments(tool, arguments, getattr(agent, "_user_scope", None))
         if bound is None:
             logger.info(f"Refused user-scoped tool {tool_name} for an unidentified session")
+            if tool.category == "knowledge":
+                return session_unavailable_result()
+            if tool.category in ("alarms", "reminders"):
+                return scheduling_unavailable_result()
             return memory_unavailable_result()
         result = tool.handler(**bound)
+        if inspect.isawaitable(result):
+            # Knowledge tools read a bounded index and may refresh it first.
+            result = await result
         logger.info(f"Native tool {tool_name} completed")
         return result
 

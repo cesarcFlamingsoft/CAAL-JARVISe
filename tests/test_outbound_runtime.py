@@ -34,11 +34,18 @@ def test_outbound_room_config_rejects_destination_not_in_server_allowlist() -> N
         OutboundRoomConfig.from_dispatch_metadata(metadata, allowed_destinations="+17805558345")
 
 
-def test_only_non_human_amd_categories_trigger_fallback_notification() -> None:
-    assert requires_fallback_notification("machine-vm") is True
-    assert requires_fallback_notification("machine-ivr") is True
-    assert requires_fallback_notification("uncertain") is True
-    assert requires_fallback_notification("human") is False
+def test_non_callback_handoff_failures_are_silent_unless_an_operator_opts_in() -> None:
+    """Default off. The old always-on notice arrived once per failed attempt."""
+    for category in ("machine-vm", "machine-ivr", "uncertain", "human"):
+        assert requires_fallback_notification(category) is False
+        assert requires_fallback_notification(category, notify_enabled=False) is False
+
+
+def test_opted_in_handoff_notification_still_excludes_an_answered_call() -> None:
+    assert requires_fallback_notification("machine-vm", notify_enabled=True) is True
+    assert requires_fallback_notification("machine-ivr", notify_enabled=True) is True
+    assert requires_fallback_notification("uncertain", notify_enabled=True) is True
+    assert requires_fallback_notification("human", notify_enabled=True) is False
 
 
 def test_call_timeouts_are_bounded_timedeltas() -> None:

@@ -39,16 +39,12 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        # Render both LAN and HTTPS configuration so settings such as the
-        # LiveKit API key can safely come from Docker's secret environment.
+        # One renderer for every composition (see livekit-render-config.sh):
+        # LAN or HTTPS templates, credentials from Docker's environment, and
+        # the Redis section only when LIVEKIT_REDIS_ADDRESS is set. A
+        # livekit-only recreate therefore cannot silently drop telephony.
         apk add --no-cache gettext > /dev/null 2>&1
-        if [ -n "$${HTTPS_DOMAIN}" ]; then
-          echo "HTTPS mode: enabling TURN/TLS for $${HTTPS_DOMAIN}"
-          envsubst < /etc/livekit.yaml.template > /etc/livekit.yaml
-        else
-          echo "LAN mode: rendering basic config"
-          envsubst < /etc/livekit-lan.yaml > /etc/livekit.yaml
-        fi
+        sh /etc/livekit-render-config.sh /etc/livekit.yaml
         exec /livekit-server --config /etc/livekit.yaml --node-ip $${CAAL_HOST_IP}
     ports:
       - "7880:7880"       # WebSocket
@@ -56,14 +52,24 @@ services:
       - "7881:7881/udp"   # UDP for WebRTC
       - "5349:5349"       # TURN/TLS (only used in HTTPS mode)
       - "30000-30100:30000-30100/udp"  # TURN relay ports
-      - "40000-40100:40000-40100/udp"  # WebRTC media ports; matches advertised ICE candidates
+      # WebRTC media ports. LiveKit advertises these in its own ICE candidates,
+      # so the host range, the container range and the range in the rendered
+      # config must all be identical.
+      - "50100-50200:50100-50200/udp"
     volumes:
+      - ./livekit-render-config.sh:/etc/livekit-render-config.sh:ro
       - ./livekit.yaml:/etc/livekit-lan.yaml:ro
       - ./livekit-tailscale.yaml.template:/etc/livekit.yaml.template:ro
       - ./certs:/etc/livekit/certs:ro
+    env_file:
+      - ./.env
     environment:
       - HTTPS_DOMAIN=${HTTPS_DOMAIN:-}
       - CAAL_HOST_IP=${CAAL_HOST_IP}
+      # Empty unless telephony is enabled. The telephony overlay sets it, and
+      # an operator running SIP also sets it in .env, so a recreate from this
+      # file alone still comes up Redis-backed. See docs/TELEPHONY.md.
+      - LIVEKIT_REDIS_ADDRESS=${LIVEKIT_REDIS_ADDRESS:-}
     networks:
       - caal-network
     restart: unless-stopped
@@ -79,6 +85,10 @@ services:
   # ===========================================================================
   # Connects to mlx-audio running on host for STT/TTS
   agent:
+    # Pinned to the image that is already built. The durable work service below
+    # runs the same image, so neither service needs a rebuild to pick up code:
+    # the runtime source is bind-mounted into both, at both import paths.
+    image: caal-agent:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -113,12 +123,67 @@ services:
       - caal-config:/app/config  # Runtime config (mcp_servers.json)
       - ./prompt:/app/prompt
       - ./settings.json:/app/settings.json  # Home Assistant & n8n config
+      # Runtime source, read-only, at BOTH import paths the image has: the
+      # non-editable install under .venv (which wins on sys.path) and /app/src.
+      # Mounting both is what makes agent and worker provably run the same code
+      # without rebuilding the image, and without one-off copies into a
+      # container that a restart would throw away.
+      - ./src/caal:/app/.venv/lib/python3.11/site-packages/caal:ro
+      - ./src/caal:/app/src/caal:ro
+      - ./voice_agent.py:/app/voice_agent.py:ro
     networks:
       - caal-network
     depends_on:
       livekit:
         condition: service_healthy
     restart: unless-stopped
+
+  # ===========================================================================
+  # CAAL Durable Work Service - background tasks and callbacks
+  # ===========================================================================
+  # Owns queued work and armed callbacks independently of any LiveKit room or
+  # job. It joins no room, publishes no host port, and answers only on the
+  # internal network. See docs/DURABLE-WORK.md.
+  worker:
+    image: caal-agent:latest
+    container_name: caal-worker
+    platform: linux/arm64
+    command: ["python", "-m", "caal.work_service"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./.env
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - CAAL_WORKER_PORT=${CAAL_WORKER_PORT:-8890}
+      # Verification mode: build and authorize each callback request, then put
+      # the authorization back untouched instead of dispatching a call. Unset
+      # or 0 in normal operation.
+      - CAAL_CALLBACK_DISPATCH_DRY_RUN=${CAAL_CALLBACK_DISPATCH_DRY_RUN:-0}
+      - CAAL_DURABLE_WORK_POLL_SECONDS=${CAAL_DURABLE_WORK_POLL_SECONDS:-5}
+    volumes:
+      - caal-memory:/app/data
+      - caal-config:/app/config
+      - ./prompt:/app/prompt
+      - ./settings.json:/app/settings.json
+      - ./src/caal:/app/.venv/lib/python3.11/site-packages/caal:ro
+      - ./src/caal:/app/src/caal:ro
+    networks:
+      - caal-network
+    depends_on:
+      livekit:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8890/healthz', timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # ===========================================================================
   # Frontend - Next.js Web Interface
@@ -145,6 +210,10 @@ services:
       - CAAL_DEVICE_API_URL=http://agent:8889
       - CAAL_DEVICE_ENROLLMENT_TOKEN=${CAAL_DEVICE_ENROLLMENT_TOKEN:-}
       - WEBHOOK_URL=http://agent:8889
+      # Deployment guard rails for the published build; see
+      # docs/FRONTEND-DEPLOYMENT.md and publish-frontend-build.sh.
+      - CAAL_FRONTEND_ALLOW_BAKED_BUILD=${CAAL_FRONTEND_ALLOW_BAKED_BUILD:-}
+      - CAAL_FRONTEND_EXPECTED_BUILD_ID=${CAAL_FRONTEND_EXPECTED_BUILD_ID:-}
       # Multi-user identity (server-only; see docs/MULTI-USER-IDENTITY.md). The
       # BFF verifies Cloudflare Access assertions itself and signs short-lived
       # principals for the backend with the shared secret. Leave empty for the
@@ -157,6 +226,20 @@ services:
       - CAAL_REQUIRE_IDENTITY_FOR_SESSIONS=${CAAL_REQUIRE_IDENTITY_FOR_SESSIONS:-false}
       - CAAL_PASSWORD_LOGIN=${CAAL_PASSWORD_LOGIN:-true}
       - CAAL_ALLOW_INSECURE_COOKIES=${CAAL_ALLOW_INSECURE_COOKIES:-false}
+    # The image is only a Node runtime: the application it serves is the build
+    # published by ./publish-frontend-build.sh. Mounted read-only at a *side*
+    # path -- never over /app/.next, because Docker creates a missing bind
+    # source as an empty directory, and an empty directory over the runtime
+    # leaves no application at all. See docs/FRONTEND-DEPLOYMENT.md.
+    volumes:
+      - ./frontend/.next-deploy:/app/.next-deploy:ro
+      - ./frontend-build-entrypoint.sh:/app/frontend-build-entrypoint.sh:ro
+    # Root only to install the build into /app; the entrypoint drops to the
+    # unprivileged image user before it execs the server.
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/app/frontend-build-entrypoint.sh"]
+    # Compose clears the image CMD whenever entrypoint is overridden.
+    command: ["node", "server.js"]
     networks:
       - caal-network
     depends_on:

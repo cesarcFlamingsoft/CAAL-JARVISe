@@ -4,6 +4,4 @@ node_modules/
 pnpm-lock.yaml
 .next/
 .env*
-
-
-
+public/hands/

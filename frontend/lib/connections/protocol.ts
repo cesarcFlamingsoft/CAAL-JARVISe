@@ -23,6 +23,10 @@ export const OAUTH_CALLBACK_PATH = '/api/connections/callback';
 export const MAX_CODE_LENGTH = 4096;
 const MAX_MISSING_NAMES = 12;
 const MAX_LABEL_LENGTH = 254;
+/** The user's own name for an account, and their spoken alternatives for it. */
+export const MAX_USER_LABEL_LENGTH = 48;
+export const MAX_ALIAS_LENGTH = 48;
+export const MAX_ALIASES = 8;
 const MAX_SCOPES = 50;
 const MAX_CONNECTIONS = 100;
 
@@ -104,7 +108,11 @@ export interface BrowserConnection {
   connectionId: string;
   provider: Provider;
   status: 'connected';
+  /** The provider's own name for the account, usually its address. Read-only. */
   accountLabel: string | null;
+  /** What the owner calls this account, and the other names they ask for it by. */
+  userLabel: string | null;
+  aliases: string[];
   scopes: string[];
   tokenExpiresAt: number | null;
   hasRefreshToken: boolean;
@@ -128,6 +136,110 @@ export interface BrowserConnectionList {
    * reads as unavailable, so the panel can only ever understate.
    */
   tokenExchangeAvailable: boolean;
+}
+
+// --- the names a user gives their own accounts --------------------------------------
+
+const CONTROL = /[\p{Cc}\p{Cf}]/u;
+
+/** Trimmed, whitespace-collapsed text; null for anything that is not a usable name. */
+export function cleanName(value: unknown, limit: number): string | null {
+  // Tested before the whitespace is collapsed, exactly as the backend does:
+  // a newline in a name is a refusal, not something to quietly flatten.
+  if (typeof value !== 'string' || CONTROL.test(value)) return null;
+  const text = value.trim().replace(/\s+/g, ' ');
+  if (!text || text.length > limit) return null;
+  return text;
+}
+
+/**
+ * The key two names are the same by: accent- and case-free words. Mirrors
+ * `caal.provider_connections.label_key`, so the panel deduplicates exactly
+ * what the backend would.
+ */
+export function nameKey(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    // An apostrophe joins rather than separates: "wife's" and "wifes" match.
+    .replace(/['\u2019\u02bc\u00b4`]/g, '')
+    .replace(/[^0-9a-z]+/g, ' ')
+    .trim();
+}
+
+/** A bounded, deduplicated list of names; anything unusable is dropped. */
+export function cleanNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of value.slice(0, MAX_ALIASES * 4)) {
+    const name = cleanName(entry, MAX_ALIAS_LENGTH);
+    if (!name) continue;
+    const key = nameKey(name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+    if (names.length === MAX_ALIASES) break;
+  }
+  return names;
+}
+
+/** The names the user typed into one comma-separated field. */
+export function parseAliasInput(value: string): string[] {
+  return cleanNames(value.split(','));
+}
+
+export interface AccountNames {
+  userLabel: string | null;
+  aliases: string[];
+}
+
+export type AccountNamesResult =
+  | { ok: true; names: AccountNames }
+  | { ok: false; error: 'invalid_account_name' | 'too_many_names' };
+
+function refused(error: 'invalid_account_name' | 'too_many_names'): AccountNamesResult {
+  return { ok: false, error };
+}
+
+/**
+ * Validate what the browser submitted for one connection's names.
+ *
+ * Each name is normalized exactly as the backend will normalize it, and
+ * nothing about the submitted text ever appears in the failure: only a code.
+ */
+export function accountNamesFrom(body: unknown): AccountNamesResult {
+  const row = record(body);
+  if (!row) return refused('invalid_account_name');
+  const rawLabel = row.user_label;
+  let userLabel: string | null = null;
+  if (rawLabel !== null && rawLabel !== undefined) {
+    if (typeof rawLabel !== 'string') return refused('invalid_account_name');
+    if (rawLabel.trim()) {
+      userLabel = cleanName(rawLabel, MAX_USER_LABEL_LENGTH);
+      if (!userLabel || !nameKey(userLabel)) return refused('invalid_account_name');
+    }
+  }
+  const rawAliases = row.aliases ?? [];
+  if (!Array.isArray(rawAliases)) return refused('invalid_account_name');
+  if (rawAliases.length > MAX_ALIASES * 4) return refused('too_many_names');
+  for (const entry of rawAliases) {
+    if (typeof entry !== 'string') return refused('invalid_account_name');
+    const name = entry.trim() ? cleanName(entry, MAX_ALIAS_LENGTH) : null;
+    if (entry.trim() && (!name || !nameKey(name))) return refused('invalid_account_name');
+  }
+  const aliases = cleanNames(rawAliases);
+  if (aliases.length > MAX_ALIASES) return refused('too_many_names');
+  return { ok: true, names: { userLabel, aliases } };
+}
+
+/** The backend body for a names update. Only these two fields are ever sent. */
+export function accountNamesRequest(names: AccountNames): {
+  user_label: string | null;
+  aliases: string[];
+} {
+  return { user_label: names.userLabel, aliases: names.aliases };
 }
 
 /** One live connection in browser shape, or null for anything not exactly that. */
@@ -154,6 +266,8 @@ export function browserConnection(data: unknown): BrowserConnection | null {
     provider: row.provider,
     status: 'connected',
     accountLabel,
+    userLabel: cleanName(row.user_label, MAX_USER_LABEL_LENGTH),
+    aliases: cleanNames(row.aliases),
     scopes,
     tokenExpiresAt: unixSeconds(row.token_expires_at),
     hasRefreshToken: row.has_refresh_token === true,
@@ -527,6 +641,10 @@ export const CONNECTION_ERROR_TEXT: Record<string, string> = {
   identity_unavailable:
     'The provider did not say which account was approved, so nothing was connected.',
   not_found: 'That connection no longer exists. Refresh the list.',
+  invalid_account_name:
+    'Those names could not be saved. Use short names of up to 48 characters, each containing at least one letter or number.',
+  too_many_names: 'That is too many names for one account. Keep up to 8.',
+  no_change: 'Nothing was changed.',
   backend_unavailable: 'The backend did not respond. Try again shortly.',
 };
 

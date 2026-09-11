@@ -18,6 +18,14 @@ from .handoff_context import ConversationSnapshot
 from .user_scope import require_user_id
 
 _E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+# The opaque row id of a local reminder. Like every other id that travels in
+# dispatch metadata it is checked for shape here, so a job that carries a
+# malformed one is refused before anything is dialed.
+_REMINDER_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def is_valid_reminder_id(value: object) -> bool:
+    return isinstance(value, str) and _REMINDER_ID.fullmatch(value) is not None
 
 
 def verify_control_token(expected: str, provided: str | None) -> bool:
@@ -37,7 +45,10 @@ class OutboundCallStatus(StrEnum):
 class OutboundCallRequest:
     """Validated outbound call request; destination stays server-side."""
 
-    destination: str
+    # Private, like every other identifying field here: an authorized request
+    # is passed around and logged by its callers, and the number it carries is
+    # the one thing in it that names a person.
+    destination: str = field(repr=False)
     attempt_id: str
     status: OutboundCallStatus = OutboundCallStatus.AUTHORIZED
     # Recent conversation carried into the call. Private: it only ever appears
@@ -49,6 +60,9 @@ class OutboundCallRequest:
     # Opaque id of the settled background task this call reports on. Private
     # like the ids above: dispatch metadata only, never room metadata or logs.
     callback_task_id: str | None = field(default=None, repr=False)
+    # Opaque id of the local reminder this call exists to deliver. Private
+    # like the ids above: dispatch metadata only, never room metadata or logs.
+    reminder_id: str | None = field(default=None, repr=False)
     # Opaque id of the verified user this call is placed for. The outbound
     # worker re-resolves that user's approved number before dialing.
     user_id: str | None = field(default=None, repr=False)
@@ -66,6 +80,8 @@ class OutboundCallRequest:
             metadata["conversation_id"] = self.conversation_id
         if self.callback_task_id is not None:
             metadata["callback_task_id"] = self.callback_task_id
+        if self.reminder_id is not None:
+            metadata["reminder_id"] = self.reminder_id
         if self.user_id is not None:
             metadata["user_id"] = self.user_id
         return metadata
@@ -102,6 +118,7 @@ class OutboundCallPolicy:
         snapshot: ConversationSnapshot | None = None,
         conversation_id: str | None = None,
         callback_task_id: str | None = None,
+        reminder_id: str | None = None,
         user_id: str | None = None,
     ) -> OutboundCallRequest:
         if not _E164.fullmatch(destination):
@@ -110,6 +127,8 @@ class OutboundCallPolicy:
             raise PermissionError("Destination is not approved for outbound calling")
         if callback_task_id is not None and not is_valid_task_id(callback_task_id):
             raise ValueError("Callback task id is malformed")
+        if reminder_id is not None and not is_valid_reminder_id(reminder_id):
+            raise ValueError("Reminder id is malformed")
         owner = None if user_id is None else require_user_id(user_id)
         return OutboundCallRequest(
             destination=destination,
@@ -117,6 +136,7 @@ class OutboundCallPolicy:
             snapshot=snapshot,
             conversation_id=conversation_id,
             callback_task_id=callback_task_id,
+            reminder_id=reminder_id,
             user_id=owner,
         )
 

@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 import { ConnectedAccounts } from '@/components/settings/connected-accounts';
+import { LocalModelSettings } from '@/components/settings/local-model';
 import { WeatherLocation } from '@/components/settings/weather-location';
 
 // =============================================================================
@@ -53,12 +54,9 @@ interface Settings {
   agent_name: string;
   prompt: string;
   wake_greetings: string[];
-  // Providers
-  llm_provider: 'ollama' | 'groq';
-  ollama_host: string;
-  ollama_model: string;
-  groq_api_key: string;
-  groq_model: string;
+  // Providers. The LLM side is not chosen here: JARVIS routes every turn
+  // (local Ollama, Hermes escalation, Hermes coding delegation) and the local
+  // endpoint and model are owned by the local-model settings route.
   tts_provider: 'kokoro' | 'piper';
   tts_voice_kokoro: string;
   tts_voice_piper: string;
@@ -128,11 +126,6 @@ const DEFAULT_SETTINGS: Settings = {
   agent_name: 'Cal',
   prompt: 'default',
   wake_greetings: ["Hey, what's up?", "What's up?", 'How can I help?'],
-  llm_provider: 'ollama',
-  ollama_host: 'http://localhost:11434',
-  ollama_model: '',
-  groq_api_key: '',
-  groq_model: '',
   tts_provider: 'kokoro',
   tts_voice_kokoro: 'am_puck',
   tts_voice_piper: 'speaches-ai/piper-en_US-ryan-high',
@@ -250,8 +243,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [promptContent, setPromptContent] = useState('');
   const [voices, setVoices] = useState<string[]>([]);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [groqModels, setGroqModels] = useState<string[]>([]);
   const [wakeWordModels, setWakeWordModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -259,14 +250,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [error, setError] = useState<string | null>(null);
 
   // Test states
-  const [ollamaTest, setOllamaTest] = useState<{ status: TestStatus; error: string | null }>({
-    status: 'idle',
-    error: null,
-  });
-  const [groqTest, setGroqTest] = useState<{ status: TestStatus; error: string | null }>({
-    status: 'idle',
-    error: null,
-  });
   const [hassTest, setHassTest] = useState<{
     status: TestStatus;
     error: string | null;
@@ -648,69 +631,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   // Test connections
   // ---------------------------------------------------------------------------
 
-  const testOllama = useCallback(async () => {
-    if (!settings.ollama_host) return;
-    setOllamaTest({ status: 'testing', error: null });
-
-    try {
-      const res = await fetch('/api/setup/test-ollama', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: settings.ollama_host }),
-      });
-      const result = await res.json();
-
-      if (result.success) {
-        setOllamaTest({ status: 'success', error: null });
-        setOllamaModels(result.models || []);
-        if (!settings.ollama_model && result.models?.length > 0) {
-          setSettings((s) => ({ ...s, ollama_model: result.models[0] }));
-        }
-      } else {
-        setOllamaTest({ status: 'error', error: result.error || 'Connection failed' });
-      }
-    } catch {
-      setOllamaTest({ status: 'error', error: 'Failed to connect' });
-    }
-  }, [settings.ollama_host, settings.ollama_model]);
-
-  const testGroq = useCallback(async () => {
-    if (!settings.groq_api_key) return;
-    setGroqTest({ status: 'testing', error: null });
-
-    try {
-      const res = await fetch('/api/setup/test-groq', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: settings.groq_api_key }),
-      });
-      const result = await res.json();
-
-      if (result.success) {
-        setGroqTest({ status: 'success', error: null });
-        setGroqModels(result.models || []);
-        if (!settings.groq_model && result.models?.length > 0) {
-          const preferredModel = 'llama-3.3-70b-versatile';
-          const selectedModel = result.models.includes(preferredModel)
-            ? preferredModel
-            : result.models[0];
-          setSettings((s) => ({ ...s, groq_model: selectedModel }));
-        }
-      } else {
-        setGroqTest({ status: 'error', error: result.error || 'Invalid API key' });
-      }
-    } catch {
-      setGroqTest({ status: 'error', error: 'Failed to validate' });
-    }
-  }, [settings.groq_api_key, settings.groq_model]);
-
-  // Auto-fetch Groq models when API key is available and models not yet loaded
-  useEffect(() => {
-    if (isOpen && settings.groq_api_key && groqModels.length === 0 && !loading) {
-      testGroq();
-    }
-  }, [isOpen, settings.groq_api_key, groqModels.length, loading, testGroq]);
-
   const fetchHassAgents = useCallback(async () => {
     if (!settings.hass_host || !settings.hass_token) return;
     try {
@@ -882,12 +802,18 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     setError(null);
 
     try {
-      // Transform n8n URL and filter empty wake greetings
-      const finalSettings = {
+      // Transform n8n URL and filter empty wake greetings. The local model
+      // keys are deliberately left out: they are saved by the local-model
+      // route, and posting the copy this panel loaded would undo a change
+      // made there since.
+      const finalSettings: Record<string, unknown> = {
         ...settings,
         n8n_url: settings.n8n_enabled ? getN8nMcpUrl(settings.n8n_url) : settings.n8n_url,
         wake_greetings: settings.wake_greetings.filter((g) => g.trim()),
       };
+      for (const owned of ['llm_provider', 'ollama_host', 'ollama_model']) {
+        delete finalSettings[owned];
+      }
 
       // Save settings
       const settingsRes = await fetch('/api/settings', {
@@ -1123,173 +1049,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
   const renderProvidersTab = () => (
     <div className="space-y-8">
-      {/* LLM Provider */}
-      <div className="space-y-4">
-        <label className="text-muted-foreground text-xs font-bold tracking-wide uppercase">
-          LLM Provider
-        </label>
-        <div className="bg-muted inline-flex rounded-lg p-1">
-          <button
-            onClick={() => setSettings({ ...settings, llm_provider: 'ollama' })}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              settings.llm_provider === 'ollama'
-                ? 'bg-background text-foreground shadow'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Ollama
-          </button>
-          <button
-            onClick={() => setSettings({ ...settings, llm_provider: 'groq' })}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              settings.llm_provider === 'groq'
-                ? 'bg-background text-foreground shadow'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Groq
-          </button>
-        </div>
-
-        {settings.llm_provider === 'ollama' ? (
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Host URL</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={settings.ollama_host}
-                  onChange={(e) => setSettings({ ...settings, ollama_host: e.target.value })}
-                  placeholder="http://localhost:11434"
-                  className="border-input bg-background flex-1 rounded-lg border px-4 py-3 text-sm"
-                />
-                <button
-                  onClick={testOllama}
-                  disabled={!settings.ollama_host || ollamaTest.status === 'testing'}
-                  className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
-                >
-                  <TestStatusIcon status={ollamaTest.status} />
-                  Test
-                </button>
-              </div>
-              {ollamaTest.error && <p className="text-xs text-red-500">{ollamaTest.error}</p>}
-              {ollamaTest.status === 'success' && (
-                <p className="text-xs text-green-500">{ollamaModels.length} models available</p>
-              )}
-            </div>
-
-            {/* Show model dropdown if we have models from test OR if model is already configured */}
-            {(ollamaModels.length > 0 || settings.ollama_model) && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Model</label>
-                <select
-                  value={settings.ollama_model}
-                  onChange={(e) => setSettings({ ...settings, ollama_model: e.target.value })}
-                  className="border-input bg-background w-full rounded-lg border px-4 py-3 text-sm"
-                >
-                  {ollamaModels.length > 0 ? (
-                    <>
-                      <option value="">Select a model...</option>
-                      {ollamaModels.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </>
-                  ) : (
-                    <option value={settings.ollama_model}>{settings.ollama_model}</option>
-                  )}
-                </select>
-                {ollamaModels.length === 0 && settings.ollama_model && (
-                  <p className="text-muted-foreground text-xs">
-                    Test connection to see all available models
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">API Key</label>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={settings.groq_api_key}
-                  onChange={(e) => setSettings({ ...settings, groq_api_key: e.target.value })}
-                  placeholder="gsk_..."
-                  className="border-input bg-background flex-1 rounded-lg border px-4 py-3 text-sm"
-                />
-                <button
-                  onClick={testGroq}
-                  disabled={!settings.groq_api_key || groqTest.status === 'testing'}
-                  className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
-                >
-                  <TestStatusIcon status={groqTest.status} />
-                  Test
-                </button>
-              </div>
-              {groqTest.error && <p className="text-xs text-red-500">{groqTest.error}</p>}
-              {groqTest.status === 'success' && (
-                <p className="text-xs text-green-500">{groqModels.length} models available</p>
-              )}
-              <p className="text-muted-foreground text-xs">
-                Get your API key at{' '}
-                <a
-                  href="https://console.groq.com/keys"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
-                >
-                  console.groq.com
-                </a>
-              </p>
-            </div>
-
-            {/* Show model dropdown if we have models from test OR if model is already configured */}
-            {(groqModels.length > 0 || settings.groq_model) && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Model</label>
-                <select
-                  value={settings.groq_model}
-                  onChange={(e) => setSettings({ ...settings, groq_model: e.target.value })}
-                  className="border-input bg-background w-full rounded-lg border px-4 py-3 text-sm"
-                >
-                  {groqModels.length > 0 ? (
-                    <>
-                      <option value="">Select a model...</option>
-                      {[...groqModels].sort().map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </>
-                  ) : (
-                    <option value={settings.groq_model}>{settings.groq_model}</option>
-                  )}
-                </select>
-                {groqModels.length === 0 && settings.groq_model && (
-                  <p className="text-muted-foreground text-xs">
-                    Enter API key and test to see all available models
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* STT Info */}
-        <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
-          <p className="text-sm text-blue-200">
-            <span className="font-semibold">STT Provider:</span>{' '}
-            {settings.llm_provider === 'ollama' ? 'Speaches (local)' : 'Groq Whisper'}
-            <br />
-            <span className="text-xs opacity-70">
-              Automatically selected based on LLM provider.
-            </span>
-          </p>
-        </div>
-      </div>
+      {/* The local model, and what the routing does with it. There is no
+          provider chooser: JARVIS runs the local Ollama model, escalates work
+          that needs an agent harness to Hermes, and sends anything about code
+          to Hermes coding delegation. */}
+      <LocalModelSettings />
 
       {/* TTS Provider */}
       <div className="space-y-4">

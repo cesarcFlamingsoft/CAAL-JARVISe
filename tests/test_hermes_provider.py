@@ -8,13 +8,22 @@ from caal.llm.providers import create_provider_from_settings
 from caal.settings import DEFAULT_SETTINGS
 
 
-def test_hermes_is_the_default_runtime_llm_provider() -> None:
-    assert DEFAULT_SETTINGS["llm_provider"] == "hermes"
+def test_hermes_is_the_configured_escalation_not_the_default_runtime() -> None:
+    """The local model is the main model; Hermes stays configured behind it.
+
+    JARVIS answers ordinary turns on the local Ollama model and escalates only
+    what needs an agent harness, so the shipped provider is the router, not
+    Hermes itself. Hermes' connection settings keep their defaults so an
+    operator who configures a key gets the escalation with nothing else to do.
+    """
+    assert DEFAULT_SETTINGS["llm_provider"] == "routed"
+    assert DEFAULT_SETTINGS["ollama_model"] == "qwen3:8b"
     assert DEFAULT_SETTINGS["hermes_api_url"] == "http://host.docker.internal:8642/v1"
     assert DEFAULT_SETTINGS["hermes_model"] == "hermes-agent"
 
 
 def test_voice_agent_passes_hermes_connection_settings_to_provider_factory(monkeypatch) -> None:
+    """The routed default still carries every Hermes setting to the factory."""
     import importlib.util
     from pathlib import Path
 
@@ -35,7 +44,7 @@ def test_voice_agent_passes_hermes_connection_settings_to_provider_factory(monke
 
     runtime = voice_agent.get_runtime_settings()
 
-    assert runtime["llm_provider"] == "hermes"
+    assert runtime["llm_provider"] == "routed"
     assert runtime["hermes_api_url"] == "http://host.docker.internal:8642/v1"
     assert runtime["hermes_api_key"] == "test-key"
     assert runtime["hermes_model"] == "hermes-agent"
@@ -80,7 +89,7 @@ async def test_hermes_provider_sends_openai_compatible_chat_request(monkeypatch)
         async def __aexit__(self, *args) -> None:
             return None
 
-        async def post(self, url, *, json, headers):
+        async def post(self, url, *, json, headers, **kwargs):
             captured.update(url=url, json=json, headers=headers)
             return FakeResponse()
 
@@ -130,7 +139,7 @@ async def test_hermes_provider_adds_a_user_turn_for_instruction_only_context(mon
         async def __aexit__(self, *args) -> None:
             return None
 
-        async def post(self, url, *, json, headers):
+        async def post(self, url, *, json, headers, **kwargs):
             captured.update(json=json)
             return FakeResponse()
 
@@ -212,7 +221,7 @@ class _FakeStreamClient:
         self._captured.update(method=method, url=url, json=json, headers=headers)
         return _FakeStreamContext(self._response)
 
-    async def post(self, url, *, json, headers):
+    async def post(self, url, *, json, headers, **kwargs):
         raise AssertionError("chat_stream must use the streaming request, not post()")
 
     async def aclose(self) -> None:
@@ -431,7 +440,7 @@ async def test_hermes_chat_remains_non_streaming(monkeypatch) -> None:
             return {"choices": [{"message": {"content": "Ready, Cesar."}}]}
 
     class FakeClient:
-        async def post(self, url, *, json, headers):
+        async def post(self, url, *, json, headers, **kwargs):
             captured.update(json=json)
             return FakeResponse()
 

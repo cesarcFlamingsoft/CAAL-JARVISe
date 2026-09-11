@@ -27,14 +27,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        if [ -n "$${HTTPS_DOMAIN}" ]; then
-          echo "HTTPS mode: enabling TURN/TLS for $${HTTPS_DOMAIN}"
-          apk add --no-cache gettext > /dev/null 2>&1
-          envsubst < /etc/livekit.yaml.template > /etc/livekit.yaml
-        else
-          echo "LAN mode: using basic config"
-          cp /etc/livekit-lan.yaml /etc/livekit.yaml
-        fi
+        # One renderer for every composition; see livekit-render-config.sh.
+        apk add --no-cache gettext > /dev/null 2>&1
+        sh /etc/livekit-render-config.sh /etc/livekit.yaml
         exec /livekit-server --config /etc/livekit.yaml --node-ip $${CAAL_HOST_IP}
     ports:
       - "7880:7880"       # WebSocket
@@ -42,14 +37,18 @@ services:
       - "7881:7881/udp"   # UDP for WebRTC
       - "5349:5349"       # TURN/TLS (only used in HTTPS mode)
       - "30000-30100:30000-30100/udp"  # TURN relay ports
-      - "50000-50100:50000-50100/udp"  # WebRTC media ports
+      - "50100-50200:50100-50200/udp"  # WebRTC media ports; matches the rendered config
     volumes:
+      - ./livekit-render-config.sh:/etc/livekit-render-config.sh:ro
       - ./livekit.yaml:/etc/livekit-lan.yaml:ro
       - ./livekit-tailscale.yaml.template:/etc/livekit.yaml.template:ro
       - ./certs:/etc/livekit/certs:ro
+    env_file:
+      - ./.env
     environment:
       - HTTPS_DOMAIN=${HTTPS_DOMAIN:-}
       - CAAL_HOST_IP=${CAAL_HOST_IP}
+      - LIVEKIT_REDIS_ADDRESS=${LIVEKIT_REDIS_ADDRESS:-}
     networks:
       - caal-network
     restart: unless-stopped
@@ -135,6 +134,24 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
       - WEBHOOK_URL=http://agent:8889
+      # Deployment guard rails for the published build; see
+      # docs/FRONTEND-DEPLOYMENT.md and publish-frontend-build.sh.
+      - CAAL_FRONTEND_ALLOW_BAKED_BUILD=${CAAL_FRONTEND_ALLOW_BAKED_BUILD:-}
+      - CAAL_FRONTEND_EXPECTED_BUILD_ID=${CAAL_FRONTEND_EXPECTED_BUILD_ID:-}
+    # The image is only a Node runtime: the application it serves is the build
+    # published by ./publish-frontend-build.sh. Mounted read-only at a *side*
+    # path -- never over /app/.next, because Docker creates a missing bind
+    # source as an empty directory, and an empty directory over the runtime
+    # leaves no application at all. See docs/FRONTEND-DEPLOYMENT.md.
+    volumes:
+      - ./frontend/.next-deploy:/app/.next-deploy:ro
+      - ./frontend-build-entrypoint.sh:/app/frontend-build-entrypoint.sh:ro
+    # Root only to install the build into /app; the entrypoint drops to the
+    # unprivileged image user before it execs the server.
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/app/frontend-build-entrypoint.sh"]
+    # Compose clears the image CMD whenever entrypoint is overridden.
+    command: ["node", "server.js"]
     networks:
       - caal-network
     depends_on:

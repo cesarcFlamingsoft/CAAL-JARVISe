@@ -141,12 +141,27 @@ def test_user_scope_states() -> None:
     assert "Ana" not in repr(ana)
 
 
-def test_registry_marks_memory_tools_as_user_scoped_and_nothing_else() -> None:
+def test_registry_marks_every_per_user_tool_as_user_scoped_and_nothing_else() -> None:
     registry = create_default_registry()
 
-    scoped = {tool.name for tool in registry.list() if tool.user_scoped}
+    scoped = set(tool.name for tool in registry.list() if tool.user_scoped)
 
-    assert scoped == {"memory.remember", "memory.recall"}
+    assert scoped == set(
+        [
+            "memory.remember",
+            "memory.recall",
+            "inbox.recent",
+            "inbox.search",
+            "inbox.read_summary",
+            "schedule.upcoming",
+            "schedule.next",
+            "schedule.find_event",
+            "alarms.set",
+            "reminders.create",
+            "reminders.set_delivery",
+            "reminders.list",
+        ]
+    )
     for name in ("memory.remember", "memory.recall"):
         assert "user_id" not in registry.get(name).parameters["properties"]
 
@@ -166,8 +181,13 @@ def test_scoped_arguments_strip_llm_supplied_user_ids_and_bind_the_session_user(
     }
     assert scoped_tool_arguments(tool, llm_args, UserScope.anonymous()) is None
     # Unscoped tools are passed through untouched.
-    plain = registry.get("alarms.set")
-    assert scoped_tool_arguments(plain, {"label": "x"}, UserScope.anonymous()) == {"label": "x"}
+    plain = registry.get("calendar.list_events")
+    assert scoped_tool_arguments(plain, {"source": "all"}, UserScope.anonymous()) == {
+        "source": "all"
+    }
+    # Alarms and reminders are owned too: an anonymous session reaches no store.
+    for name in ("alarms.set", "reminders.create"):
+        assert scoped_tool_arguments(registry.get(name), {}, UserScope.anonymous()) is None
 
 
 # --- dispatch through the LLM node -----------------------------------------------------

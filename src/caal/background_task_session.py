@@ -44,21 +44,27 @@ from caal.background_tasks import (
     BackgroundTask,
     BackgroundTaskRunner,
     QueueFullError,
+    abandon_callback_dispatch,
     arm_callback,
     cancel,
-    claim_callback_target,
+    claim_callback_dispatch,
+    claim_callback_notice,
     claim_next_notification,
     claim_notification,
+    complete_callback_dispatch,
     enqueue,
     get_task,
     list_tasks,
+    pending_callback_notices,
     pending_notifications,
     redact_secrets,
+    release_callback_dispatch,
 )
 from caal.conversation_ledger import is_valid_conversation_id
 from caal.end_call_intent import END_CALL_CONTROL_REPLIES
 from caal.handoff_context import capture_conversation_snapshot
 from caal.handoff_intent import HANDOFF_CONTROL_REPLIES
+from caal.model_routing import Destination, classify_request
 from caal.telegram_notify import MAX_TEXT_CHARS
 from caal.user_scope import require_user_id
 from caal.work_router import Route, SemanticWorkRouter
@@ -93,6 +99,19 @@ LONG_WORK_OFFER_CALLBACK_REPLY = (
     "Understood. I'll get started on that now. "
     "This will take a while. Would you like me to call you when it's done?"
 )
+# A coding request is delegated to the Hermes agent runtime, which carries it
+# out with its own Claude Code capability. That takes far longer than a voice
+# turn, so it is queued like any other durable work. The acknowledgement says
+# what will actually happen and claims nothing about the outcome.
+CODING_ACK_REPLY = (
+    "Understood. That's a coding job, so I'll run it through Claude Code "
+    "and tell you what it finds."
+)
+# The same on a phone call, where the answer can only reach the next turn.
+CODING_OFFER_CALLBACK_REPLY = (
+    "Understood. That's a coding job, so I'll run it through Claude Code. "
+    "This will take a while. Would you like me to call you when it's done?"
+)
 BACKGROUND_CONTROL_REPLIES = (
     BACKGROUND_ACK_REPLY,
     BACKGROUND_BUSY_REPLY,
@@ -104,6 +123,8 @@ BACKGROUND_CONTROL_REPLIES = (
     CALLBACK_NOTHING_RUNNING_REPLY,
     LONG_WORK_ACK_REPLY,
     LONG_WORK_OFFER_CALLBACK_REPLY,
+    CODING_ACK_REPLY,
+    CODING_OFFER_CALLBACK_REPLY,
 )
 
 
@@ -136,8 +157,13 @@ _INTERRUPTED_MESSAGE = (
     "Let me know if you'd like me to try again."
 )
 _FALLBACK_PREFIX = "JARVIS background task: "
-_CALLBACK_UNANSWERED_PREFIX = (
-    "I tried to call you back about the background task, but the call wasn't answered. "
+# The one line a callback that will never happen owes its owner. It names no
+# task, no id and no number, does not claim a call took place, and never asks
+# for a number: callback destinations come from the profile an administrator
+# controls, and are not negotiable over chat.
+CALLBACK_ABANDONED_NOTICE = (
+    "JARVIS: I could not complete a callback I owed you, so I have stopped trying. "
+    "The outcome is waiting for you here whenever you want it."
 )
 _CALLBACK_EMPTY_OUTCOME = (
     "I'm calling back about the task you asked me to work on in the background, "
@@ -250,17 +276,6 @@ def callback_outcome_message(task_id: str) -> str:
     return message or _CALLBACK_EMPTY_OUTCOME
 
 
-def callback_unanswered_notification(task_id: str) -> str:
-    """Bounded fallback text when the callback reached no human. Empty means send nothing."""
-    task = get_task(task_id)
-    if task is None:
-        return ""
-    body = fallback_notification(task)
-    if not body:
-        return ""
-    return _bound(f"{_CALLBACK_UNANSWERED_PREFIX}{body}", MAX_FALLBACK_CHARS)
-
-
 def capture_task_context(session: Any) -> str:
     """Bounded, redacted recent conversation framed as private context.
 
@@ -357,6 +372,7 @@ class BackgroundTaskBridge:
         user_id: str | None = None,
         dial_user_callback: DialUserCallback | None = None,
         work_router: SemanticWorkRouter | None = None,
+        coding_execute: Execute | None = None,
     ) -> None:
         """``session_key`` is the room; ``conversation_id`` the ledger conversation, if any.
 
@@ -364,6 +380,13 @@ class BackgroundTaskBridge:
         derived owner key (see :func:`owner_key_for`). ``user_id`` is the
         verified user this session acts for; every queue read and write is
         additionally bound to that scope (``None`` = legacy, unscoped work).
+
+        ``coding_execute`` is the coding worker: the Hermes delegate built by
+        :func:`caal.coding_delegation.build_coding_delegate`. With one
+        configured, a turn read as a coding request by
+        :func:`caal.model_routing.classify_request` is queued for it instead of
+        for the LLM worker; without one, coding turns are left to the ordinary
+        path exactly as before.
 
         ``work_router`` reads each turn. The default is the offline router,
         which is exactly the deterministic behaviour that predates it; a caller
@@ -380,6 +403,12 @@ class BackgroundTaskBridge:
         self._dial_callback = dial_callback
         self._dial_user_callback = dial_user_callback
         self._router = work_router or SemanticWorkRouter()
+        # The coding worker, when this deployment configured one. Coding work
+        # is queued in the same durable store as everything else; only which
+        # worker runs it differs, and that is decided here, once, from the
+        # deterministic reading of the turn.
+        self._coding = coding_execute
+        self._coding_tasks: set[str] = set()
         self._contexts: dict[str, str] = {}
         self._context_source: Callable[[], str] | None = None
         self._runner = BackgroundTaskRunner(
@@ -471,11 +500,28 @@ class BackgroundTaskBridge:
         work is genuinely queued. The offer is reported back so the caller can
         hold the question for the next turn.
 
+        A coding request is claimed first, before the semantic router is asked
+        anything: it is decided offline, it never reaches a chat model, and it
+        is queued for the Hermes coding delegate rather than the LLM one. The
+        queue's own control commands (cancel, status) keep their authority --
+        :func:`caal.model_routing.classify_request` never claims them.
+
         A routing failure can only ever leave the turn as conversation, so an
         unreachable router costs a semantic reading, never a hung turn.
         """
         if not isinstance(text, str) or not text.strip() or self._closed:
             return BackgroundTurnOutcome(consumed=False)
+        coding = self._coding_requested(text)
+        if coding:
+            ack = CODING_OFFER_CALLBACK_REPLY if offer_callback else CODING_ACK_REPLY
+            scheduled = await self._schedule(text, session, ack=ack, coding=True)
+            if scheduled and auto_callback is not None:
+                await self._run_auto_callback(auto_callback)
+            return BackgroundTurnOutcome(
+                consumed=True,
+                scheduled=scheduled,
+                callback_offered=scheduled and offer_callback and auto_callback is None,
+            )
         try:
             decision = await self._router.route(text)
         except Exception:
@@ -518,7 +564,18 @@ class BackgroundTaskBridge:
             # into a lost task.
             logger.exception("Automatic background-task callback arming failed")
 
-    async def _schedule(self, text: str, session: Any, *, ack: str) -> bool:
+    def _coding_requested(self, text: str) -> bool:
+        """Whether this turn is a coding request this deployment can carry out."""
+        if self._coding is None:
+            return False
+        try:
+            return classify_request(text).destination is Destination.CODING
+        except Exception:
+            # No exception text: it could carry the request back into the log.
+            logger.warning("Could not classify a turn for coding delegation")
+            return False
+
+    async def _schedule(self, text: str, session: Any, *, ack: str, coding: bool = False) -> bool:
         """Queue the request and speak ``ack``; report whether it was queued."""
         context = ""
         if self._context_source is not None:
@@ -536,9 +593,16 @@ class BackgroundTaskBridge:
             logger.exception("Background task could not be scheduled")
             await self._say(session, BACKGROUND_BUSY_REPLY)
             return False
+        if coding:
+            # Which worker runs it is decided once, here, and never from the
+            # stored request text.
+            self._coding_tasks.add(task.task_id)
+            context = ""
         self._contexts[task.task_id] = context
         self._runner.poke()
-        logger.info("Background task scheduled (%d context chars)", len(context))
+        logger.info(
+            "Background task scheduled (coding=%s, %d context chars)", coding, len(context)
+        )
         await self._say(session, ack)
         return True
 
@@ -609,33 +673,40 @@ class BackgroundTaskBridge:
     async def _place_callback(self, task_id: str) -> bool:
         """Dial the armed callback for a settled task, exactly once.
 
-        The authorization is consumed first, then the outcome's notification is
-        claimed so nobody else announces what the call is about to deliver. A
-        dial that cannot happen hands the outcome to the fallback instead.
+        The authorization and the right to announce the outcome are won in one
+        atomic claim, so this session, another session, and the durable work
+        service can all try at once and only one of them ever dials.
+
+        A session is a best-effort dispatcher, never the durable one: if it
+        cannot hand the call off, the authorization goes straight back to the
+        store for the durable dispatcher to retry. The outcome is never
+        recorded as delivered on the strength of a dial that did not happen.
         """
-        target = claim_callback_target(task_id, self._owner_key)
-        if target is None:
+        claim = claim_callback_dispatch(task_id, self._owner_key)
+        if claim is None:
             return False
-        task = claim_notification(task_id, self._owner_key)
-        if task is None:
-            # Already announced elsewhere; nothing left to call about.
-            return True
-        if target.user_id is not None:
+        if claim.user_id is not None:
             dialer = self._dial_user_callback
-            argument: str | None = target.user_id
+            argument: str | None = claim.user_id
         else:
             dialer = self._dial_callback
-            argument = target.destination
+            argument = claim.destination
         if dialer is None or argument is None:
+            # Nothing in this process can dial. Give the outcome to the
+            # fallback rather than holding an authorization nobody can use.
+            abandon_callback_dispatch(task_id, self._owner_key)
             logger.warning("No dialer for a background task callback; using fallback")
-            await self._send_fallback(task)
+            task = claim_notification(task_id, self._owner_key)
+            if task is not None:
+                await self._send_fallback(task)
             return True
         try:
             await dialer(argument, task_id)
         except Exception:
-            logger.warning("Background task callback dial failed", exc_info=False)
-            await self._send_fallback(task)
+            release_callback_dispatch(task_id, self._owner_key, delay_seconds=0)
+            logger.warning("Background task callback dial failed; left to the durable dispatcher")
             return True
+        complete_callback_dispatch(task_id, self._owner_key)
         logger.info("Background task callback dispatched")
         return True
 
@@ -643,6 +714,13 @@ class BackgroundTaskBridge:
 
     async def _run_task(self, task: BackgroundTask) -> str:
         context = self._contexts.pop(task.task_id, "")
+        if task.task_id in self._coding_tasks:
+            self._coding_tasks.discard(task.task_id)
+            assert self._coding is not None
+            # The transcript is deliberately not forwarded to a coding job: it
+            # would cross to the agent runtime, and a coding job needs the
+            # request, not the conversation.
+            return await self._coding(task.request, "")
         task_runner = getattr(self._execute, "run_task", None)
         if callable(task_runner):
             runner = cast(Callable[[BackgroundTask, str], Awaitable[str]], task_runner)
@@ -670,11 +748,19 @@ class BackgroundTaskBridge:
     # -- notifications -------------------------------------------------------
 
     async def deliver_pending(self, session: Any) -> int:
-        """Speak every unannounced outcome of this session's tasks, once each."""
+        """Speak every unannounced outcome of this session's tasks, once each.
+
+        An outcome an unclaimed callback still covers is left alone: the user
+        asked to be *called back* about that one, and exactly one owner must
+        receive exactly one completion channel.
+        """
         delivered = 0
         while True:
             task = claim_next_notification(
-                self._owner_key, self._owner_key, user_id=self._user_id
+                self._owner_key,
+                self._owner_key,
+                user_id=self._user_id,
+                exclude_callback_armed=True,
             )
             if task is None:
                 return delivered
@@ -702,14 +788,47 @@ class BackgroundTaskBridge:
             return 0
         cutoff = time.time() - min_age_seconds
         sent = 0
-        for candidate in pending_notifications(user_id=self._user_id):
+        for candidate in pending_notifications(
+            user_id=self._user_id, exclude_callback_armed=True
+        ):
             if candidate.session_key == self._owner_key:
                 continue
             if (candidate.finished_at or 0) > cutoff:
                 continue
-            task = claim_notification(candidate.task_id, self._owner_key)
+            task = claim_notification(
+                candidate.task_id, self._owner_key, exclude_callback_armed=True
+            )
             if task is not None and await self._send_fallback(task):
                 sent += 1
+        return sent
+
+    async def flush_callback_notices(self) -> int:
+        """Deliver the one line an abandoned callback owes this session owner.
+
+        A notice is queued only where a callback is finished failing: its
+        bounded retry budget is spent, or it was explicitly cancelled out of
+        session. Attempts, restarts, reclaimed leases and hand-offs of unknown
+        fate queue nothing, so this loop is silent for everything the dispatcher
+        is still working on.
+
+        The claim is atomic and per task, so several sessions and several
+        workers cannot multiply one notice. A claim that then fails to send is
+        not put back: one missed line is better than the stream of prompts this
+        policy exists to stop, and the outcome itself still reaches the owner
+        through the ordinary announcement channel.
+        """
+        if self._fallback is None:
+            return 0
+        sent = 0
+        for task_id in pending_callback_notices(user_id=self._user_id):
+            if not claim_callback_notice(task_id, self._owner_key):
+                continue
+            try:
+                await self._fallback(CALLBACK_ABANDONED_NOTICE)
+            except Exception:
+                logger.warning("Could not deliver an abandoned-callback notice")
+                continue
+            sent += 1
         return sent
 
     async def _send_fallback(self, task: BackgroundTask) -> bool:
@@ -743,11 +862,12 @@ class BackgroundTaskBridge:
     async def close(self) -> int:
         """The session is over; its background work is not.
 
-        Returns immediately: queued and running tasks keep going in this
-        process, and each outcome is handed to the fallback channel exactly
-        once as it lands. Outcomes that already landed go now. Without a
-        fallback they stay unannounced so a later session of the same room
-        can still speak them. Only a process restart interrupts the work.
+        Returns immediately: queued and running tasks keep going, here while
+        this process lives and in the durable work service afterwards, and each
+        outcome is handed to the fallback channel exactly once as it lands --
+        unless a callback is armed for it, which outranks every other channel.
+        Outcomes that already landed go now. Without a fallback they stay
+        unannounced so a later session, or the callback, can still deliver them.
         """
         self._closed = True
         if self._fallback is None:
@@ -755,7 +875,10 @@ class BackgroundTaskBridge:
         sent = 0
         while True:
             task = claim_next_notification(
-                self._owner_key, self._owner_key, user_id=self._user_id
+                self._owner_key,
+                self._owner_key,
+                user_id=self._user_id,
+                exclude_callback_armed=True,
             )
             if task is None:
                 return sent
@@ -763,13 +886,17 @@ class BackgroundTaskBridge:
                 sent += 1
 
     async def abandon(self) -> None:
-        """Process teardown only: interrupt whatever is still running.
+        """Process teardown only: hand whatever is still running back to the queue.
 
-        Interrupted work is recorded as such, so it can still be reported by
-        the fallback flush of a later session.
+        Nothing is interrupted and nothing is lost: each in-flight task returns
+        to ``queued`` with its callback authorization intact, and the durable
+        work service resumes it. This is the fix for the original failure, in
+        which a job that ended mid-task left the work interrupted and its
+        already-confirmed callback undeliverable.
         """
         await self._runner.stop()
         self._contexts.clear()
+        self._coding_tasks.clear()
 
     @staticmethod
     async def _say(session: Any, text: str) -> None:
@@ -791,6 +918,8 @@ __all__ = [
     "BACKGROUND_SYSTEM_PROMPT",
     "CALLBACK_ARMED_REPLY",
     "CALLBACK_NOTHING_RUNNING_REPLY",
+    "CODING_ACK_REPLY",
+    "CODING_OFFER_CALLBACK_REPLY",
     "DEFAULT_TIMEOUT_SECONDS",
     "LONG_WORK_ACK_REPLY",
     "LONG_WORK_OFFER_CALLBACK_REPLY",
@@ -799,13 +928,13 @@ __all__ = [
     "MAX_SPOKEN_RESULT_CHARS",
     "MAX_TASK_CONTEXT_CHARS",
     "STALE_NOTIFICATION_SECONDS",
+    "CALLBACK_ABANDONED_NOTICE",
     "BackgroundTaskBridge",
     "BackgroundTurnOutcome",
     "DialCallback",
     "DialUserCallback",
     "LLMBackgroundWorker",
     "callback_outcome_message",
-    "callback_unanswered_notification",
     "capture_task_context",
     "fallback_notification",
     "owner_key_for",

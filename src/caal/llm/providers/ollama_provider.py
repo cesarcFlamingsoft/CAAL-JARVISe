@@ -17,7 +17,10 @@ from .base import LLMProvider, LLMResponse, ToolCall
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-__all__ = ["OllamaProvider"]
+__all__ = ["REACHABLE_TIMEOUT_SECONDS", "OllamaProvider"]
+
+# A readiness probe must be far shorter than a spoken pause.
+REACHABLE_TIMEOUT_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +69,29 @@ class OllamaProvider(LLMProvider):
             f"(think={think}, num_ctx={num_ctx}, host={base_url or 'default'})"
         )
 
+    async def reachable(self) -> bool:
+        """Whether the Ollama endpoint answers a short listing call.
+
+        Bounded and silent: a failure is a routing fact, not an error to show,
+        so nothing here logs the host, the model, or the upstream message.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._client.list), timeout=REACHABLE_TIMEOUT_SECONDS
+            )
+        except Exception as exc:  # noqa: BLE001 - unreachable is an answer
+            logger.warning("The local model endpoint did not answer (%s)", type(exc).__name__)
+            return False
+        return True
+
     @property
     def provider_name(self) -> str:
         return "ollama"
+
+    @property
+    def base_url(self) -> str | None:
+        """The endpoint this provider talks to; None means the ollama default."""
+        return self._base_url
 
     @property
     def model(self) -> str:

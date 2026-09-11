@@ -321,8 +321,13 @@ async def test_runner_drains_tasks_persisted_before_start(store, clock) -> None:
         assert (await runner.wait(before.task_id, timeout=2)).status == SUCCEEDED
     finally:
         await runner.stop()
+    # Starting a runner never destroys work it does not own. The row left
+    # running by a pre-lease runner holds no lease, so it is neither resumed
+    # nor declared interrupted here: it waits for explicit operator adoption,
+    # because resuming it can end in an outbound callback.
     statuses = sorted(t.status for t in list_tasks())
-    assert statuses == sorted([SUCCEEDED, INTERRUPTED])
+    assert statuses == sorted([SUCCEEDED, RUNNING])
+    assert background_tasks.orphaned_running_count() == 1
 
 
 @pytest.mark.asyncio
@@ -469,7 +474,14 @@ async def test_runner_cancels_queued_task_before_it_runs(store, clock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_marks_in_flight_tasks_interrupted(store, clock) -> None:
+async def test_stop_hands_in_flight_tasks_back_to_the_queue(store, clock) -> None:
+    """Stopping a runner must not destroy the work it happens to be holding.
+
+    The runner leases work; a process on its way out releases the lease so the
+    durable work service resumes the task. Recording it as interrupted -- which
+    is what this used to do -- dropped any callback armed on it, which is
+    exactly how a caller who had confirmed a callback was never called back.
+    """
     started = asyncio.Event()
 
     async def worker(task: BackgroundTask) -> str:
@@ -482,7 +494,8 @@ async def test_stop_marks_in_flight_tasks_interrupted(store, clock) -> None:
     task = await runner.submit("long haul")
     await asyncio.wait_for(started.wait(), 2)
     await runner.stop()
-    assert get_task(task.task_id).status == INTERRUPTED
+    assert get_task(task.task_id).status == QUEUED
+    assert get_task(task.task_id).finished_at is None
     assert runner.running_count == 0
     # A stopped runner refuses new work instead of silently dropping it.
     with pytest.raises(RuntimeError):

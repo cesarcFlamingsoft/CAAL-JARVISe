@@ -1,7 +1,8 @@
 'use client';
 
-import { ArrowCounterClockwise, Gear } from '@phosphor-icons/react/dist/ssr';
+import { ArrowCounterClockwise, Gear, Hand } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
+import { Toggle } from '@/components/livekit/toggle';
 
 function greetingFor(hour: number): string {
   if (hour < 5) return 'Good evening';
@@ -13,6 +14,9 @@ function greetingFor(hour: number): string {
 interface WorkspaceHeaderProps {
   now: Date | null;
   displayName?: string;
+  /** Hand control is opt-in: off on every load until this is pressed. */
+  handsEnabled: boolean;
+  onHandsChange: (enabled: boolean) => void;
   onResetLayout: () => void;
   onOpenSettings: () => void;
 }
@@ -20,6 +24,8 @@ interface WorkspaceHeaderProps {
 export function WorkspaceHeader({
   now,
   displayName,
+  handsEnabled,
+  onHandsChange,
   onResetLayout,
   onOpenSettings,
 }: WorkspaceHeaderProps) {
@@ -59,6 +65,18 @@ export function WorkspaceHeader({
         >
           {timeLabel}
         </time>
+        <Toggle
+          variant="outline"
+          size="sm"
+          pressed={handsEnabled}
+          onPressedChange={onHandsChange}
+          aria-label="Hand control"
+          title="Hand control uses your camera, locally in this browser"
+          className="hidden font-mono text-xs tracking-wider uppercase md:inline-flex"
+        >
+          <Hand aria-hidden weight="bold" />
+          Hands
+        </Toggle>
         <Button variant="ghost" size="sm" onClick={onResetLayout} className="hidden md:inline-flex">
           <ArrowCounterClockwise aria-hidden weight="bold" />
           Reset layout

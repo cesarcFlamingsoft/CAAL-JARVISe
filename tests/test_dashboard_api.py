@@ -451,3 +451,115 @@ def test_the_connections_runtime_builds_a_bounded_data_client_when_none_is_injec
     assert runtime.data.timeout_seconds == 10.0
     assert runtime.data.fetch_budget_seconds == 20.0
     assert harness.connections.data is harness.connections.data_client
+
+
+# --- the knowledge index behind the voice tools ---------------------------------------------
+
+
+def test_dashboard_reads_warm_the_knowledge_index_and_a_revoked_account_is_forgotten(
+    harness, client
+) -> None:
+    from caal.knowledge_store import KnowledgeStore
+
+    google = harness.connect(harness.ana)
+    harness.provider.add(
+        "GET",
+        GOOGLE_CALENDAR,
+        httpx.Response(
+            200,
+            json=dict(items=[_event("g1", "2023-11-15T09:00:00Z", "2023-11-15T10:00:00Z", "Up")]),
+        ),
+    )
+    harness.provider.add(
+        "GET", GMAIL_MESSAGES + "?", httpx.Response(200, json=dict(messages=[dict(id="g1")]))
+    )
+    gmail = dict(
+        id="g1",
+        labelIds=["INBOX", "UNREAD"],
+        snippet="Gmail snippet",
+        internalDate="1700000000000",
+        payload=dict(headers=[dict(name="Subject", value="From Gmail")]),
+    )
+    harness.provider.add("GET", GMAIL_MESSAGES + "/g1", httpx.Response(200, json=gmail))
+
+    assert client.get(PATHS[0], headers=harness.bearer(harness.ana)).status_code == 200
+    assert client.get(PATHS[1], headers=harness.bearer(harness.ana)).status_code == 200
+    calls = len(harness.provider.requests)
+
+    index = KnowledgeStore(harness.store, keyring=harness.keyring)
+    ids = [google.connection_id]
+    window = dict(start_ts=0, end_ts=NOW * 2, limit=5)
+    assert [e.item.id for e in index.events(harness.ana, ids, **window)] == ["g1"]
+    assert [m.item.id for m in index.messages(harness.ana, ids, limit=5)] == ["g1"]
+    assert index.sync_states(harness.ana, ids, "calendar")[google.connection_id].status == "ok"
+    assert index.sync_states(harness.ana, ids, "inbox")[google.connection_id].status == "ok"
+    assert index.messages(harness.bo, ids, limit=5) == []
+
+    # A voice question right after is answered from the index: no provider call.
+    import asyncio
+
+    answer = asyncio.run(harness.connections.knowledge.recent_messages(harness.ana, limit=5))
+    assert [m.item.id for m in answer.messages] == ["g1"]
+    assert len(harness.provider.requests) == calls
+
+    # Revoking the connection erases what was indexed for it.
+    gone = client.delete(
+        f"/users/me/connections/{google.connection_id}", headers=harness.bearer(harness.ana)
+    )
+    assert gone.status_code == 204
+    assert index.messages(harness.ana, ids, limit=5) == []
+    assert index.events(harness.ana, ids, **window) == []
+    assert index.sync_states(harness.ana, ids, "inbox") == {}
+
+
+def test_a_provider_outage_falls_back_to_the_last_indexed_feed_and_says_stale(
+    harness, client
+) -> None:
+    google = harness.connect(harness.ana)
+    harness.provider.add(
+        "GET",
+        GOOGLE_CALENDAR,
+        httpx.Response(
+            200,
+            json=dict(items=[_event("g1", "2023-11-15T09:00:00Z", "2023-11-15T10:00:00Z", "Up")]),
+        ),
+    )
+    harness.provider.add("GET", GMAIL_MESSAGES + "?", httpx.Response(200, json=dict(messages=[])))
+    assert client.get(PATHS[0], headers=harness.bearer(harness.ana)).status_code == 200
+    assert client.get(PATHS[1], headers=harness.bearer(harness.ana)).status_code == 200
+
+    harness.now += 120
+    harness.provider.routes.clear()
+    harness.provider.add("GET", GOOGLE_CALENDAR, httpx.Response(503, json=dict(error="down")))
+    harness.provider.add("GET", GMAIL_MESSAGES + "?", httpx.ReadTimeout("slow"))
+
+    calendar = client.get(PATHS[0], headers=harness.bearer(harness.ana)).json()
+    (account,) = calendar["accounts"]
+    assert account["status"] == "stale" and account["reason"] == "provider_refused"
+    assert account["count"] == 1 and account["connection_id"] == google.connection_id
+    assert [e["id"] for e in calendar["events"]] == ["g1"]
+    assert calendar["events"][0]["title"] == "Up"
+
+    inbox = client.get(PATHS[1], headers=harness.bearer(harness.ana)).json()
+    (account,) = inbox["accounts"]
+    assert account["status"] == "stale" and account["reason"] == "transport"
+    assert inbox["messages"] == [] and account["count"] == 0
+
+    # An account that was never read successfully stays plainly unavailable.
+    fresh = harness.connect(
+        harness.ana, provider_account_id="google-account-2", account_label="two@google.example"
+    )
+    calendar = client.get(PATHS[0], headers=harness.bearer(harness.ana)).json()
+    statuses = dict((a["connection_id"], a["status"]) for a in calendar["accounts"])
+    assert statuses == dict([(google.connection_id, "stale"), (fresh.connection_id, "unavailable")])
+    # A permanent failure is never dressed up as stale data.
+    harness.provider.routes.clear()
+    harness.provider.add("GET", GOOGLE_CALENDAR, httpx.Response(401, json=dict(error="bad")))
+    harness.provider.add(
+        "POST",
+        "https://oauth2.googleapis.com/token",
+        httpx.Response(400, json=dict(error="invalid_grant")),
+    )
+    calendar = client.get(PATHS[0], headers=harness.bearer(harness.ana)).json()
+    assert set(a["status"] for a in calendar["accounts"]) == set(["reconnect_required"])
+    assert calendar["events"] == []
