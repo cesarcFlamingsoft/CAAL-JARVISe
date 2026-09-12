@@ -269,14 +269,57 @@ def test_the_default_for_future_reminders_is_owned_and_migration_safe(store, eve
     assert reminder_delivery.default_channels(BO) == reminder_delivery.DEFAULT_CHANNELS
 
 
-def test_a_saved_default_is_applied_instead_of_asking(store, everything_available):
-    reminder_delivery.set_default_channels(ANA, [SPEAK, TELEGRAM], now=NOW)
+def test_a_saved_dashboard_default_never_answers_the_question_for_them(store, everything_available):
+    """A saved UI preference is a readout, not consent to message or call anyone.
+
+    The dashboard default may say telegram; a voice reminder that named no
+    channel still arms only the spoken one and still asks.
+    """
+    reminder_delivery.set_default_channels(ANA, [SPEAK, TELEGRAM, CALL], now=NOW)
 
     created = reminders_tools.create_reminder(title="Standup", due=SOON, user_id=ANA, now=NOW)
 
-    assert created["data"]["delivery"] == [SPEAK, TELEGRAM]
+    assert created["data"]["delivery"] == [SPEAK]
+    assert created["data"]["delivery_pending"] is True
+    assert reminder_delivery.channels_of(_only_reminder(store, ANA)) == (SPEAK,)
+    message = created["message"].lower()
+    assert message.count("?") == 1
+    for cue in ("say it", "telegram", "call you"):
+        assert cue in message
+    assert reminder_delivery.claim_due("worker-1", now=DUE + 10_000) == []
+
+
+def test_default_as_the_answer_means_only_the_spoken_channel(store, everything_available):
+    """Cesar saying default is the local channel, never a saved remote preference."""
+    reminder_delivery.set_default_channels(ANA, [SPEAK, TELEGRAM, CALL], now=NOW)
+
+    created = reminders_tools.create_reminder(
+        title="Standup", due=SOON, delivery=["default"], user_id=ANA, now=NOW
+    )
+
+    assert created["data"]["delivery"] == [SPEAK]
     assert created["data"]["delivery_pending"] is False
     assert "?" not in created["message"]
+    assert reminder_delivery.channels_of(_only_reminder(store, ANA)) == (SPEAK,)
+
+
+def test_default_as_a_follow_up_answer_cancels_every_remote_channel(store, everything_available):
+    reminder_id = _armed(store, ["all"], title="Standup")
+    assert reminder_delivery.channels_of(reminder_id) == (SPEAK, TELEGRAM, CALL)
+
+    answered = reminders_tools.set_delivery(delivery=["default"], user_id=ANA, now=NOW)
+
+    assert answered["status"] == "ok"
+    assert answered["data"]["delivery"] == [SPEAK]
+    assert reminder_delivery.channels_of(reminder_id) == (SPEAK,)
+    assert reminder_delivery.claim_due("worker-1", now=DUE + 10_000) == []
+    assert alarms_tools.pending_count(user_id=ANA, now=NOW) == 1
+
+
+def test_default_is_a_selection_the_bounded_enum_carries():
+    assert reminder_delivery.parse_channels(["default"]) == (SPEAK,)
+    assert reminder_delivery.parse_channels("default") == (SPEAK,)
+    assert "default" in reminder_delivery.CHANNEL_ARGUMENTS
 
 
 def test_a_default_a_user_cannot_use_is_not_saved(store, everything_available):
@@ -617,3 +660,126 @@ def test_no_binding_anywhere_means_no_signed_in_user_reaches_that_chat(tmp_path,
     assert reminder_delivery.channel_availability(ANA)[TELEGRAM] is False
     # A legacy single-user deployment keeps the operator chat it always had.
     assert reminder_delivery.channel_availability(None)[TELEGRAM] is True
+
+
+# --- doing nothing is a choice, and it is said out loud -----------------------------------
+
+NONE = reminder_delivery.NONE
+
+
+def test_doing_nothing_is_one_of_the_things_a_caller_may_say():
+    assert NONE == "none"
+    assert NONE in reminder_delivery.CHANNEL_ARGUMENTS
+    assert reminder_delivery.parse_channels([NONE]) == ()
+    assert reminder_delivery.parse_channels(NONE) == ()
+
+
+@pytest.mark.parametrize("value", [["none", "call"], ["speak", "none"], ["none", "all"]])
+def test_doing_nothing_cannot_be_mixed_with_doing_something(value):
+    with pytest.raises(SafeToolError):
+        reminder_delivery.parse_channels(value)
+
+
+def test_the_question_always_offers_doing_nothing(store, everything_available):
+    created = reminders_tools.create_reminder(
+        title="Call the clinic", due=SOON, user_id=ANA, now=NOW
+    )
+
+    message = created["message"].lower()
+    assert created["data"]["delivery_pending"] is True
+    assert message.count("?") == 1
+    for cue in ("say it", "telegram", "call you", "nothing"):
+        assert cue in message
+    # Speech is armed provisionally while they decide, so a due time cannot
+    # slip past in silence between the question and the answer.
+    assert created["data"]["delivery"] == [SPEAK]
+
+
+def test_the_question_is_asked_even_when_speaking_is_the_only_channel(store):
+    """Doing nothing is always a second option, so there is always a choice."""
+    created = reminders_tools.create_reminder(
+        title="Call the clinic", due=SOON, user_id=ANA, now=NOW
+    )
+
+    assert created["data"]["delivery_pending"] is True
+    assert "nothing" in created["message"].lower()
+
+
+def test_answering_nothing_cancels_every_channel_and_keeps_the_reminder(
+    store, everything_available
+):
+    reminders_tools.create_reminder(title="Call the clinic", due=SOON, user_id=ANA, now=NOW)
+    reminder_id = _only_reminder(store, ANA)
+    assert reminder_delivery.channels_of(reminder_id) == (SPEAK,)
+
+    answered = reminders_tools.set_delivery(delivery=[NONE], user_id=ANA, now=NOW)
+
+    assert answered["status"] == "ok"
+    assert answered["data"]["delivery"] == []
+    assert reminder_delivery.channels_of(reminder_id) == ()
+    assert alarms_tools.pending_count(user_id=ANA, now=NOW) == 0
+    assert reminder_delivery.claim_due("worker-1", now=DUE + 10_000) == []
+    # Honest: it says there will be no alert, and never that one is coming.
+    message = answered["message"].lower()
+    assert "not" in message and "?" not in message
+    # The reminder itself is untouched.
+    listed = reminders_tools.list_reminders(user_id=ANA)["data"]["reminders"]
+    assert [item["title"] for item in listed] == ["Call the clinic"]
+    assert listed[0]["timed"] is True
+
+
+def test_choosing_nothing_at_creation_arms_nothing_and_asks_nothing(store, everything_available):
+    created = reminders_tools.create_reminder(
+        title="Call the clinic", due=SOON, delivery=[NONE], user_id=ANA, now=NOW
+    )
+
+    assert created["status"] == "ok"
+    assert created["data"]["delivery"] == []
+    assert created["data"]["delivery_pending"] is False
+    assert "?" not in created["message"]
+    assert reminder_delivery.channels_of(_only_reminder(store, ANA)) == ()
+    assert alarms_tools.pending_count(user_id=ANA, now=NOW) == 0
+
+
+def test_nothing_never_reaches_the_reminder_of_another_user(store, everything_available):
+    reminders_tools.create_reminder(title="Ana only", due=SOON, user_id=ANA, now=NOW)
+
+    answered = reminders_tools.set_delivery(delivery=[NONE], user_id=BO, now=NOW)
+
+    assert answered["status"] == "invalid_request"
+    assert reminder_delivery.channels_of(_only_reminder(store, ANA)) == (SPEAK,)
+
+
+def test_nothing_is_still_a_selection_the_model_may_send():
+    schema = create_default_registry().get("reminders.set_delivery").parameters
+    assert NONE in schema["properties"]["delivery"]["items"]["enum"]
+
+
+def test_after_choosing_nothing_they_can_still_change_their_mind(store, everything_available):
+    reminders_tools.create_reminder(title="Call the clinic", due=SOON, user_id=ANA, now=NOW)
+    reminders_tools.set_delivery(delivery=[NONE], user_id=ANA, now=NOW)
+
+    answered = reminders_tools.set_delivery(delivery=["telegram"], user_id=ANA, now=NOW)
+
+    assert answered["data"]["delivery"] == [TELEGRAM]
+
+
+def test_a_saved_dashboard_default_still_never_answers_the_question(store, everything_available):
+    reminder_delivery.set_default_channels(ANA, [SPEAK, TELEGRAM, CALL], now=NOW)
+
+    created = reminders_tools.create_reminder(
+        title="Standup", due=SOON, user_id=ANA, now=NOW
+    )
+
+    assert created["data"]["delivery"] == [SPEAK]
+    assert created["data"]["delivery_pending"] is True
+
+
+def test_choosing_nothing_leaves_nothing_private_in_the_log(store, everything_available, caplog):
+    reminders_tools.create_reminder(title="Biopsy results", due=SOON, user_id=ANA, now=NOW)
+
+    with caplog.at_level(logging.DEBUG):
+        reminders_tools.set_delivery(delivery=[NONE], user_id=ANA, now=NOW)
+
+    for secret in ("Biopsy", ANA):
+        assert secret not in caplog.text

@@ -20,6 +20,7 @@ import { useDashboardFeed } from '@/hooks/useDashboardFeed';
 import { useDashboardLayout } from '@/hooks/useDashboardLayout';
 import { useMe } from '@/hooks/useMe';
 import { useNow } from '@/hooks/useNow';
+import { useScheduledUpdates } from '@/hooks/useScheduledUpdates';
 import { useWeather } from '@/hooks/useWeather';
 import { type WidgetId, layoutScopeFor } from '@/lib/dashboard/layout';
 import { browserCalendarFeed, browserInboxFeed } from '@/lib/dashboard/provider-data';
@@ -63,6 +64,9 @@ export function Workspace({ appConfig }: WorkspaceProps) {
   const calendar = useDashboardFeed('/api/dashboard/calendar', browserCalendarFeed);
   const inbox = useDashboardFeed('/api/dashboard/inbox', browserInboxFeed);
   const reminders = useDashboardFeed('/api/dashboard/reminders', browserReminders);
+  // A reminder or alarm JARVIS just set reaches this page at once, instead of
+  // waiting out the polling interval. Only the scheduled feed reloads.
+  useScheduledUpdates();
   const weather = useWeather();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Hand control is opt-in for this visit only; the camera is never opened unasked.
@@ -136,7 +140,7 @@ export function Workspace({ appConfig }: WorkspaceProps) {
           icon: <BellSimple className="size-4" weight="bold" />,
           meta:
             reminders.status === 'ready'
-              ? countLabel(reminders.data.reminders.length, 'reminder')
+              ? countLabel(reminders.data.reminders.length + reminders.data.alarms.length, 'item')
               : undefined,
           body: <RemindersWidget feed={reminders} passwordLogin={passwordLogin} now={now} />,
         };

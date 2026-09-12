@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { browserCalendarFeed, browserInboxFeed } from './provider-data.ts';
+import { browserReminders } from './reminders.ts';
 
 /**
  * Structural guard for the dashboard feed BFF routes, the hook and the two
@@ -92,7 +94,11 @@ describe('calendar and inbox widgets', () => {
     const section = read(SECTION);
     assert.match(section, /<AccountIssues\b/);
     assert.match(section, /aria-expanded/, 'account summaries must reveal details on demand');
-    assert.match(section, /role="dialog"/, 'an account must open in an inspection card above the dashboard');
+    assert.match(
+      section,
+      /role="dialog"/,
+      'an account must open in an inspection card above the dashboard'
+    );
     assert.match(section, /aria-modal="true"/, 'the inspection card must own focus while open');
     assert.match(section, /event\.key === 'Escape'/, 'Escape must dismiss the inspection card');
     assert.match(section, /fixed inset-0/, 'the inspection card must layer above the dashboard');
@@ -182,4 +188,110 @@ describe('calendar and inbox widgets', () => {
       }
     }
   });
+});
+
+/**
+ * Every dashboard feed takes the same two-step to the page: the BFF route
+ * parses the backend answer and serialises the parsed shape, and the feed
+ * hook parses that body again with the same function before the widget sees
+ * it. A parser that cannot read its own output turns a perfectly good backend
+ * answer into "the backend did not answer", which is exactly what the
+ * reminders feed did in production. This holds the whole class shut.
+ */
+describe('every feed parser reads its own output', () => {
+  const overTheWire = (value: unknown) => JSON.parse(JSON.stringify(value));
+  const CONNECTION = '11111111-2222-4333-8444-555555555555';
+
+  const FEEDS: Record<string, { parse: (data: unknown) => unknown; backend: unknown }> = {
+    calendar: {
+      parse: browserCalendarFeed,
+      backend: {
+        generated_at: 1_700_000_000,
+        window_start: '2023-11-14T00:00:00Z',
+        window_end: '2023-11-21T00:00:00Z',
+        accounts: [
+          {
+            connection_id: CONNECTION,
+            provider: 'google',
+            account_label: 'Work',
+            status: 'ok',
+            count: 1,
+          },
+        ],
+        events: [
+          {
+            id: 'event-1',
+            connection_id: CONNECTION,
+            provider: 'google',
+            title: 'Standup',
+            start: '2023-11-15T09:00:00Z',
+            end: '2023-11-15T09:15:00Z',
+            all_day: false,
+            location: 'Room 2',
+            link: 'https://example.com/e/1',
+            status: 'confirmed',
+          },
+        ],
+      },
+    },
+    inbox: {
+      parse: browserInboxFeed,
+      backend: {
+        generated_at: 1_700_000_000,
+        accounts: [
+          {
+            connection_id: CONNECTION,
+            provider: 'microsoft',
+            account_label: 'Work',
+            status: 'ok',
+            count: 1,
+          },
+        ],
+        messages: [
+          {
+            id: 'message-1',
+            connection_id: CONNECTION,
+            provider: 'microsoft',
+            subject: 'Results',
+            sender: 'Clinic',
+            preview: 'Your results are ready',
+            received_at: '2023-11-14T18:00:00Z',
+            unread: true,
+            link: 'https://example.com/m/1',
+          },
+        ],
+      },
+    },
+    reminders: {
+      parse: browserReminders,
+      backend: {
+        generated_at: 1_700_000_000,
+        reminders: [
+          {
+            id: CONNECTION,
+            title: 'Call the clinic',
+            due: '2023-11-14T23:30:00Z',
+            timed: true,
+            list_name: 'Groceries',
+            notes: 'ask about the results',
+            completed: false,
+            created_at: '2023-11-14T22:00:00+00:00',
+            delivery: [{ channel: 'telegram', state: 'pending' }],
+          },
+        ],
+        available: ['speak', 'telegram'],
+        defaults: ['speak'],
+      },
+    },
+  };
+
+  for (const [name, feed] of Object.entries(FEEDS)) {
+    it(name + ' survives the BFF-to-browser round trip unchanged', () => {
+      const served = feed.parse(feed.backend);
+      assert.ok(served, name + ': the route could not parse the backend answer');
+      const rendered = feed.parse(overTheWire(served));
+      assert.ok(rendered, name + ': the widget read the BFF answer as malformed');
+      assert.deepEqual(rendered, served, name + ': the round trip changed the feed');
+    });
+  }
 });

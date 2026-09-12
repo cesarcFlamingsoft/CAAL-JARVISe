@@ -47,6 +47,28 @@ describe('the reminders feed route', () => {
   it('never forwards a query parameter that could widen the scope', () => {
     assert.ok(!read(FEED_ROUTE).includes('searchParams'));
   });
+
+  it('records the branch where the backend answered but the answer was unreadable', () => {
+    // That branch is why the dashboard once said "the backend did not answer"
+    // while the backend was answering, with nothing in any log to say so.
+    const source = read(FEED_ROUTE);
+    const logs = source.match(/console\.(error|warn|info|log)\([^;]*\);/g) ?? [];
+    assert.equal(logs.length, 1, 'the unreadable-answer branch must leave exactly one trace');
+    assert.match(logs[0], /GET \/users\/me\/dashboard\/reminders/);
+    assert.match(logs[0], /result\.status/);
+    // A reminder is private: the trace may carry the call and its outcome and
+    // nothing that belongs to the person who made it.
+    for (const forbidden of [
+      'result.data',
+      'feed',
+      'auth.user',
+      'userId',
+      'title',
+      'JSON.stringify',
+    ]) {
+      assert.ok(!logs[0].includes(forbidden), forbidden + ' must never be logged');
+    }
+  });
 });
 
 describe('the delivery default route', () => {
@@ -86,7 +108,10 @@ describe('the reminders widget', () => {
     assert.match(source, /WidgetLoading/);
     assert.match(source, /WidgetSignIn/);
     assert.match(source, /WidgetError/);
-    assert.match(source, /No reminders yet/);
+    // The empty state covers the whole widget now: no reminders *and* no
+    // alarms. It still says so plainly rather than showing a placeholder.
+    assert.match(source, /Nothing scheduled yet/);
+    assert.match(source, /reminders\.length === 0 && alarms\.length === 0/);
   });
 
   it('no longer claims the list is missing from the dashboard', () => {
@@ -127,5 +152,29 @@ describe('the workspace', () => {
   it('teaches the shared feed hook the new path, so a refresh picks it up', () => {
     assert.match(read(HOOK), /'\/api\/dashboard\/reminders'/);
     assert.match(read(HOOK), /REFRESH_INTERVAL_MS/);
+  });
+});
+
+describe('the reminders widget shows the alarms and timers too', () => {
+  it('renders them as their own labelled kind, with their own due time and state', () => {
+    const source = read(WIDGET);
+    assert.match(source, /feed\.data\.alarms|alarms\b/, 'the widget must read the alarm list');
+    assert.match(source, /ALARM_KIND_LABELS/, 'an alarm and a timer must say which they are');
+    assert.match(source, /ALARM_STATE_LABELS/, 'delivered, missed and waiting must read as such');
+    assert.match(source, /dueLabel\(/, 'an alarm must show when it is due, in the reader zone');
+    // One truthful view: the two lists are shown side by side, never merged
+    // into invented rows and never claimed to be each other.
+    assert.ok(!source.includes('synthetic'));
+    for (const name of SESSION_READS) assert.ok(!source.includes(name), name);
+  });
+
+  it('never offers a delivery choice for an alarm', () => {
+    const source = read(WIDGET);
+    const start = source.indexOf('function AlarmList');
+    const alarms = source.slice(start, source.indexOf('\nfunction ', start + 1));
+    assert.ok(alarms.length > 0, 'the alarm list must be its own component');
+    for (const name of ['CHANNEL_CHOICES', 'apiRequest', 'PUT']) {
+      assert.ok(!alarms.includes(name), name + ' must not appear in the alarm list');
+    }
   });
 });

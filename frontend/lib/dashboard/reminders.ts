@@ -21,11 +21,38 @@ export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];
 export const DELIVERY_STATES = ['pending', 'delivered', 'failed'] as const;
 export type DeliveryState = (typeof DELIVERY_STATES)[number];
 
+/**
+ * An alarm and a timer are not reminders and are not shown as if they were.
+ * They live in their own table, they have a label rather than a title, they
+ * have no delivery choice at all -- an alarm is announced in a live session of
+ * its owner or it is not announced -- and the dashboard shows them beside the
+ * reminders as what they are.
+ */
+export const ALARM_KINDS = ['alarm', 'timer'] as const;
+export type AlarmKind = (typeof ALARM_KINDS)[number];
+
+/** `overdue` is an alarm whose moment passed with no session there to say it. */
+export const ALARM_STATES = ['pending', 'delivered', 'overdue'] as const;
+export type AlarmState = (typeof ALARM_STATES)[number];
+
+export const ALARM_KIND_LABELS: Record<AlarmKind, string> = {
+  alarm: 'Alarm',
+  timer: 'Timer',
+};
+
+export const ALARM_STATE_LABELS: Record<AlarmState, string> = {
+  pending: 'waiting',
+  delivered: 'announced',
+  overdue: 'missed',
+};
+
 /** Matches the backend own bounds. */
 const MAX_TITLE = 200;
 const MAX_NOTES = 2000;
 const MAX_LIST = 80;
 const MAX_REMINDERS = 200;
+const MAX_ALARMS = 200;
+const MAX_LABEL = 120;
 const REMINDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** How each channel reads on the dashboard, as the words JARVIS uses out loud. */
@@ -65,9 +92,20 @@ export interface ReminderItem {
   delivery: ReminderDelivery[];
 }
 
+export interface AlarmItem {
+  id: string;
+  label: string;
+  kind: AlarmKind;
+  /** UTC ISO 8601. An alarm always has a time; that is what it is. */
+  due: string;
+  state: AlarmState;
+}
+
 export interface RemindersFeed {
   generatedAt: number;
   reminders: ReminderItem[];
+  /** The owner own alarms and timers, soonest first. Never another owner own. */
+  alarms: AlarmItem[];
   /** Channels this owner is allowed to use at all, decided by the backend. */
   available: DeliveryChannel[];
   /** What a new reminder of theirs uses when they do not say. */
@@ -150,7 +188,7 @@ function reminder(value: unknown): ReminderItem | null {
     title,
     due,
     timed: raw.timed === true && due !== null,
-    list: text(raw.list_name, MAX_LIST) || 'Reminders',
+    list: text(raw.list_name ?? raw.list, MAX_LIST) || 'Reminders',
     notes: text(raw.notes, MAX_NOTES),
     completed: raw.completed === true,
     // An undated reminder is a list item: it can never show a delivery, even
@@ -159,17 +197,58 @@ function reminder(value: unknown): ReminderItem | null {
   };
 }
 
+function isAlarmKind(value: unknown): value is AlarmKind {
+  return typeof value === 'string' && (ALARM_KINDS as readonly string[]).includes(value);
+}
+
+function isAlarmState(value: unknown): value is AlarmState {
+  return typeof value === 'string' && (ALARM_STATES as readonly string[]).includes(value);
+}
+
+function alarm(value: unknown): AlarmItem | null {
+  const raw = record(value);
+  if (!raw) return null;
+  const id = typeof raw.id === 'string' && REMINDER_ID.test(raw.id) ? raw.id : null;
+  const label = text(raw.label, MAX_LABEL);
+  const due = instant(raw.due);
+  if (!id || !label || !due || !isAlarmKind(raw.kind) || !isAlarmState(raw.state)) return null;
+  return { id, label, kind: raw.kind, due, state: raw.state };
+}
+
+/**
+ * The backend own feed, reduced to what a browser may see.
+ *
+ * This parser runs twice on the way to the page: once in the BFF route, on
+ * the backend own answer, and once in the feed hook, on the body the route
+ * serialised. It therefore has to read its own output as well as the
+ * backend own -- a feed it cannot re-read is shown as an error even though
+ * the backend answered -- so each field accepts the backend own spelling and
+ * the browser own, exactly as the calendar and inbox parsers do. What is not
+ * relaxed is the contract: an answer that is neither spelling is still null,
+ * so a real drift surfaces as an error rather than as an empty widget.
+ */
 export function browserReminders(data: unknown): RemindersFeed | null {
   const raw = record(data);
-  if (!raw || typeof raw.generated_at !== 'number' || !Array.isArray(raw.reminders)) return null;
+  if (!raw || !Array.isArray(raw.reminders)) return null;
+  const generatedAt = raw.generated_at ?? raw.generatedAt;
+  if (typeof generatedAt !== 'number') return null;
   const reminders: ReminderItem[] = [];
   for (const entry of raw.reminders.slice(0, MAX_REMINDERS)) {
     const item = reminder(entry);
     if (item) reminders.push(item);
   }
+  // A backend that sends no alarms sends an empty list, not a broken feed.
+  const alarms: AlarmItem[] = [];
+  if (Array.isArray(raw.alarms)) {
+    for (const entry of raw.alarms.slice(0, MAX_ALARMS)) {
+      const item = alarm(entry);
+      if (item) alarms.push(item);
+    }
+  }
   return {
-    generatedAt: raw.generated_at,
+    generatedAt,
     reminders,
+    alarms,
     available: channelList(raw.available),
     defaults: channelList(raw.defaults),
   };

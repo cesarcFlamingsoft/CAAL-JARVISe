@@ -28,5 +28,13 @@ export async function GET(req: NextRequest) {
   });
   if (!result.ok) return backendFailure(result.status, result.data);
   const feed = browserReminders(result.data);
-  return feed ? noStoreJson(feed) : apiError(502, 'backend_unavailable');
+  if (!feed) {
+    // The backend answered and the answer could not be read: without this the
+    // widget's one generic sentence is the only trace such a day leaves. The
+    // method, the internal path, the backend status and the branch are the
+    // whole of it -- never a body, an owner, a title or a time.
+    console.error('[dashboard] GET /users/me/dashboard/reminders %d unreadable', result.status);
+    return apiError(502, 'backend_unavailable');
+  }
+  return noStoreJson(feed);
 }

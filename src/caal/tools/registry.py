@@ -493,9 +493,11 @@ def create_default_registry() -> ToolRegistry:
             name="reminders.create",
             description=(
                 "Create a reminder in the local CAAL reminder store of the signed-in user. "
-                "Use for: remind me to X, add X to my list, do not let me forget X. Give due "
-                "when the user said a time, and CAAL announces the reminder once when it comes "
-                "due; leave due out for an open list item, which is saved but never announced. "
+                "Use for: remind me to X, add X to my list, do not let me forget X. Take "
+                "title from the words after remind me, in their own wording and without asking "
+                "them to name a field. Give due when the user said a time, and CAAL announces "
+                "the reminder once when it comes due; leave due out for an open list item, "
+                "which is saved but never announced. "
                 "This is the local store only; it does not write to Apple Reminders or any "
                 "other outside service."
             ),
@@ -504,7 +506,10 @@ def create_default_registry() -> ToolRegistry:
                 {
                     "title": {
                         "type": "string",
-                        "description": "What to be reminded about, in the words of the user.",
+                        "description": (
+                            "What to be reminded about, in the words of the user: the phrase "
+                            "after remind me, such as take the bread out. Always give it."
+                        ),
                     },
                     "due": {"type": "string", "description": _WHEN_DESCRIPTION},
                     "list": {"type": "string", "description": "Optional list name."},
@@ -523,7 +528,8 @@ def create_default_registry() -> ToolRegistry:
             description=(
                 "Set how the signed-in user wants to be told about the timed reminder they "
                 "just set, after CAAL asked them which ways they want. Use for their answer: "
-                "all of them, call and message me, just tell me here, Telegram only. It "
+                "all of them, call and message me, just tell me here, Telegram only. If they "
+                "answer default, or just the usual, pass [default], which is only speak. It "
                 "applies to their own most recent reminder still to come; there is no way to "
                 "name a different one, a phone number or a chat."
             ),

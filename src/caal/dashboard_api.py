@@ -11,7 +11,7 @@
     the newest inbox messages from every live connection, merged newest
     first, with the same per-account report and an unread count.
 ``GET /users/me/dashboard/reminders``
-    the caller own local reminders, soonest due first and undated last, each
+    the caller own local reminders *and* their own alarms and timers, each
     with the channels it will be delivered on and the state of each one, plus
     the channels this owner is allowed to use at all.
 ``GET|PUT /users/me/dashboard/reminders/delivery``
@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .connections_api import ConnectionsRuntime, require_connections
 from .provider_data import MAX_ITEMS, AccountFetch, CalendarEvent, InboxMessage
-from .tools import reminder_delivery, reminders_tools
+from .tools import alarms_tools, reminder_delivery, reminders_tools
 from .tools.errors import SafeToolError
 from .user_api import CurrentUser, require_user
 
@@ -267,9 +267,26 @@ class ReminderItem(_Strict):
     delivery: list[ReminderChannelState]
 
 
+class ScheduledAlarm(_Strict):
+    """One alarm or timer of the caller, as a dashboard shows it.
+
+    Kept as its own shape rather than folded into a reminder: an alarm and a
+    reminder are different things in the store and are different things to the
+    person who set them, and a single truthful view is built by showing both,
+    not by pretending one is the other.
+    """
+
+    id: str
+    label: str
+    kind: str
+    due: str
+    state: str
+
+
 class RemindersFeedResponse(_Strict):
     generated_at: int
     reminders: list[ReminderItem]
+    alarms: list[ScheduledAlarm]
     available: list[str]
     defaults: list[str]
 
@@ -310,7 +327,8 @@ async def reminders_feed(user: CurrentUser = Depends(require_user)) -> Reminders
     """
     user_id = user.profile.user_id
     rows = reminders_tools.dashboard_reminders(user_id=user_id)
-    logger.info("Dashboard reminders feed: %d reminder(s)", len(rows))
+    alarms = alarms_tools.dashboard_alarms(user_id=user_id)
+    logger.info("Dashboard reminders feed: %d reminder(s), %d alarm(s)", len(rows), len(alarms))
     return RemindersFeedResponse(
         generated_at=int(time.time()),
         reminders=[
@@ -326,6 +344,16 @@ async def reminders_feed(user: CurrentUser = Depends(require_user)) -> Reminders
                 delivery=[ReminderChannelState(**channel) for channel in row["delivery"]],
             )
             for row in rows
+        ],
+        alarms=[
+            ScheduledAlarm(
+                id=row["id"],
+                label=row["label"],
+                kind=row["kind"],
+                due=_due(row["due"]) or row["due"],
+                state=row["state"],
+            )
+            for row in alarms
         ],
         available=_available(user_id),
         defaults=list(reminder_delivery.default_channels(user_id)),

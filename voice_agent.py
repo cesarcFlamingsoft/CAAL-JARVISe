@@ -54,8 +54,8 @@ from livekit.agents import Agent, AgentSession, StopResponse, mcp
 from livekit.plugins import groq as groq_plugin
 from livekit.plugins import openai, silero
 
-from caal import CAALLLM, conversation_ledger, user_api
-from caal.alarm_delivery import announce_due_alarms, may_deliver
+from caal import CAALLLM, conversation_ledger, scheduled_events, user_api
+from caal.alarm_delivery import announce_due_alarms, has_listening_participant, may_deliver
 from caal.audio import (
     AudioEnergyGate,
     NoiseSuppressedSTT,
@@ -101,6 +101,7 @@ from caal.integrations import (
     load_mcp_config,
 )
 from caal.internal_auth import AUDIENCE_AGENT, PrincipalError, verify_principal
+from caal.delivery_router import DeliveryAnswerHandler
 from caal.knowledge_router import KnowledgeTurnHandler, LocalToolPath
 from caal.llm import ToolDataCache, llm_node
 from caal.local_ollama import configured_endpoint
@@ -666,6 +667,22 @@ def build_knowledge_turn_handler(
     )
 
 
+def build_delivery_answer_handler(
+    user_scope: UserScope,
+    *,
+    announce: Callable[[], Awaitable[None]] | None = None,
+) -> DeliveryAnswerHandler | None:
+    """The deterministic answer to the delivery question, for a signed-in session.
+
+    The question is asked of one owner about one reminder, so only a verified
+    user can answer it: an anonymous or legacy session has no owned reminder
+    awaiting an answer and keeps the ordinary model path untouched.
+    """
+    if user_scope.user_id is None:
+        return None
+    return DeliveryAnswerHandler(scope=user_scope, announce=announce)
+
+
 class LocalTurnHandler:
     """Route each user turn to the commands CAAL answers itself, exactly once.
 
@@ -693,9 +710,16 @@ class LocalTurnHandler:
         background: BackgroundTaskBridge | None = None,
         arm_callback_and_end_call: Callable[[], Awaitable[None]] | None = None,
         knowledge: KnowledgeTurnHandler | None = None,
+        delivery: DeliveryAnswerHandler | None = None,
     ) -> None:
         self._phone_handoff = phone_handoff
         self._background = background
+        # The answer to the delivery question CAAL itself just asked. It is
+        # claimed before anything else reads the words: two words like "call
+        # me" are that answer while the question is open, and every other
+        # route -- handoff, background work, the model -- reads them as a
+        # request for something else entirely.
+        self._delivery = delivery
         # Questions about the connected email and calendar accounts are answered
         # here from the per-user index; Hermes never receives those tools.
         self._knowledge = knowledge
@@ -782,6 +806,16 @@ class LocalTurnHandler:
         asked. The inferred exit comes last, and a callback question must be
         able to consume its own "yes".
         """
+        if self._delivery is not None:
+            try:
+                if await self._delivery.handle(text, self._session):
+                    # A reminder was just settled; a pending exit question is
+                    # not what this answered.
+                    self._end_call_intent.reset()
+                    return True
+            except Exception as exc:
+                # No exception text: it could carry the utterance into the log.
+                logger.error("Delivery-answer handling failed (%s)", type(exc).__name__)
         if self._phone_handoff is not None:
             try:
                 if await self._phone_handoff.handle_final_transcript(text, self._session):
@@ -1706,6 +1740,7 @@ class VoiceAssistant(WebSearchTools, Agent):
         n8n_workflow_name_map: dict[str, str] | None = None,
         n8n_base_url: str | None = None,
         on_tool_status: ToolStatusCallback | None = None,
+        on_scheduled_change: Callable[[], Awaitable[None]] | None = None,
         tool_cache_size: int = 3,
         max_turns: int = 20,
         hass_tool_definitions: list[dict] | None = None,
@@ -1748,6 +1783,10 @@ class VoiceAssistant(WebSearchTools, Agent):
 
         # Callback for publishing tool status to frontend
         self._on_tool_status = on_tool_status
+
+        # Callback for telling this room that its scheduled items changed. It
+        # publishes a constant and nothing else; see caal.scheduled_events.
+        self._on_scheduled_change = on_scheduled_change
 
         # Context management: tool data cache and sliding window
         # Shared with the local knowledge route when the session provides one,
@@ -2328,6 +2367,19 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         else "disabled (legacy single-user)",
     )
 
+    # The answer to the delivery question CAAL asks after a timed reminder.
+    # It publishes the same constant packet the tool path publishes, defined
+    # further down in this entrypoint and resolved when the answer arrives.
+    delivery_route = build_delivery_answer_handler(
+        user_scope, announce=lambda: _publish_scheduled_change()
+    )
+    logger.info(
+        "  Delivery-answer route: %s",
+        "on (an open delivery question is answered here)"
+        if delivery_route is not None
+        else "disabled (no signed-in user)",
+    )
+
     local_turn_handler = LocalTurnHandler(
         phone_handoff=phone_handoff,
         session=session,
@@ -2335,6 +2387,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         background=background_bridge,
         arm_callback_and_end_call=arm_callback_and_end_call,
         knowledge=knowledge_route,
+        delivery=delivery_route,
     )
 
     @session.on("user_input_transcribed")
@@ -2445,6 +2498,22 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except Exception as e:
             logger.warning(f"Failed to publish tool status: {e}")
 
+    async def _publish_scheduled_change() -> None:
+        """Tell this room that the scheduled items of its own user changed.
+
+        One constant on its own topic: a version and a kind, and nothing that
+        belongs to anybody. It is a nudge to re-read an authenticated feed, not
+        a carrier of what changed, so no title, time, id, owner, argument,
+        model output or destination is ever in it. Tool parameters are private
+        and are never reused here.
+        """
+        await ctx.room.local_participant.publish_data(
+            scheduled_events.PAYLOAD.encode("utf-8"),
+            reliable=True,
+            topic=scheduled_events.TOPIC,
+        )
+        logger.debug("Published a scheduled-items change notice")
+
     if knowledge_route is not None:
         knowledge_route.bind_tool_status(_publish_tool_status)
 
@@ -2488,6 +2557,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         n8n_workflow_name_map=n8n_workflow_name_map,
         n8n_base_url=n8n_base_url,
         on_tool_status=_publish_tool_status,
+        on_scheduled_change=_publish_scheduled_change,
         tool_cache_size=runtime["tool_cache_size"],
         max_turns=runtime["max_turns"],
         hass_tool_definitions=hass_tool_definitions,
@@ -2571,14 +2641,20 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         """Announce the due alarms of this session own user, and nobody else.
 
         An anonymous session claims nothing, so an alarm simply waits for a
-        session that is signed in as the user who set it.
+        session that is signed in as the user who set it -- and so does a room
+        that nobody is left in, so an alarm is never recorded as delivered on
+        the strength of words spoken to an empty room.
         """
         if not may_deliver(user_scope):
             logger.info("Alarm delivery is idle: this session has no verified user")
             return
         while not close_event.is_set():
             try:
-                delivered = await announce_due_alarms(session, user_scope)
+                delivered = await announce_due_alarms(
+                    session,
+                    user_scope,
+                    listener=lambda: has_listening_participant(ctx.room),
+                )
                 if delivered:
                     logger.info(f"Delivered {delivered} due alarm(s)")
             except Exception as e:

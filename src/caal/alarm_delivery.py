@@ -14,6 +14,7 @@ else in the room.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from caal.tools import reminder_delivery
@@ -22,7 +23,12 @@ from caal.user_scope import UserScope
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["alarm_message", "announce_due_alarms", "may_deliver"]
+__all__ = [
+    "alarm_message",
+    "announce_due_alarms",
+    "has_listening_participant",
+    "may_deliver",
+]
 
 
 def alarm_message(alarm: dict[str, Any]) -> str:
@@ -46,10 +52,42 @@ def may_deliver(scope: UserScope | None) -> bool:
     return effective.memory_available
 
 
+def has_listening_participant(room: Any) -> bool:
+    """Whether anybody is still in this room to hear an announcement.
+
+    Saying words into a room nobody is in is not delivery, and recording it as
+    delivery is how an alarm disappears without ever going off. The question
+    asked here is the one that can actually be answered from the room: is it
+    still connected, and is there still a remote participant in it. Who that
+    participant may hear about is settled elsewhere and unchanged -- the claim
+    below is scoped to the verified owner of the session, so an eligible
+    listener is by construction the owner own session.
+    """
+    if room is None:
+        return False
+    connected = getattr(room, "isconnected", None)
+    if callable(connected):
+        try:
+            if not connected():
+                return False
+        except Exception:
+            return False
+    participants = getattr(room, "remote_participants", None) or {}
+    return len(participants) > 0
+
+
 async def announce_due_alarms(
-    session: Any, scope: UserScope | None = None, now: int | None = None
+    session: Any,
+    scope: UserScope | None = None,
+    now: int | None = None,
+    listener: Callable[[], bool] | None = None,
 ) -> int:
     """Speak every due alarm of this session own user, exactly once.
+
+    ``listener`` answers whether there is still somebody in the room to hear
+    this. When it says no, nothing is claimed and nothing is settled: the
+    alarm stays pending for the next session of the same owner. It is
+    optional, and an omitted one keeps the previous behaviour exactly.
 
     Returns how many were actually announced. Anything claimed but not spoken
     is released before the exception leaves this function.
@@ -61,6 +99,11 @@ async def announce_due_alarms(
     """
     if not may_deliver(scope):
         return 0
+    if listener is not None and not listener():
+        # Nobody is there. Nothing is claimed, so nothing has to be handed
+        # back, and the alarm is exactly as due for the next session as it is
+        # for this one.
+        return 0
     user_id = (scope or UserScope.legacy()).user_id
     alarms = claim_due_alarms(now=now, user_id=user_id)
     if not alarms:
@@ -68,6 +111,11 @@ async def announce_due_alarms(
     spoken: list[str] = []
     try:
         for alarm in alarms:
+            if listener is not None and not listener():
+                # They left mid-way. What has been said is settled below; the
+                # rest is released, still pending, still theirs.
+                logger.info("Stopped announcing: the last listener left the room")
+                break
             await session.say(alarm_message(alarm))
             spoken.append(alarm["id"])
     finally:

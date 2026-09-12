@@ -83,6 +83,53 @@ def test_accepted_duration_forms(when, seconds):
     assert parse_when(when, NOW) == NOW + seconds
 
 
+@pytest.mark.parametrize(
+    "when,seconds",
+    [
+        ("in 1 minute", 60),
+        ("in a minute", 60),
+        ("in an hour", 3_600),
+        ("in 2 hours", 7_200),
+        ("in a day", 86_400),
+        ("in 30 seconds", 30),
+        ("in two minutes", 120),
+        ("In One Hour", 3_600),
+        ("in 1 hour from now", 3_600),
+        ("after 10 minutes", 600),
+        ("in a week", 604_800),
+    ],
+)
+def test_ordinary_relative_phrases_are_accepted(when, seconds):
+    """What a person actually says, so the model never has to invent PT2M."""
+    assert parse_when(when, NOW) == NOW + seconds
+
+
+@pytest.mark.parametrize(
+    "when",
+    [
+        "in a bit",
+        "in a while",
+        "in",
+        "in 5",
+        "in a",
+        "in some minutes",
+        "in a few minutes",
+        "in a couple of days",
+        "in 0 minutes",
+        "in ten years",
+        "later today",
+        "tomorrow",
+        "at seven",
+        "in the morning",
+        "in 2026-09-09T18:30:00",
+    ],
+)
+def test_vague_relative_phrases_stay_refused(when):
+    """Bounded on purpose: an unclear phrase is asked about, never guessed at."""
+    with pytest.raises(SafeToolError):
+        parse_when(when, NOW)
+
+
 def test_a_timezone_aware_timestamp_is_accepted():
     assert parse_when("2026-09-09T18:30:00-06:00", 1_788_976_800) == 1_789_000_200
     assert parse_when("2026-09-09T18:30:00Z", 1_788_976_800) == 1_788_978_600
@@ -474,3 +521,167 @@ async def test_a_tool_failure_never_hands_the_model_a_traceback(monkeypatch):
     reported = messages[-1]["content"]
     assert "sqlite3" not in reported and "Traceback" not in reported
     assert "did not go through" in reported
+
+
+# --- an alarm is only delivered when somebody is there to hear it -------------------------
+
+
+class _Room:
+    """Just enough of a LiveKit room to say who is still in it."""
+
+    def __init__(self, participants=1, connected=True):
+        self.remote_participants = {f"p{i}": SimpleNamespace() for i in range(participants)}
+        self._connected = connected
+
+    def isconnected(self) -> bool:
+        return self._connected
+
+
+def test_an_empty_room_has_nobody_to_announce_to():
+    from caal import alarm_delivery
+
+    assert alarm_delivery.has_listening_participant(_Room(participants=0)) is False
+    assert alarm_delivery.has_listening_participant(_Room(connected=False)) is False
+    assert alarm_delivery.has_listening_participant(None) is False
+    assert alarm_delivery.has_listening_participant(_Room()) is True
+
+
+def test_a_due_alarm_stays_pending_when_nobody_is_listening(store):
+    from caal import alarm_delivery
+
+    alarms_tools.set_alarm(label="Tea", when="PT1M", kind="timer", now=NOW, user_id=ANA)
+    silent = _Session()
+
+    delivered = asyncio.run(
+        alarm_delivery.announce_due_alarms(silent, _scope_for(ANA), listener=lambda: False)
+    )
+
+    assert delivered == 0
+    assert silent.messages == []
+    # Still waiting, not quietly settled.
+    assert alarms_tools.pending_count(user_id=ANA, now=NOW) == 1
+
+
+def test_the_next_session_with_a_listener_gets_it_exactly_once(store):
+    from caal import alarm_delivery
+
+    alarms_tools.set_alarm(label="Tea", when="PT1M", kind="timer", now=NOW, user_id=ANA)
+    assert (
+        asyncio.run(
+            alarm_delivery.announce_due_alarms(_Session(), _scope_for(ANA), listener=lambda: False)
+        )
+        == 0
+    )
+
+    heard = _Session()
+    assert (
+        asyncio.run(
+            alarm_delivery.announce_due_alarms(heard, _scope_for(ANA), listener=lambda: True)
+        )
+        == 1
+    )
+    assert heard.messages == ["Your timer is finished: Tea."]
+
+    again = _Session()
+    assert (
+        asyncio.run(
+            alarm_delivery.announce_due_alarms(again, _scope_for(ANA), listener=lambda: True)
+        )
+        == 0
+    )
+    assert again.messages == []
+
+
+def test_a_listener_that_leaves_mid_announcement_leaves_the_rest_pending(store):
+    from caal import alarm_delivery
+
+    alarms_tools.set_alarm(label="First", when="PT1M", kind="alarm", now=NOW, user_id=ANA)
+    alarms_tools.set_alarm(label="Second", when="PT2M", kind="alarm", now=NOW, user_id=ANA)
+    leaving = _Session()
+    remaining = iter([True, True, False, False])
+
+    delivered = asyncio.run(
+        alarm_delivery.announce_due_alarms(
+            leaving, _scope_for(ANA), listener=lambda: next(remaining, False)
+        )
+    )
+
+    assert delivered == 1
+    assert leaving.messages == ["Alarm: First."]
+    assert alarms_tools.pending_count(user_id=ANA, now=NOW) == 1
+
+    recovered = _Session()
+    assert (
+        asyncio.run(
+            alarm_delivery.announce_due_alarms(recovered, _scope_for(ANA), listener=lambda: True)
+        )
+        == 1
+    )
+    assert recovered.messages == ["Alarm: Second."]
+
+
+def test_a_session_with_no_room_information_behaves_as_before(store):
+    """The listener check is additive: an omitted one changes nothing."""
+    from caal import alarm_delivery
+
+    alarms_tools.set_alarm(label="Tea", when="PT1M", kind="timer", now=NOW, user_id=ANA)
+
+    assert asyncio.run(alarm_delivery.announce_due_alarms(_Session(), _scope_for(ANA))) == 1
+
+
+# --- alarms and timers are visible on the dashboard --------------------------------------
+
+
+def test_the_dashboard_sees_the_pending_alarms_of_their_owner_only(store):
+    alarms_tools.set_alarm(label="Wake up", when="PT1H", kind="alarm", now=NOW, user_id=ANA)
+    alarms_tools.set_alarm(label="Laundry", when="PT10M", kind="timer", now=NOW, user_id=ANA)
+    alarms_tools.set_alarm(label="Bo private thing", when="PT1H", kind="alarm", now=NOW, user_id=BO)
+
+    mine = alarms_tools.dashboard_alarms(user_id=ANA, now=NOW)
+
+    assert [row["label"] for row in mine] == ["Laundry", "Wake up"]
+    assert [row["kind"] for row in mine] == ["timer", "alarm"]
+    assert all(row["state"] == "pending" for row in mine)
+    assert all(row["due"].endswith("+00:00") or row["due"].endswith("Z") for row in mine)
+    assert [row["label"] for row in alarms_tools.dashboard_alarms(user_id=BO, now=NOW)] == [
+        "Bo private thing"
+    ]
+
+
+def test_the_spoken_channel_of_a_reminder_is_not_shown_a_second_time_as_an_alarm(store):
+    reminders_tools.create_reminder(title="Call the clinic", due="PT30M", user_id=ANA, now=NOW)
+
+    assert alarms_tools.dashboard_alarms(user_id=ANA, now=NOW) == []
+
+
+def test_the_dashboard_tells_delivered_from_overdue_from_pending(store):
+    from caal import alarm_delivery
+
+    alarms_tools.set_alarm(label="Heard", when="PT1M", kind="alarm", now=NOW, user_id=ANA)
+    alarms_tools.set_alarm(label="Missed", when="PT2M", kind="alarm", now=NOW, user_id=ANA)
+    alarms_tools.set_alarm(label="Waiting", when="PT1H", kind="alarm", now=NOW, user_id=ANA)
+    asyncio.run(alarm_delivery.announce_due_alarms(_Session(), _scope_for(ANA), now=NOW + 60))
+
+    states = {row["label"]: row["state"] for row in alarms_tools.dashboard_alarms(ANA, NOW + 600)}
+
+    assert states == dict(Heard="delivered", Missed="overdue", Waiting="pending")
+
+
+def test_a_dashboard_alarm_read_announces_nothing_and_settles_nothing(store):
+    alarms_tools.set_alarm(label="Tea", when="PT1M", kind="timer", now=NOW, user_id=ANA)
+
+    alarms_tools.dashboard_alarms(user_id=ANA, now=NOW + 600)
+
+    assert [row["label"] for row in alarms_tools.claim_due_alarms(now=NOW + 600, user_id=ANA)] == [
+        "Tea"
+    ]
+
+
+def test_a_dashboard_alarm_read_leaves_nothing_private_in_the_log(store, caplog):
+    alarms_tools.set_alarm(label="Divorce lawyer", when="PT1H", kind="alarm", now=NOW, user_id=ANA)
+
+    with caplog.at_level(logging.DEBUG):
+        alarms_tools.dashboard_alarms(user_id=ANA, now=NOW)
+
+    for secret in ("Divorce lawyer", ANA):
+        assert secret not in caplog.text

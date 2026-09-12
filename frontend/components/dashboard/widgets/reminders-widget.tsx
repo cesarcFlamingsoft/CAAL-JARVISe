@@ -9,6 +9,11 @@
  * reads as the wall clock it will actually go off at. A reminder with no time
  * on it is a list item and is shown as one -- it never claims a delivery.
  *
+ * Alarms and timers of the same person are shown beside them, as their own
+ * kind of thing: they are a separate store with no delivery choices, and the
+ * one truthful view is the two lists side by side rather than either one
+ * pretending to be the other.
+ *
  * The only thing that can be changed from here is which channels *future*
  * reminders use. It touches nothing that is already armed, and it can name no
  * phone number and no chat: those come from the profile, server-side.
@@ -18,6 +23,9 @@ import { apiRequest } from '@/components/account/api-client';
 import { Button } from '@/components/livekit/button';
 import type { FeedController } from '@/hooks/useDashboardFeed';
 import {
+  ALARM_KIND_LABELS,
+  ALARM_STATE_LABELS,
+  type AlarmItem,
   CHANNEL_CHOICES,
   CHANNEL_LABELS,
   type DeliveryChannel,
@@ -69,6 +77,37 @@ function DeliveryTags({ reminder, now }: { reminder: ReminderItem; now: Date | n
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The alarms and timers of the same person, beside their reminders.
+ *
+ * They are shown as themselves: an alarm says it is an alarm, a timer says it
+ * is a timer, each carries its own due time in the reader own zone, and each
+ * says what became of it -- waiting, announced, or missed because no session of
+ * theirs was there to say it. There is nothing to choose here: an alarm has no
+ * delivery channels, so none is offered, and nothing in this list is invented
+ * to fill it out.
+ */
+function AlarmList({ alarms, now }: { alarms: AlarmItem[]; now: Date | null }) {
+  if (alarms.length === 0) return null;
+  return (
+    <div className="border-border/70 space-y-2 border-t pt-2">
+      <p className="text-muted-foreground text-xs">Alarms and timers</p>
+      <ul className="space-y-2">
+        {alarms.map((item) => (
+          <li key={item.id} className="space-y-0.5">
+            <p className="text-sm leading-snug font-medium">{item.label}</p>
+            <p className="text-muted-foreground text-xs">
+              {ALARM_KIND_LABELS[item.kind]} &middot;{' '}
+              {now ? dueLabel(item.due, now) : 'Reading the time\u2026'} &middot;{' '}
+              {ALARM_STATE_LABELS[item.state]}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -174,13 +213,13 @@ export function RemindersWidget({ feed, passwordLogin, now }: RemindersWidgetPro
     );
   }
 
-  const { reminders, available } = feed.data;
+  const { reminders, alarms, available } = feed.data;
   return (
     <div className="space-y-3">
-      {reminders.length === 0 ? (
+      {reminders.length === 0 && alarms.length === 0 ? (
         <WidgetEmpty
-          title="No reminders yet"
-          detail="Ask JARVIS to remind you about something and it will appear here."
+          title="Nothing scheduled yet"
+          detail="Ask JARVIS to remind you about something, or to set an alarm, and it will appear here."
         />
       ) : (
         <ul className="space-y-2">
@@ -200,6 +239,7 @@ export function RemindersWidget({ feed, passwordLogin, now }: RemindersWidgetPro
           ))}
         </ul>
       )}
+      <AlarmList alarms={alarms} now={now} />
       <DeliveryDefaultsEditor available={available} onSaved={feed.reload} />
     </div>
   );

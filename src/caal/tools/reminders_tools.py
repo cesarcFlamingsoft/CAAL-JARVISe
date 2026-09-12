@@ -140,20 +140,35 @@ def _join(phrases: list[str]) -> str:
     return ", ".join(phrases[:-1]) + " and " + phrases[-1]
 
 
-def _promise(channels: tuple[str, ...]) -> str:
+def promise(channels: tuple[str, ...]) -> str:
     """What will actually happen, said plainly and only about channels that are armed."""
     if channels == (reminder_delivery.SPEAK,):
         return SPOKEN_ONLY_PROMISE
     return "When it comes due I will " + _join([_PROMISES[c] for c in channels]) + "."
 
 
+NOTHING_OFFER = "do nothing about it"
+NO_DELIVERY_PROMISE = (
+    "I will not tell you about it when it comes due. It stays on your list, "
+    "and you can ask me to change that any time."
+)
+
+
 def _question(available: tuple[str, ...]) -> str:
-    """The one choice question, asked only when there is really a choice to make."""
-    return (
-        "When it comes due, do you want me to "
-        + _join([_OFFERS[c] for c in available])
-        + ", or any combination of those?"
+    """The one choice question. There is always a choice, because doing nothing is one.
+
+    Every channel this owner may actually use is named, and so is the option of
+    no alert at all. Saying no is a decision a person is allowed to make out
+    loud, so it is offered in the same breath as the rest rather than left as
+    something they have to think to ask for.
+    """
+    offers = [_OFFERS[c] for c in available]
+    question = (
+        "When it comes due, do you want me to " + ", ".join([*offers, "or " + NOTHING_OFFER]) + "?"
     )
+    if len(offers) > 1:
+        question += " Any combination of those is fine."
+    return question
 
 
 def _offered(user_id: object) -> tuple[str, ...]:
@@ -166,17 +181,32 @@ def _selected(
 ) -> tuple[tuple[str, ...], list[str], bool]:
     """The channels to arm, what has to be said about the refused ones, and whether to ask.
 
-    A caller who named channels is never asked again. A caller who did not is
-    asked once, unless they have already saved a default or there is only one
-    channel available to them, in which case there is nothing to choose.
+    A caller who named channels is never asked again -- including the caller
+    who named ``none``, which is a channel selection of nothing at all. A caller
+    who did not gets the spoken channel armed provisionally and the question,
+    always: however few channels this owner has, no alert is always the other
+    answer, so there is always something to choose.
+
+    A saved dashboard default is deliberately not consulted here. It is a
+    preference someone set once in a browser; a reminder asked for out loud with
+    no channel named is not consent to send a message or place a call, and a
+    silently applied telegram or call is exactly the kind of thing that must
+    never happen without the person saying so in that conversation. So the
+    saved value stays what the dashboard shows and what the dashboard writes,
+    and this asks. The one-word answer to the question is handled in
+    :func:`caal.tools.reminder_delivery.parse_channels`, where ``default`` means
+    the spoken channel alone rather than whatever the browser has stored.
     """
     asking = False
+    if requested == ():
+        # They said "nothing". That is an answer, so there is nothing to ask.
+        return (), [], False
     if requested is None:
-        if reminder_delivery.has_default(scope):
-            requested = reminder_delivery.default_channels(scope)
-        else:
-            requested = reminder_delivery.DEFAULT_CHANNELS
-            asking = len(_offered(scope)) > 1
+        requested = reminder_delivery.DEFAULT_CHANNELS
+        # Always: doing nothing is always the other option, so a person who did
+        # not say is always being offered a real choice. The spoken channel is
+        # armed meanwhile, so a due time cannot pass in silence while they think.
+        asking = True
     permitted, refused = reminder_delivery.allowed(scope, requested)
     if not permitted:
         # Truthful fallback: the reminder still exists and still reaches them
@@ -285,16 +315,32 @@ def create_reminder(
         )
         return _result(
             f"Added to your {reminder['list']} list: {reminder['title']}. "
-            "There is no time on it, so I will not alert you." + extra + " Ask me for the list "
-            "any time.",
+            "There is no time on it, so I will not alert you." + extra + " Tell me a clear "
+            "time if you wanted an alert, or ask me for the list any time.",
             data,
         )
     # Only after the reminder itself is stored: delivery is the second half of
     # the same promise, and the reply below is the only thing that claims it.
     permitted, refused, asking = _selected(scope, requested)
-    permitted = _arm(reminder["id"], scope, user_id, reminder["title"], permitted, due_at, now)
+    if permitted:
+        permitted = _arm(reminder["id"], scope, user_id, reminder["title"], permitted, due_at, now)
     data["delivery"] = [*permitted]
     data["delivery_pending"] = bool(asking)
+    # An unanswered question is bound to the reminder it was asked about, so a
+    # two-word answer on the next turn can be read as one without guessing.
+    # A caller who did choose closes any question still open for this owner.
+    if asking and permitted:
+        reminder_delivery.await_answer(reminder["id"], scope, due_at, now=now)
+    else:
+        reminder_delivery.clear_awaiting(scope)
+    delay = alarms_tools.describe_delay(
+        due_at - (int(now) if now is not None else int(datetime.now(timezone.utc).timestamp()))
+    )
+    if not permitted and requested == ():
+        # They asked for no alert, and that is exactly what they get: a reminder
+        # that is on the list, at a time, and silent.
+        logger.info("Stored a timed reminder its owner asked not to be told about")
+        return _result(f"Reminder set {delay}: {reminder['title']}. " + NO_DELIVERY_PROMISE, data)
     if not permitted:
         logger.info("Stored a reminder with no channel armed")
         return _result(
@@ -303,10 +349,7 @@ def create_reminder(
             data | dict(timed=False),
         )
     logger.info("Stored a timed reminder on %d channel(s)", len(permitted))
-    delay = alarms_tools.describe_delay(
-        due_at - (int(now) if now is not None else int(datetime.now(timezone.utc).timestamp()))
-    )
-    tail = _question(_offered(scope)) if asking else _promise(permitted)
+    tail = _question(_offered(scope)) if asking else promise(permitted)
     sentences = [f"Reminder set {delay}: {reminder['title']}."] + refused + [tail]
     return _result(" ".join(sentences), data)
 
@@ -322,6 +365,11 @@ def set_delivery(
     no reminder id anywhere in it: the target is resolved from the verified
     owner own most recent timed reminder that has not come due, so a caller
     can never reach a reminder that is not theirs by naming one.
+
+    ``["none"]`` is the answer "do nothing about it": it cancels every channel
+    of that one reminder and returns an honest no-delivery result. It never
+    deletes the reminder, and it can no more reach somebody else reminder than
+    any other answer can.
     """
     try:
         scope = _scope(user_id)
@@ -346,6 +394,23 @@ def set_delivery(
             status="invalid_request",
         )
 
+    if chosen == ():
+        # "Nothing." Every channel of this one reminder is stood down, the
+        # reminder itself is left exactly where it is, and the reply says so
+        # rather than quietly leaving something armed.
+        armed = reminder_delivery.channels_of(row["id"])
+        if reminder_delivery.SPEAK in armed:
+            alarms_tools.cancel_pending(
+                reminder_delivery.alarm_of(row["id"]) or "", user_id=user_id
+            )
+        reminder_delivery.cancel(row["id"], armed)
+        reminder_delivery.clear_awaiting(scope)
+        logger.info("Stood down %d channel(s) at the request of their owner", len(armed))
+        return _result(
+            NO_DELIVERY_PROMISE,
+            dict(title=row["title"], due=row["due"], delivery=[], delivery_pending=False),
+        )
+
     permitted, refused = reminder_delivery.allowed(scope, chosen)
     if not permitted:
         permitted = (reminder_delivery.SPEAK,)
@@ -358,9 +423,10 @@ def set_delivery(
     if added:
         _arm(row["id"], scope, user_id, row["title"], added, int(row["due_at"]), now)
     live = reminder_delivery.channels_of(row["id"])
+    reminder_delivery.clear_awaiting(scope)
     logger.info("Changed a reminder to %d channel(s)", len(live))
     data = dict(title=row["title"], due=row["due"], delivery=list(live), delivery_pending=False)
-    return _result(" ".join([*refused, _promise(live)]), data)
+    return _result(" ".join([*refused, promise(live)]), data)
 
 
 def _iso(due_at: int) -> str:
@@ -465,5 +531,9 @@ DELIVERY_DESCRIPTION = (
     "How the user wants to be told when it comes due, as any combination of "
     "speak (out loud in a live session), telegram (a message to their authorised "
     "Telegram) and call (a call to the number approved on their profile); all means "
-    "every one of those. Leave it out when the user did not say, and CAAL asks them."
+    "every one of those, and default means only speak. none means they said they want "
+    "no alert at all -- nothing, no notification, do not tell me, just put it on the "
+    "list -- and it cancels every channel while keeping the reminder; it cannot be "
+    "combined with a channel. Leave it out when the user did not say, and CAAL asks "
+    "them which ways they want, including doing nothing."
 )

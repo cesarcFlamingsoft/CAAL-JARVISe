@@ -25,10 +25,13 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from caal import scheduled_events
 from caal import settings as settings_module
-from caal.tools import create_default_registry
+from caal.tools import create_default_registry, natural_schedule
+from caal.tools.arguments import validate_tool_arguments
 from caal.tools.errors import SafeToolError
 from caal.tools.knowledge_tools import session_unavailable_result
 from caal.user_scope import (
@@ -47,13 +50,29 @@ from .context_barrier import (
     sanitize_for_escalation,
 )
 from .providers import LLMProvider
+from .scheduled_reply import spoken_outcome
 
 if TYPE_CHECKING:
     from .providers import ToolCall
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["llm_node", "ToolDataCache"]
+__all__ = ["llm_node", "ToolDataCache", "ToolOutcomes"]
+
+
+@dataclass
+class ToolOutcomes:
+    """What the executed tools of one turn can say without a model.
+
+    Two kinds, kept apart because they are answered differently. ``hass`` is
+    the spoken response Home Assistant already produced. ``scheduled`` is the
+    outcome of a reminder or alarm call, in the order the model asked for them;
+    see :mod:`caal.llm.scheduled_reply` for why it is spoken rather than
+    narrated.
+    """
+
+    hass: list[str] = field(default_factory=list)
+    scheduled: list[str] = field(default_factory=list)
 
 
 class ToolDataCache:
@@ -78,6 +97,12 @@ class ToolDataCache:
         """Add tool response data to the cache; report whether it was kept."""
         if is_knowledge_tool(tool_name):
             logger.debug("Connected-account data is not cached past its own turn")
+            return False
+        if tool_name in PRIVATE_LOCAL_TOOLS:
+            # A reminder title, an alarm label and the row ids they carry are
+            # the private words of this person. They are answered directly in
+            # their own turn and are not injected into any later one.
+            logger.debug("Scheduled-item data is not cached past its own turn")
             return False
         entry = dict(tool=tool_name, data=data, timestamp=time.time())
         self._cache.append(entry)
@@ -175,22 +200,45 @@ async def llm_node(
 
                     asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
 
-                # Execute tools and get results (cache structured data)
-                # Also track hass_assist results for direct speech
-                hass_results = []
-                messages, hass_results = await _execute_tool_calls(
-                    agent,
-                    messages,
-                    response.tool_calls,
-                    response.content,
-                    provider=provider,
-                    tool_data_cache=tool_data_cache,
-                )
+                # Execute tools and get results (cache structured data), plus
+                # whatever those tools can already say for themselves.
+                # What this person just said is in scope for the length of
+                # their own tool calls and no longer. A native scheduling call
+                # that dropped the time can read it back from there; nothing
+                # durable, nothing logged, and nothing that leaves the process.
+                with natural_schedule.user_turn(_latest_user_text(messages)):
+                    messages, outcomes = await _execute_tool_calls(
+                        agent,
+                        messages,
+                        response.tool_calls,
+                        response.content,
+                        provider=provider,
+                        tool_data_cache=tool_data_cache,
+                    )
+
+                # A reminder or an alarm that was just written already has its
+                # one sentence, question included, and the local model returns
+                # nothing at all for a continuation of this shape. Speaking the
+                # handler message ends the turn here: no follow-up stream, no
+                # escalation behind it, and no scheduled item of this person
+                # handed to a second runtime to be described.
+                #
+                # Bounded deliberately: a turn that mixed a scheduled call with
+                # another tool is answered from the scheduled outcomes alone,
+                # in call order. Streaming instead would mean handing the model
+                # a history that contains the reminder, which is the thing this
+                # path exists to avoid. The Home Assistant reply, which is
+                # already spoken verbatim, is kept after them.
+                if outcomes.scheduled:
+                    combined = " ".join([*outcomes.scheduled, *outcomes.hass])
+                    logger.info(f"Speaking {len(outcomes.scheduled)} scheduled outcome(s) directly")
+                    yield strip_markdown_for_tts(combined)
+                    return
 
                 # If hass_assist was called, speak its response directly
                 # (bypasses LLM follow-up which tends to summarize/paraphrase)
-                if hass_results:
-                    combined = " ".join(hass_results)
+                if outcomes.hass:
+                    combined = " ".join(outcomes.hass)
                     logger.info(f"Speaking hass_assist response directly: {combined[:100]}...")
                     yield strip_markdown_for_tts(combined)
                     return
@@ -244,6 +292,21 @@ async def llm_node(
     except Exception as e:
         logger.error(f"Error in llm_node: {e}", exc_info=True)
         yield f"I encountered an error: {e}"
+
+
+def _latest_user_text(messages: list[dict]) -> str:
+    """The turn being answered, from the messages already built for this turn.
+
+    Read back rather than kept: there is no second copy of the utterance
+    anywhere, and a turn with nothing spoken in it simply yields "".
+    """
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
 
 
 def _build_messages_from_context(
@@ -506,7 +569,7 @@ async def _execute_tool_calls(
     response_content: str | None,
     provider: LLMProvider,
     tool_data_cache: ToolDataCache | None = None,
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict], ToolOutcomes]:
     """Execute tool calls and append results to messages.
 
     Args:
@@ -518,10 +581,10 @@ async def _execute_tool_calls(
         tool_data_cache: Optional cache to store structured tool response data
 
     Returns:
-        tuple: (updated messages, list of hass_assist results for direct speech)
+        tuple: (updated messages, :class:`ToolOutcomes` for direct speech)
     """
     logger.info(f"_execute_tool_calls: Starting with {len(tool_calls)} tool(s)")
-    hass_results: list[str] = []
+    outcomes = ToolOutcomes()
 
     # Add assistant message with tool calls
     tool_call_message = provider.format_tool_call_message(
@@ -549,7 +612,20 @@ async def _execute_tool_calls(
 
             # Capture hass_assist results for direct speech
             if tool_name == "hass_assist" and isinstance(tool_result, str):
-                hass_results.append(tool_result)
+                outcomes.hass.append(tool_result)
+
+            # A scheduled item speaks for itself, in the order it was asked
+            # for. Only the sentence is kept here; the result it came from is
+            # not logged, not cached and not repeated.
+            spoken = spoken_outcome(tool_name, tool_result)
+            if spoken is not None:
+                outcomes.scheduled.append(spoken)
+
+            # A scheduled item that now exists has to reach the dashboard of
+            # its own owner without waiting out a polling interval. What is
+            # published is a constant; see caal.scheduled_events.
+            if scheduled_events.is_scheduled_mutation(tool_name, tool_result):
+                await scheduled_events.announce(agent)
 
             # Cache structured data if present
             if tool_data_cache and isinstance(tool_result, dict):
@@ -588,6 +664,12 @@ async def _execute_tool_calls(
                     ),
                     "data": {},
                 }
+            # A scheduled call that refused or failed is answered here too: the
+            # refusal in the words the handler chose, a failure as one fixed
+            # internal-error line that never claims anything was scheduled.
+            spoken = spoken_outcome(tool_name, safe)
+            if spoken is not None:
+                outcomes.scheduled.append(spoken)
             result_message = provider.format_tool_result(
                 content=json.dumps(safe),
                 tool_call_id=tool_call.id,
@@ -595,7 +677,7 @@ async def _execute_tool_calls(
             )
             messages.append(result_message)
 
-    return messages, hass_results
+    return messages, outcomes
 
 
 # Local tools whose arguments and results are the private words of the user: a
@@ -649,6 +731,18 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
             if tool.category in ("alarms", "reminders"):
                 return scheduling_unavailable_result()
             return memory_unavailable_result()
+        # The model writes these arguments, so the schema is enforced here
+        # rather than left to Python: an omitted or mistyped argument becomes a
+        # sentence the model can act on, never a TypeError inside the turn. Only
+        # argument names are reported; a value carries what the user said.
+        # A natural request carries its own schedule even when the model
+        # drops it. Recovered from this turn alone, from words the user said,
+        # and only when they name one unambiguous relative time.
+        bound = natural_schedule.recovered_arguments(tool_name, bound)
+        invalid = validate_tool_arguments(tool, bound)
+        if invalid is not None:
+            logger.info(f"Refused an incomplete call to {tool_name} before its handler")
+            return invalid
         result = tool.handler(**bound)
         if inspect.isawaitable(result):
             # Knowledge tools read a bounded index and may refresh it first.

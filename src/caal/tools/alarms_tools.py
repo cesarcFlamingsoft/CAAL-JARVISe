@@ -275,6 +275,55 @@ def cancel_pending(alarm_id: str, user_id: str | None = None) -> int:
     return int(cursor.rowcount or 0)
 
 
+#: What a dashboard shows: the alarms and timers a person set for themselves.
+#: The ``reminder`` kind is deliberately absent -- that row is the spoken
+#: channel of a reminder that the reminders feed already shows, and listing it
+#: here would show one thing twice and call it two.
+DASHBOARD_KINDS = ("alarm", "timer")
+MAX_ALARMS_LISTED = 200
+
+
+def _state(row: Any, current: int) -> str:
+    """What actually became of one alarm, said as it is.
+
+    ``delivered`` only when a session really announced it; ``overdue`` when its
+    moment has passed and no eligible session ever did; ``pending`` while it is
+    still ahead. Nothing here invents a fourth answer to make a list look tidy.
+    """
+    if row["delivered_at"] is not None:
+        return "delivered"
+    return "overdue" if int(row["due_at"]) <= current else "pending"
+
+
+def dashboard_alarms(user_id: str | None = None, now: int | None = None) -> list[dict[str, Any]]:
+    """The owner own alarms and timers, as the authenticated dashboard shows them.
+
+    A read, and only a read: it claims nothing, announces nothing and settles
+    nothing, so opening a dashboard can never consume an alarm a voice session
+    was about to speak. The scope is the owner, so there is no argument here
+    that could widen it to anybody else label.
+    """
+    current = int(time.time()) if now is None else int(now)
+    placeholders = ",".join("?" for _ in DASHBOARD_KINDS)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            "SELECT id,label,kind,due_at,delivered_at,created_at FROM alarms "
+            f"WHERE user_id = ? AND kind IN ({placeholders}) ORDER BY due_at, rowid LIMIT ?",
+            (_scope(user_id), *DASHBOARD_KINDS, MAX_ALARMS_LISTED),
+        ).fetchall()
+    logger.info("Dashboard alarms feed: %d alarm(s) or timer(s)", len(rows))
+    return [
+        dict(
+            id=row["id"],
+            label=row["label"],
+            kind=row["kind"],
+            due=_iso(int(row["due_at"])),
+            state=_state(row, current),
+        )
+        for row in rows
+    ]
+
+
 def pending_count(user_id: str | None = None, now: int | None = None) -> int:
     """How many alarms of this owner are still waiting to be announced."""
     current = int(time.time()) if now is None else int(now)

@@ -42,9 +42,22 @@ TELEGRAM = "telegram"
 CALL = "call"
 CHANNELS: tuple[str, ...] = (SPEAK, TELEGRAM, CALL)
 ALL = "all"
-#: What a tool schema may offer. ``all`` is a shorthand for a combination, not
-#: a fourth channel: it expands to whatever this owner is actually allowed.
-CHANNEL_ARGUMENTS: tuple[str, ...] = CHANNELS + (ALL,)
+DEFAULT = "default"
+#: What a tool schema may offer. ``all`` and ``default`` are shorthands for a
+#: combination, not extra channels: ``all`` expands to whatever this owner is
+#: actually allowed, and ``default`` is exactly the spoken channel and nothing
+#: else. ``default`` is the word a user says when they are asked which ways they
+#: want a reminder and do not want to choose, and the only safe reading of it is
+#: the one channel that reaches nobody but them in the room they are already in.
+#: It is never the saved dashboard preference: a stored telegram or call there is
+#: a setting they made once in a browser, not consent given in this conversation.
+#: The answer "do nothing about it". It is a real choice, not the absence of
+#: one: a person who is asked how they want to be reminded is allowed to say
+#: they do not want to be, and that has to be sayable in one word and honoured
+#: exactly. It arms nothing, cancels everything already armed on that one
+#: reminder, and never deletes the reminder itself.
+NONE = "none"
+CHANNEL_ARGUMENTS: tuple[str, ...] = CHANNELS + (ALL, DEFAULT, NONE)
 DEFAULT_CHANNELS: tuple[str, ...] = (SPEAK,)
 #: The channels a live session cannot serve, so the durable worker owns them.
 WORKER_CHANNELS: tuple[str, ...] = (TELEGRAM, CALL)
@@ -89,6 +102,19 @@ _CREATE_META = """
 
 _ADOPTED = "adopted_pre_ledger_reminders"
 
+#: One row per owner at most: the reminder whose delivery question was asked
+#: and has not been answered yet. It is what makes a two-word "call me"
+#: readable as an answer at all, so it is written when the question is really
+#: asked and removed the moment it stops being true.
+_CREATE_AWAITING = """
+    CREATE TABLE IF NOT EXISTS reminder_delivery_awaiting (
+        user_id TEXT PRIMARY KEY,
+        reminder_id TEXT NOT NULL,
+        due_at INTEGER NOT NULL,
+        asked_at INTEGER NOT NULL
+    )
+"""
+
 _CREATE_DEFAULTS = """
     CREATE TABLE IF NOT EXISTS reminder_delivery_defaults (
         user_id TEXT PRIMARY KEY,
@@ -112,6 +138,7 @@ def _connect() -> sqlite3.Connection:
     connection.execute(_CREATE_DELIVERIES)
     connection.execute(_CREATE_DEFAULTS)
     connection.execute(_CREATE_META)
+    connection.execute(_CREATE_AWAITING)
     fresh = (
         connection.execute(
             "SELECT 1 FROM reminder_delivery_meta WHERE key = ?", (_ADOPTED,)
@@ -190,6 +217,13 @@ def parse_channels(value: object) -> tuple[str, ...]:
     channel is a refusal, never a destination. The order is always the order
     of :data:`CHANNELS`, so a stored selection compares equal however it was
     asked for.
+
+    ``all`` and ``default`` are the two combinations a person says rather than
+    lists. ``default`` resolves to the spoken channel alone, so answering the
+    delivery question with it arms nothing that leaves the room. ``none`` is the
+    one answer that resolves to no channel at all, and it may not be combined
+    with a channel: an empty tuple returned from here is always somebody saying
+    they want nothing, never somebody whose answer could not be read.
     """
     if isinstance(value, str):
         requested: list[Any] = [value]
@@ -204,16 +238,29 @@ def parse_channels(value: object) -> tuple[str, ...]:
             "Tell me how you want the reminder: out loud here, on Telegram, or a call."
         )
     chosen: set[str] = set()
+    nothing = False
     for item in requested:
         if not isinstance(item, str):
             raise SafeToolError("I can say it here, send it on Telegram, or call you.")
         name = item.strip().lower()
         if name == ALL:
             chosen.update(CHANNELS)
+        elif name == DEFAULT:
+            chosen.add(SPEAK)
+        elif name == NONE:
+            nothing = True
         elif name in CHANNELS:
             chosen.add(name)
         else:
             raise SafeToolError("I can say it here, send it on Telegram, or call you.")
+    if nothing and chosen:
+        # "Nothing, and also call me" is not a choice; it is two answers. Ask.
+        raise SafeToolError(
+            "Do you want me to tell you when it comes due, or leave it silent? "
+            "I did not catch which."
+        )
+    if nothing:
+        return ()
     return tuple(channel for channel in CHANNELS if channel in chosen)
 
 
@@ -393,6 +440,76 @@ def set_default_channels(
         )
     logger.info("Saved a reminder delivery default of %d channel(s)", len(permitted))
     return permitted
+
+
+# --- the one reminder whose delivery question is still open ---------------------------------
+
+
+def await_answer(reminder_id: str, user_id: object, due_at: int, now: int | None = None) -> None:
+    """Record that this owner was asked how one reminder should reach them.
+
+    One open question per owner: asking again about a newer reminder replaces
+    the older one, because the older question can no longer be answered by
+    "call me" without guessing which reminder was meant.
+    """
+    scope = _scope(user_id)
+    moment = int(now if now is not None else _now())
+    with closing(_connect()) as connection:
+        connection.execute(
+            "INSERT INTO reminder_delivery_awaiting (user_id,reminder_id,due_at,asked_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET reminder_id = "
+            "excluded.reminder_id, due_at = excluded.due_at, asked_at = excluded.asked_at",
+            (scope, reminder_id, int(due_at), moment),
+        )
+    logger.info("Asked one owner how a timed reminder should reach them")
+
+
+def clear_awaiting(user_id: object) -> bool:
+    """Forget the open question of one owner. Safe to call when there is none."""
+    scope = _scope(user_id)
+    with closing(_connect()) as connection:
+        cursor = connection.execute(
+            "DELETE FROM reminder_delivery_awaiting WHERE user_id = ?", (scope,)
+        )
+    return int(cursor.rowcount or 0) > 0
+
+
+def awaiting_reminder(user_id: object, now: int | None = None) -> str | None:
+    """The reminder of this owner whose delivery question is still open, if any.
+
+    Three things have to hold, and a row that fails any of them is deleted
+    rather than left to be answered later: the question was actually asked of
+    this owner, the reminder has not come due, and it is still the one that a
+    delivery choice would land on -- the newest future timed reminder they
+    have. Anything else is an answer with no unambiguous question behind it.
+    """
+    scope = _scope(user_id)
+    moment = int(now if now is not None else _now())
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT reminder_id, due_at FROM reminder_delivery_awaiting WHERE user_id = ?",
+            (scope,),
+        ).fetchone()
+        if row is None:
+            return None
+        newest = None
+        if int(row["due_at"]) > moment:
+            try:
+                newest = connection.execute(
+                    "SELECT id FROM reminders WHERE user_id = ? AND completed = 0 "
+                    "AND due_at IS NOT NULL AND due_at > ? "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (scope, moment),
+                ).fetchone()
+            except sqlite3.Error:
+                # No reminders table in this database: nothing can be awaiting.
+                newest = None
+        if newest is not None and newest["id"] == row["reminder_id"]:
+            return str(row["reminder_id"])
+        connection.execute(
+            "DELETE FROM reminder_delivery_awaiting WHERE user_id = ?", (scope,)
+        )
+    return None
 
 
 def _now() -> int:
@@ -702,6 +819,7 @@ __all__ = [
     "CHANNELS",
     "CHANNEL_ARGUMENTS",
     "CLAIM_LEASE_SECONDS",
+    "DEFAULT",
     "DEFAULT_CHANNELS",
     "DELIVERED",
     "FAILED",
@@ -715,10 +833,13 @@ __all__ = [
     "alarm_of",
     "allowed",
     "arm",
+    "await_answer",
+    "awaiting_reminder",
     "backoff_seconds",
     "cancel",
     "channel_availability",
     "channels_of",
+    "clear_awaiting",
     "claim_due",
     "default_channels",
     "fail",

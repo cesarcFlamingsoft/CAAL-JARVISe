@@ -16,6 +16,7 @@ number or a chat.
 from __future__ import annotations
 
 import logging
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -92,8 +93,8 @@ def client(harness):
         webhooks.app.dependency_overrides.pop(user_api.get_runtime, None)
 
 
-def _create(user_id: str, title: str, due: str | None = None, delivery=None) -> None:
-    reminders_tools.create_reminder(
+def _create(user_id: str, title: str, due: str | None = None, delivery=None) -> dict:
+    return reminders_tools.create_reminder(
         title=title, due=due, delivery=delivery, user_id=user_id, now=NOW
     )
 
@@ -184,17 +185,29 @@ def test_the_owner_reads_and_sets_the_default_for_future_reminders(client, harne
     assert reminder_delivery.default_channels(harness.ana) == ("speak", "telegram")
 
 
-def test_a_saved_default_is_what_a_new_reminder_uses(client, harness):
+def test_a_saved_default_is_a_readout_and_not_what_a_new_reminder_uses(client, harness):
+    """The preference survives a round trip; it does not arm a remote channel.
+
+    A reminder asked for out loud with no channel named is answered by the
+    question, not by something the browser stored earlier: the dashboard keeps
+    showing telegram, and the reminder is still only spoken.
+    """
     client.put(
         "/users/me/dashboard/reminders/delivery",
         headers=harness.bearer(harness.ana),
         json=dict(delivery=["telegram"]),
     )
 
-    _create(harness.ana, "Call the clinic", "PT30M")
+    created = _create(harness.ana, "Call the clinic", "PT30M")
     body = client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana)).json()
 
-    assert [c["channel"] for c in body["reminders"][0]["delivery"]] == ["telegram"]
+    assert created["data"]["delivery_pending"] is True
+    assert [c["channel"] for c in body["reminders"][0]["delivery"]] == ["speak"]
+    assert reminder_delivery.default_channels(harness.ana) == ("telegram",)
+    saved = client.get(
+        "/users/me/dashboard/reminders/delivery", headers=harness.bearer(harness.ana)
+    ).json()
+    assert saved["delivery"] == ["telegram"]
 
 
 def test_a_channel_this_owner_may_not_use_is_refused_not_saved(client, harness):
@@ -271,3 +284,64 @@ def test_nothing_private_reaches_the_log(client, harness, caplog):
     text = "\n".join(record.getMessage() for record in caplog.records)
     for secret in ("Biopsy", "results", harness.ana, harness.bo):
         assert secret not in text
+
+
+# --- alarms and timers, beside the reminders ---------------------------------------------
+
+
+def _alarm(user_id: str, label: str, when: str = "PT1H", kind: str = "alarm") -> dict:
+    """One alarm still ahead of the wall clock the route itself reads."""
+    return alarms_tools.set_alarm(
+        label=label, when=when, kind=kind, now=int(time.time()), user_id=user_id
+    )
+
+
+def test_the_feed_shows_the_callers_own_alarms_and_timers(client, harness):
+    _alarm(harness.ana, "Wake up")
+    _alarm(harness.ana, "Laundry", when="PT10M", kind="timer")
+    _alarm(harness.bo, "Bo private thing")
+
+    body = client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana)).json()
+
+    assert [row["label"] for row in body["alarms"]] == ["Laundry", "Wake up"]
+    assert [row["kind"] for row in body["alarms"]] == ["timer", "alarm"]
+    assert all(row["state"] == "pending" for row in body["alarms"])
+    assert all(row["due"].endswith("Z") for row in body["alarms"])
+
+
+def test_an_alarm_whose_moment_passed_unheard_says_so(client, harness):
+    """The store really holds these: nothing invents a tidier state for them."""
+    alarms_tools.set_alarm(
+        label="Long gone", when="PT1H", kind="alarm", now=NOW, user_id=harness.ana
+    )
+
+    body = client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana)).json()
+
+    assert [row["state"] for row in body["alarms"]] == ["overdue"]
+
+
+def test_an_alarm_of_another_owner_is_never_in_this_feed(client, harness):
+    _alarm(harness.bo, "Bo private thing")
+
+    body = client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana)).json()
+
+    assert body["alarms"] == []
+    assert "Bo private thing" not in str(body)
+
+
+def test_a_timed_reminder_is_not_also_listed_as_an_alarm(client, harness):
+    _create(harness.ana, "Call the clinic", "PT30M")
+
+    body = client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana)).json()
+
+    assert [item["title"] for item in body["reminders"]] == ["Call the clinic"]
+    assert body["alarms"] == []
+
+
+def test_an_alarm_label_never_reaches_the_log(client, harness, caplog):
+    _alarm(harness.ana, "Divorce lawyer")
+
+    with caplog.at_level(logging.DEBUG):
+        client.get("/users/me/dashboard/reminders", headers=harness.bearer(harness.ana))
+
+    assert "Divorce lawyer" not in caplog.text

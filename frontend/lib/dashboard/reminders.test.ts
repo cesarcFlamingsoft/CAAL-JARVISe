@@ -123,6 +123,60 @@ describe('browserReminders', () => {
   });
 });
 
+/**
+ * The path the deployed dashboard actually takes, end to end, with no browser
+ * and no session: the BFF route reduces the backend answer through
+ * `browserReminders` and serialises *that*, and the feed hook then parses the
+ * body it receives through `browserReminders` again before the widget sees
+ * it. A parser that only understands the backend own spelling therefore reads
+ * its own answer as malformed and the widget says the backend did not answer,
+ * even though the backend answered perfectly. These tests stand in for that
+ * two-step and would have caught it.
+ */
+describe('the BFF answer, re-parsed by the browser', () => {
+  /** What `noStoreJson(feed)` puts on the wire and `response.json()` returns. */
+  const overTheWire = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+  it('is still a feed after the round trip the dashboard performs', () => {
+    const served = browserReminders(FEED);
+    assert.ok(served, 'the route could not parse the backend feed');
+    const rendered = browserReminders(overTheWire(served));
+    assert.ok(rendered, 'the widget read the BFF answer as malformed');
+    assert.deepEqual(rendered, served, 'the round trip changed the feed');
+  });
+
+  it('keeps every field of a reminder the browser renders', () => {
+    const backend = { ...FEED, reminders: [{ ...REMINDER, list_name: 'Groceries' }] };
+    const served = browserReminders(backend)!;
+    const rendered = browserReminders(overTheWire(served))!;
+    const item = rendered.reminders[0];
+    assert.equal(rendered.generatedAt, 1_700_000_000);
+    assert.equal(item.id, ID);
+    assert.equal(item.title, 'Call the clinic');
+    assert.equal(item.due, '2023-11-14T23:30:00Z');
+    assert.equal(item.timed, true);
+    // The list name is the reminder own, not the fallback a dropped field
+    // would leave behind.
+    assert.equal(item.list, 'Groceries');
+    assert.equal(item.notes, 'ask about the results');
+    assert.deepEqual(item.delivery, [
+      { channel: 'speak', state: 'delivered' },
+      { channel: 'telegram', state: 'pending' },
+    ]);
+    assert.deepEqual(rendered.available, ['speak', 'telegram']);
+    assert.deepEqual(rendered.defaults, ['speak']);
+  });
+
+  it('is still refused when the answer is not a feed at all', () => {
+    // Tolerating the browser own spelling must not become tolerating
+    // anything: a drifted or empty backend answer has to stay an error.
+    assert.equal(browserReminders({ generatedAt: 1, reminders: {} }), null);
+    assert.equal(browserReminders({ generatedAt: 'soon', reminders: [] }), null);
+    assert.equal(browserReminders({ reminders: [] }), null);
+    assert.equal(browserReminders({ generated_at: 1 }), null);
+  });
+});
+
 describe('dueLabel', () => {
   const now = new Date('2023-11-14T22:13:20Z');
 
@@ -189,5 +243,72 @@ describe('deliverySummary', () => {
       ]),
       'Spoken here, Telegram and Phone call'
     );
+  });
+});
+
+/**
+ * Alarms and timers ride in on the same feed as the reminders and stay their
+ * own kind of thing all the way to the page: the widget shows one truthful
+ * list, never one list pretending the two are the same.
+ */
+describe('browserReminders and the alarms beside them', () => {
+  const ALARM = {
+    id: OTHER,
+    label: 'Wake up',
+    kind: 'alarm',
+    due: '2023-11-15T07:00:00Z',
+    state: 'pending',
+  };
+
+  const withAlarms = (alarms: unknown) => browserReminders({ ...FEED, alarms });
+
+  it('reads the alarms and timers of this owner', () => {
+    const feed = withAlarms([ALARM, { ...ALARM, id: ID, label: 'Laundry', kind: 'timer' }]);
+    assert.ok(feed);
+    assert.deepEqual(
+      feed!.alarms.map((item) => [item.label, item.kind, item.state]),
+      [
+        ['Wake up', 'alarm', 'pending'],
+        ['Laundry', 'timer', 'pending'],
+      ]
+    );
+  });
+
+  it('is an empty list, not an error, for a backend that sent none', () => {
+    const feed = browserReminders(FEED);
+    assert.ok(feed);
+    assert.deepEqual(feed!.alarms, []);
+  });
+
+  it('drops an alarm that is not exactly the shape it claims to be', () => {
+    const refused = [
+      { ...ALARM, id: 'not-a-uuid' },
+      { ...ALARM, label: '' },
+      { ...ALARM, kind: 'reminder' },
+      { ...ALARM, kind: 'anything' },
+      { ...ALARM, state: 'sent' },
+      { ...ALARM, due: null },
+      { ...ALARM, due: 'whenever' },
+      'a string',
+      null,
+    ];
+    for (const entry of refused) {
+      const feed = withAlarms([entry]);
+      assert.ok(feed, JSON.stringify(entry));
+      assert.deepEqual(feed!.alarms, [], JSON.stringify(entry));
+    }
+  });
+
+  it('carries no field the backend did not promise', () => {
+    const feed = withAlarms([{ ...ALARM, owner: 'usr_somebody', notes: 'private' }]);
+    assert.ok(feed);
+    assert.deepEqual(Object.keys(feed!.alarms[0]).sort(), ['due', 'id', 'kind', 'label', 'state']);
+  });
+
+  it('survives the BFF-to-browser round trip unchanged', () => {
+    const served = withAlarms([ALARM]);
+    assert.ok(served);
+    const rendered = browserReminders(JSON.parse(JSON.stringify(served)));
+    assert.deepEqual(rendered, served);
   });
 });

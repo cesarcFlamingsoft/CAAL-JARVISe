@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { SCHEDULED_EVENT_NAME } from '@/lib/dashboard/scheduled-events';
 
 export type FeedState<T> =
   | { status: 'loading' }
@@ -101,6 +102,18 @@ export function useDashboardFeed<T>(
       window.removeEventListener('connections-updated', reload);
     };
   }, [reload]);
+
+  // A reminder or alarm JARVIS just set announces itself on this browser own
+  // room; useScheduledUpdates validates that packet and raises this event. Only
+  // the scheduled feed reacts to it: an email or a calendar did not change
+  // because a reminder did, and re-reading a provider feed costs a round trip
+  // to somebody else service. The polling and visibility refreshes above stay
+  // as the fallback for a browser with no call running.
+  useEffect(() => {
+    if (path !== '/api/dashboard/reminders') return;
+    window.addEventListener(SCHEDULED_EVENT_NAME, reload);
+    return () => window.removeEventListener(SCHEDULED_EVENT_NAME, reload);
+  }, [path, reload]);
 
   return { ...state, reload };
 }
