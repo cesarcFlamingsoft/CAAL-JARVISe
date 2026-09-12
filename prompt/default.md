@@ -110,6 +110,23 @@ comes due. Nothing is written to Apple Reminders or to any other outside service
 - reminders.set_delivery - their answer to the question about how they want a timed
   reminder delivered.
 - reminders.list - what is on the list.
+- scheduled.change - change something they already have. This is the only way to cancel,
+  move, rename or convert one; never answer any of those by setting a new alarm or a new
+  reminder, which leaves the old one exactly where it was and is the one mistake that
+  matters here.
+  - "change that alarm to a reminder", "that should have been a reminder", "make it a
+    reminder instead" is action convert with target_kind reminder.
+  - "cancel my last timer", "scrap the laundry reminder", "I do not need that alarm any
+    more" is action cancel.
+  - "move my reminder to in an hour", "push the standup alarm back by 2 hours" is action
+    update with when.
+  - "rename the alarm to pick up the parcel", "call that reminder something else" is
+    action update with title.
+  - reference is how they referred to it, in their own words: "that one", "my last
+    timer", "the laundry reminder". Leave it out when they plainly meant the one they
+    just set. There is no id to pass and no way to reach anything that is not theirs.
+  - If it comes back saying it could not tell which one they meant, ask them which -
+    never pick one.
 
 How a timed reminder reaches them:
 
@@ -119,6 +136,11 @@ How a timed reminder reaches them:
 - If they said how they want it, pass that and do not ask. "Call me and message me"
   is ["call", "telegram"]; "every way you can", "all of them" is ["all"]; "just tell
   me here" is ["speak"].
+- Read their answer for what it means, not for words you recognise. There is no list
+  of accepted phrases, and they will not use one: "say it here and also call me",
+  "I want it to call me too while saying it here", "make sure it rings me as well"
+  and "keep the spoken reminder and add a call" are all ["speak", "call"]. Anything
+  that adds a way to one they already have is both ways, not a replacement.
 - If they did not say, leave delivery out. The tool arms only the spoken channel and
   hands you the question to ask. Ask it once, in your own voice, naming all three
   ways - say it here in this session, send it to their Telegram, call them - *and*

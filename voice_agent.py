@@ -103,6 +103,7 @@ from caal.integrations import (
 from caal.internal_auth import AUDIENCE_AGENT, PrincipalError, verify_principal
 from caal.delivery_router import DeliveryAnswerHandler
 from caal.knowledge_router import KnowledgeTurnHandler, LocalToolPath
+from caal.schedule_router import ScheduledChangeHandler
 from caal.llm import ToolDataCache, llm_node
 from caal.local_ollama import configured_endpoint
 from caal.log_privacy import install_pii_redaction
@@ -114,12 +115,16 @@ from caal.outbound_runtime import (
     handoff_failure_notice_enabled,
     requires_fallback_notification,
     shutdown_job,
+    uses_background_session,
+    uses_llm_greeting,
 )
 from caal.security_config import load_multi_user_config, log_startup_status
 from caal.settings import get_setting
 from caal.stt import WakeWordGatedSTT
 from caal.telegram_notify import TelegramCallNotifier
 from caal.tools import reminders_tools
+from caal.tools.delivery_semantics import SemanticDeliveryReader
+from caal.tools.schedule_semantics import SemanticScheduleReader
 from caal.telephony_auth import CallAccessGate, GateState
 from caal.user_scope import UserScope
 from caal.work_router import (
@@ -671,16 +676,58 @@ def build_delivery_answer_handler(
     user_scope: UserScope,
     *,
     announce: Callable[[], Awaitable[None]] | None = None,
+    provider: Any | None = None,
 ) -> DeliveryAnswerHandler | None:
-    """The deterministic answer to the delivery question, for a signed-in session.
+    """The answer to the delivery question, read for a signed-in session.
 
     The question is asked of one owner about one reminder, so only a verified
     user can answer it: an anonymous or legacy session has no owned reminder
     awaiting an answer and keeps the ordinary model path untouched.
+
+    The offline whitelist reads the short exact forms. Behind it, and only
+    behind it, the same *local* model the turn classifier uses reads the
+    answers people give in their own words -- gated offline first, bounded to
+    one classification-only question, and never escalated: an answer about a
+    reminder is this deployment own business. With no provider the route is
+    the whitelist alone, exactly as before.
     """
     if user_scope.user_id is None:
         return None
-    return DeliveryAnswerHandler(scope=user_scope, announce=announce)
+    semantic = None
+    if provider is not None:
+        semantic = SemanticDeliveryReader(
+            classify=provider_classifier(work_router_provider(provider))
+        )
+    return DeliveryAnswerHandler(scope=user_scope, announce=announce, semantic=semantic)
+
+
+def build_schedule_change_handler(
+    user_scope: UserScope,
+    *,
+    announce: Callable[[], Awaitable[None]] | None = None,
+    provider: Any | None = None,
+    now: Callable[[], int] | None = None,
+) -> ScheduledChangeHandler | None:
+    """The route that cancels, moves, renames or converts something already set.
+
+    A scheduled item belongs to one owner, so only a verified user can change
+    one: an anonymous or legacy session has nothing of its own here and keeps
+    the ordinary model path untouched.
+
+    The reading is the same *local* model the turn classifier uses, gated
+    offline first, bounded to one classification-only question, and never
+    escalated. With no provider there is no second route at all and the native
+    schema the model already holds is the only way in, which is exactly what
+    every caller had before this existed.
+    """
+    if user_scope.user_id is None or provider is None:
+        return None
+    semantic = SemanticScheduleReader(
+        classify=provider_classifier(work_router_provider(provider))
+    )
+    return ScheduledChangeHandler(
+        scope=user_scope, announce=announce, now=now, semantic=semantic
+    )
 
 
 class LocalTurnHandler:
@@ -711,6 +758,7 @@ class LocalTurnHandler:
         arm_callback_and_end_call: Callable[[], Awaitable[None]] | None = None,
         knowledge: KnowledgeTurnHandler | None = None,
         delivery: DeliveryAnswerHandler | None = None,
+        schedule: ScheduledChangeHandler | None = None,
     ) -> None:
         self._phone_handoff = phone_handoff
         self._background = background
@@ -720,6 +768,11 @@ class LocalTurnHandler:
         # route -- handoff, background work, the model -- reads them as a
         # request for something else entirely.
         self._delivery = delivery
+        # Changing something already scheduled -- cancel it, move it, rename
+        # it, make that alarm a reminder. Read right after the delivery
+        # answer and before anything else, because every other route reads
+        # those words as a request to schedule one more thing.
+        self._schedule = schedule
         # Questions about the connected email and calendar accounts are answered
         # here from the per-user index; Hermes never receives those tools.
         self._knowledge = knowledge
@@ -816,6 +869,16 @@ class LocalTurnHandler:
             except Exception as exc:
                 # No exception text: it could carry the utterance into the log.
                 logger.error("Delivery-answer handling failed (%s)", type(exc).__name__)
+        if self._schedule is not None:
+            try:
+                if await self._schedule.handle(text, self._session):
+                    # Something of theirs changed; a pending exit question is
+                    # not what this answered.
+                    self._end_call_intent.reset()
+                    return True
+            except Exception as exc:
+                # No exception text: it could carry the utterance into the log.
+                logger.error("Scheduled-change handling failed (%s)", type(exc).__name__)
         if self._phone_handoff is not None:
             try:
                 if await self._phone_handoff.handle_final_transcript(text, self._session):
@@ -966,20 +1029,23 @@ CALLBACK_GREETING_INSTRUCTIONS = (
 )
 
 
-REMINDER_GREETING_INSTRUCTIONS = (
-    "You are calling the user because a reminder they set has come due and they "
-    "asked to be called about it. Greet them in one short sentence and stop; the "
-    "reminder itself is spoken right after your greeting, so do not guess at what "
-    "it says."
-)
+# The whole opening of an isolated reminder call, spoken verbatim. It is not an
+# instruction to a model: a reminder call used to ask the model for a greeting,
+# and the system prompt carries a generic reminder example, so the opening could
+# carry invented or echoed content before the real reminder was ever read. This
+# names no reminder, no task, no history and no user, and the one trusted
+# reminder is spoken right after it.
+REMINDER_CALL_GREETING = "Hello, this is JARVIS. I am calling about a reminder you set."
 
 
 def greeting_instructions(config: OutboundRoomConfig | None) -> str:
-    """Pick the opening line: a callback, reminder or continuation greeting only when warranted."""
+    """Pick the opening line: a callback or continuation greeting only when warranted.
+
+    Never called for an isolated reminder call, which opens with a fixed phrase
+    rather than a generated one; see :func:`deliver_outbound_opening`.
+    """
     if config is not None and config.is_callback:
         return CALLBACK_GREETING_INSTRUCTIONS
-    if config is not None and config.is_reminder:
-        return REMINDER_GREETING_INSTRUCTIONS
     if config is not None and config.carries_continuation:
         return HANDOFF_GREETING_INSTRUCTIONS
     return DEFAULT_GREETING_INSTRUCTIONS
@@ -1023,6 +1089,42 @@ async def announce_due_reminder(
         logger.warning("Could not speak the due reminder on its call", exc_info=False)
         return False
     return True
+
+
+async def deliver_outbound_opening(
+    session: AgentSession,
+    config: OutboundRoomConfig | None,
+    *,
+    greeting_timeout_seconds: float = 30.0,
+) -> None:
+    """Speak the opening of a session, in a fixed order, once a human is on the line.
+
+    An isolated reminder call opens with a fixed phrase and then exactly the
+    one owner-scoped reminder it was dispatched for: no model call, so nothing
+    the prompt happens to contain can be echoed or invented ahead of it, and a
+    reminder that cannot be read leaves silence rather than a substitute.
+    Every other session keeps the generated greeting it always had, followed
+    by a settled callback outcome when there is one.
+    """
+    if not uses_llm_greeting(config):
+        try:
+            await session.say(REMINDER_CALL_GREETING)
+        except Exception:
+            logger.warning("Could not speak the reminder call greeting", exc_info=False)
+        await announce_due_reminder(session, config)
+        return
+    try:
+        await asyncio.wait_for(
+            session.generate_reply(instructions=greeting_instructions(config)),
+            timeout=greeting_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.error("Initial greeting timed out (30s) - LLM may be unresponsive")
+        # Continue anyway - user can still speak
+    # A callback exists to deliver one settled outcome; say it right away.
+    await announce_callback_outcome(session, config)
+    # A reminder call exists for exactly one reminder; say that and nothing else.
+    await announce_due_reminder(session, config)
 
 
 async def run_outbound_call(
@@ -1143,6 +1245,18 @@ async def _hydrate_answered_call(
     the continuation claim: a leg that could not claim it continues nothing
     and keeps its room-owned work.
     """
+    if config.is_isolated_reminder:
+        # A reminder job delivers one stored line and continues nothing. Any
+        # continuation dispatched with it is dropped unread rather than spoken
+        # here, so no earlier conversation can reach this call.
+        if config.conversation_id is not None:
+            try:
+                conversation_ledger.release_continuation(
+                    config.conversation_id, session_key=config.attempt_id
+                )
+            except Exception:
+                logger.warning("Could not release continuation on a reminder call", exc_info=False)
+        return
     context: object | None = config.snapshot
     if config.conversation_id is not None:
         try:
@@ -1393,6 +1507,7 @@ def build_background_task_bridge(
     dial_callback: DialCallback | None = None,
     user_scope: UserScope | None = None,
     dial_user_callback: DialUserCallback | None = None,
+    outbound_config: OutboundRoomConfig | None = None,
 ) -> BackgroundTaskBridge | None:
     """Wire the background queue to the configured LLM and the Telegram fallback.
 
@@ -1411,6 +1526,12 @@ def build_background_task_bridge(
     slow or unreachable model costs a semantic reading and nothing else.
     """
     if not runtime.get("background_tasks_enabled", True):
+        return None
+    if not uses_background_session(outbound_config):
+        # An isolated reminder call has no background work of any kind, so it
+        # is given none of that surface: nothing to poll, announce, arm a
+        # callback on, or answer with a fixed background reply.
+        logger.info("Reminder call: background task session disabled for this job")
         return None
     scope = user_scope or UserScope.legacy()
     token = runtime.get("telegram_bot_token") or ""
@@ -2341,6 +2462,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         dial_callback=build_background_callback_dialer(ctx),
         user_scope=user_scope,
         dial_user_callback=build_user_callback_dialer(ctx, identity=identity),
+        outbound_config=outbound_config,
     )
     # "Hang up and call me back" exists only on a phone leg; the outbound
     # configuration it reads is bound below, before the first user turn.
@@ -2371,13 +2493,29 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # It publishes the same constant packet the tool path publishes, defined
     # further down in this entrypoint and resolved when the answer arrives.
     delivery_route = build_delivery_answer_handler(
-        user_scope, announce=lambda: _publish_scheduled_change()
+        user_scope,
+        announce=lambda: _publish_scheduled_change(),
+        provider=caal_llm.provider_instance,
     )
     logger.info(
         "  Delivery-answer route: %s",
         "on (an open delivery question is answered here)"
         if delivery_route is not None
         else "disabled (no signed-in user)",
+    )
+
+    # Changing something already scheduled: cancel, move, rename, convert. The
+    # write is the native owner-scoped tool; this route only reads the turn.
+    schedule_route = build_schedule_change_handler(
+        user_scope,
+        announce=lambda: _publish_scheduled_change(),
+        provider=caal_llm.provider_instance,
+    )
+    logger.info(
+        "  Scheduled-change route: %s",
+        "on (a change to something already set is read here)"
+        if schedule_route is not None
+        else "disabled (no signed-in user or no local model)",
     )
 
     local_turn_handler = LocalTurnHandler(
@@ -2388,6 +2526,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         arm_callback_and_end_call=arm_callback_and_end_call,
         knowledge=knowledge_route,
         delivery=delivery_route,
+        schedule=schedule_route,
     )
 
     @session.on("user_input_transcribed")
@@ -2732,20 +2871,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await background_bridge.start(context_source=lambda: capture_task_context(session))
             background_task = asyncio.create_task(_background_task_loop())
 
-        # Send initial greeting with timeout to prevent hanging on unresponsive LLM
-        try:
-            await asyncio.wait_for(
-                session.generate_reply(instructions=greeting_instructions(outbound_config)),
-                timeout=30.0,
-            )
-        except asyncio.TimeoutError:
-            logger.error("Initial greeting timed out (30s) - LLM may be unresponsive")
-            # Continue anyway - user can still speak
-
-        # A callback exists to deliver one settled outcome; say it right away.
-        await announce_callback_outcome(session, outbound_config)
-        # A reminder call exists for exactly one reminder; say that and nothing else.
-        await announce_due_reminder(session, outbound_config)
+        # The opening of this session, in a fixed order: a generated greeting
+        # (bounded by a timeout so an unresponsive LLM cannot hang the call)
+        # and any settled callback outcome, or -- on a reminder call -- a fixed
+        # phrase and exactly the one reminder the call was dispatched for.
+        await deliver_outbound_opening(session, outbound_config)
 
         logger.info("Agent ready - listening for speech...")
 

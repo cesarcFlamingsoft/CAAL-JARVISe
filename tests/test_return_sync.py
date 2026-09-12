@@ -473,7 +473,7 @@ def _called_names(node: ast.AST) -> set[str]:
 
 
 def test_entrypoint_releases_the_ledger_however_the_session_lifecycle_ends() -> None:
-    """One outer ``finally`` covers session start, the greeting and the wait."""
+    """One outer ``finally`` covers session start, the opening and the wait."""
     voice_agent = _load_voice_agent()
     source = textwrap.dedent(inspect.getsource(voice_agent.entrypoint))
     tree = ast.parse(source)
@@ -491,7 +491,7 @@ def test_entrypoint_releases_the_ledger_however_the_session_lifecycle_ends() -> 
 
     body_calls = {name for statement in guard.body for name in _called_names(statement)}
     assert "start" in body_calls, "session.start must run inside the guard"
-    assert "generate_reply" in body_calls, "the greeting must run inside the guard"
+    assert "deliver_outbound_opening" in body_calls, "the opening must run inside the guard"
     assert "wait" in body_calls, "waiting for close must run inside the guard"
     assert "run_outbound_call" in body_calls, "the outbound dial must run inside the guard"
     # Cleanup is not duplicated anywhere in the body of the guard or outside it.

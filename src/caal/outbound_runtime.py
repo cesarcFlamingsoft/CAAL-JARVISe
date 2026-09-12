@@ -86,6 +86,18 @@ class OutboundRoomConfig:
         """Whether this call exists to deliver one due reminder of its owner."""
         return self.reminder_id is not None
 
+    @property
+    def is_isolated_reminder(self) -> bool:
+        """Whether this call is a reminder delivery and nothing else.
+
+        A settled background task still owes its outcome, so a configuration
+        that somehow carries both ids is treated as the callback it claims to
+        be. That precedence is deliberate, and it is decided here from the
+        validated ids alone: nothing in the dispatch metadata can assert the
+        kind of a call directly.
+        """
+        return self.reminder_id is not None and self.callback_task_id is None
+
     @classmethod
     def from_dispatch_metadata(
         cls,
@@ -154,6 +166,30 @@ class OutboundRoomConfig:
             reminder_id=reminder_id,
             user_id=request.user_id,
         )
+
+
+def uses_llm_greeting(config: OutboundRoomConfig | None) -> bool:
+    """Whether this session opens with a model-generated greeting.
+
+    Every session does except an isolated reminder delivery. That call exists
+    to say one stored line of one owner, and the system prompt carries a
+    generic reminder example the model can echo or embroider, so its opening
+    is a fixed phrase instead of a generated one. ``None`` is an ordinary
+    browser session.
+    """
+    return config is None or not config.is_isolated_reminder
+
+
+def uses_background_session(config: OutboundRoomConfig | None) -> bool:
+    """Whether this session gets the background-task bridge and callback arming.
+
+    An isolated reminder call has no background task, so none of that surface
+    belongs on it: no callback arming, no background polling or notification,
+    and none of the fixed background replies (including the one that says
+    nothing is running). Callback legs, hand-offs and ordinary sessions keep
+    the bridge exactly as before.
+    """
+    return config is None or not config.is_isolated_reminder
 
 
 # Operators opt in to a chat line about a non-callback outbound hand-off that

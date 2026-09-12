@@ -41,7 +41,9 @@ EVENT: dict[str, Any] = {"v": VERSION, "kind": KIND}
 PAYLOAD = json.dumps(EVENT, separators=(",", ":"))
 
 #: The native tools that change what a scheduled feed shows.
-SCHEDULED_TOOLS = frozenset({"reminders.create", "reminders.set_delivery", "alarms.set"})
+SCHEDULED_TOOLS = frozenset(
+    {"reminders.create", "reminders.set_delivery", "alarms.set", "scheduled.change"}
+)
 
 _OK = "ok"
 

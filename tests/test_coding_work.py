@@ -19,6 +19,7 @@ from caal.background_task_session import (
     BACKGROUND_CANCELLED_REPLY,
     BACKGROUND_STATUS_WORKING_REPLY,
     CODING_ACK_REPLY,
+    CODING_OFFER_CALLBACK_REPLY,
     BackgroundTaskBridge,
 )
 from caal.background_tasks import QUEUED, RUNNING, list_tasks
@@ -198,7 +199,7 @@ def hermes_bridge(hermes) -> BackgroundTaskBridge:
 @pytest.mark.asyncio
 async def test_a_queued_coding_job_is_carried_out_by_the_agent_runtime(store, monkeypatch) -> None:
     """No local process is involved: the container has no Claude Code to run."""
-    from caal.coding_delegation import CLAUDE_CODE_EFFORT, COMPLETION_MARKER
+    from caal.coding_delegation import CODING_DELEGATION_CONTRACT, COMPLETION_MARKER
 
     def no_subprocesses(*args, **kwargs):
         raise AssertionError("a coding job must never spawn a local process")
@@ -217,8 +218,8 @@ async def test_a_queued_coding_job_is_carried_out_by_the_agent_runtime(store, mo
     assert delivered == 1
     assert "reran the suite" in session.spoken[-1]
     assert COMPLETION_MARKER not in session.spoken[-1]
-    system = str(hermes.calls[0][0]["content"]).lower()
-    assert "claude code" in system and CLAUDE_CODE_EFFORT in system and "default model" in system
+    assert hermes.calls[0][0]["content"] == CODING_DELEGATION_CONTRACT
+    assert "coding_route.py --json" in CODING_DELEGATION_CONTRACT
     await teardown(bridge)
 
 
@@ -274,3 +275,10 @@ async def test_nothing_of_the_job_reaches_the_log(store, caplog) -> None:
     assert "ollama provider" not in logged
     assert "retry helper" not in logged
     await teardown(bridge)
+
+
+@pytest.mark.parametrize("reply", [CODING_ACK_REPLY, CODING_OFFER_CALLBACK_REPLY])
+def test_coding_acknowledgement_promises_the_best_available_route(reply: str) -> None:
+    assert "best available coding route" in reply
+    assert "Claude" not in reply
+    assert "Codex" not in reply

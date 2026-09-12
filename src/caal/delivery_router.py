@@ -38,6 +38,7 @@ from typing import Any, Awaitable, Callable
 from caal.llm.scheduled_reply import spoken_outcome
 from caal.tools import reminder_delivery, reminders_tools
 from caal.tools.delivery_answer import read_delivery_answer
+from caal.tools.delivery_semantics import SemanticDeliveryReader
 from caal.user_scope import UserScope
 
 logger = logging.getLogger(__name__)
@@ -110,11 +111,21 @@ class DeliveryAnswerHandler:
         scope: UserScope,
         announce: Callable[[], Awaitable[None]] | None = None,
         now: Callable[[], int] | None = None,
+        semantic: SemanticDeliveryReader | None = None,
     ) -> None:
         self._scope = scope
         # The constant scheduled-change packet, published only after the write.
         self._announce = announce
         self._now = now
+        # The second, narrower layer: the local model reads the answers people
+        # give in their own words, behind the offline whitelist and behind the
+        # open question. Without one this route is the whitelist alone.
+        self._semantic = semantic
+
+    @property
+    def semantic(self) -> SemanticDeliveryReader | None:
+        """The local reading layer behind the whitelist, if one is configured."""
+        return self._semantic
 
     @property
     def enabled(self) -> bool:
@@ -137,16 +148,30 @@ class DeliveryAnswerHandler:
         """
         if not self.enabled:
             return False
+        user_id = self._scope.user_id
         chosen = read_delivery_answer(text)
         if chosen is None:
-            return False
-        user_id = self._scope.user_id
-        now = self._moment()
-        if reminder_delivery.awaiting_reminder(user_id, now) is None:
-            # A delivery word with no open question behind it is ordinary
-            # conversation. It must never move a reminder.
-            logger.info("A delivery-shaped reply arrived with no question open; leaving it alone")
-            return False
+            # Not one of the exact forms. It may still plainly be the answer,
+            # said in this person own words, and the local model is asked to
+            # read it -- but only after the offline gate has bounded the turn
+            # and only while there is a real question of this owner own open.
+            if self._semantic is None or not self._semantic.may_read(text):
+                return False
+            now = self._moment()
+            if reminder_delivery.awaiting_reminder(user_id, now) is None:
+                return False
+            chosen = await self._semantic.read(text)
+            if chosen is None:
+                return False
+        else:
+            now = self._moment()
+            if reminder_delivery.awaiting_reminder(user_id, now) is None:
+                # A delivery word with no open question behind it is ordinary
+                # conversation. It must never move a reminder.
+                logger.info(
+                    "A delivery-shaped reply arrived with no question open; leaving it alone"
+                )
+                return False
 
         result = reminders_tools.set_delivery(
             delivery=list(chosen), user_id=user_id, now=now

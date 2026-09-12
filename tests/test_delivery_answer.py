@@ -178,6 +178,17 @@ def run(coroutine):
         ("no notification", (NONE,)),
         ("call and message me", (TELEGRAM, CALL)),
         ("call me and say it here", (SPEAK, CALL)),
+        # Two connectors in a row are one connector. "and also" is how people
+        # actually join the two halves of an additive answer out loud.
+        ("say it here and also call me", (SPEAK, CALL)),
+        ("Say it here, and also call me.", (SPEAK, CALL)),
+        ("SAY IT HERE AND ALSO CALL ME", (SPEAK, CALL)),
+        ("say it here, and also, call me", (SPEAK, CALL)),
+        ("call me and also telegram me", (TELEGRAM, CALL)),
+        ("and call me", (CALL,)),
+        ("call me and", (CALL,)),
+        ("say it here and also please call me", (SPEAK, CALL)),
+        ("say it here and also call me thanks", (SPEAK, CALL)),
     ],
 )
 def test_the_accepted_answers_are_read_exactly(text, expected) -> None:

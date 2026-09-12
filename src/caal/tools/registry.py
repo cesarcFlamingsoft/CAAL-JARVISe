@@ -19,6 +19,7 @@ from caal.tools import (
     memory_tools,
     reminder_delivery,
     reminders_tools,
+    scheduled_items,
 )
 
 ToolHandler = Callable[..., Any]
@@ -588,6 +589,17 @@ def create_default_registry() -> ToolRegistry:
                 ["label", "when", "kind"],
             ),
             handler=alarms_tools.set_alarm,
+            user_scoped=True,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name=scheduled_items.CHANGE_TOOL,
+            description=scheduled_items.CHANGE_DESCRIPTION,
+            category="reminders",
+            parameters=scheduled_items.CHANGE_SCHEMA,
+            handler=scheduled_items.change_scheduled_item,
             user_scoped=True,
         )
     )

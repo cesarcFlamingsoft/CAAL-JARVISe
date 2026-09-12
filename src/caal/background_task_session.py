@@ -100,16 +100,16 @@ LONG_WORK_OFFER_CALLBACK_REPLY = (
     "This will take a while. Would you like me to call you when it's done?"
 )
 # A coding request is delegated to the Hermes agent runtime, which carries it
-# out with its own Claude Code capability. That takes far longer than a voice
+# out with its host-guard-selected coding capability. That takes far longer than a voice
 # turn, so it is queued like any other durable work. The acknowledgement says
 # what will actually happen and claims nothing about the outcome.
 CODING_ACK_REPLY = (
-    "Understood. That's a coding job, so I'll run it through Claude Code "
+    "Understood. That's a coding job, so I'll use the best available coding route "
     "and tell you what it finds."
 )
 # The same on a phone call, where the answer can only reach the next turn.
 CODING_OFFER_CALLBACK_REPLY = (
-    "Understood. That's a coding job, so I'll run it through Claude Code. "
+    "Understood. That's a coding job, so I'll use the best available coding route. "
     "This will take a while. Would you like me to call you when it's done?"
 )
 BACKGROUND_CONTROL_REPLIES = (

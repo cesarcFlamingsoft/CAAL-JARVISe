@@ -160,6 +160,7 @@ def test_registry_marks_every_per_user_tool_as_user_scoped_and_nothing_else() ->
             "reminders.create",
             "reminders.set_delivery",
             "reminders.list",
+            "scheduled.change",
         ]
     )
     for name in ("memory.remember", "memory.recall"):

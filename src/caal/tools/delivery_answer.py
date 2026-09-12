@@ -231,7 +231,14 @@ def read_delivery_answer(text: object) -> tuple[str, ...] | None:
 
     chosen: list[str] = []
     for segment in segments:
-        phrase = " ".join(segment)
+        # "and also", "and, also," and a trailing "and" are one connector said
+        # twice. A connector carries no channel, so the gap between two of them
+        # is nothing at all rather than an unreadable phrase. Each half is
+        # trimmed on its own too: "and also please call me" is still "call me".
+        trimmed = _trimmed(segment)
+        if not trimmed:
+            continue
+        phrase = " ".join(trimmed)
         channel = _PHRASES.get(phrase)
         if channel is None:
             # One unread word is enough: this is somebody saying something
@@ -240,6 +247,10 @@ def read_delivery_answer(text: object) -> tuple[str, ...] | None:
         if channel not in chosen:
             chosen.append(channel)
 
+    if not chosen:
+        # Connectors and filler only: "and also", "yes please". That is not a
+        # choice, and reading one out of it would arm a channel nobody named.
+        return None
     if any(channel in _WHOLE for channel in chosen):
         # "nothing, and call me" is two answers. Ask rather than pick one.
         return (chosen[0],) if len(chosen) == 1 else None
