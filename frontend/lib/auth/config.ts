@@ -21,6 +21,7 @@ export const ENV_AUDIENCE = 'CF_ACCESS_AUD';
 export const ENV_INTERNAL_SECRET = 'CAAL_INTERNAL_AUTH_SECRET';
 export const ENV_API_URL = 'CAAL_IDENTITY_API_URL';
 export const ENV_PUBLIC_ORIGIN = 'CAAL_PUBLIC_ORIGIN';
+export const ENV_TRUSTED_LOCAL_ORIGINS = 'CAAL_TRUSTED_LOCAL_ORIGINS';
 export const ENV_REQUIRE_IDENTITY = 'CAAL_REQUIRE_IDENTITY_FOR_SESSIONS';
 export const ENV_PASSWORD_LOGIN = 'CAAL_PASSWORD_LOGIN';
 export const ENV_ALLOW_INSECURE_COOKIES = 'CAAL_ALLOW_INSECURE_COOKIES';
@@ -39,6 +40,8 @@ export interface IdentityConfig {
   readonly internalAuthSecret: string;
   readonly apiBaseUrl: string;
   readonly publicOrigin: string | null;
+  /** Exact localhost HTTP origins; also opt into local session cookie issuance. */
+  readonly trustedLocalOrigins: readonly string[];
   readonly requireIdentityForSessions: boolean;
   /** Whether local password sign-in is offered. */
   readonly passwordLogin: boolean;
@@ -150,6 +153,24 @@ export function readIdentityConfig(env: Env = process.env): IdentityStatus {
     }
   }
 
+  const rawLocalOrigins = present(env, ENV_TRUSTED_LOCAL_ORIGINS);
+  const trustedLocalOrigins = rawLocalOrigins === null ? [] : rawLocalOrigins.split(',');
+  if (trustedLocalOrigins.length > 0) {
+    const valid = trustedLocalOrigins.every((origin) => {
+      if (!/^http:\/\/localhost:[1-9][0-9]{0,4}$/.test(origin)) return false;
+      try {
+        return new URL(origin).origin === origin;
+      } catch {
+        return false;
+      }
+    });
+    if (!valid || !publicOrigin) {
+      problems.push(
+        `${ENV_TRUSTED_LOCAL_ORIGINS} (invalid: requires a public origin and comma-separated exact http://localhost:<port> origins)`
+      );
+    }
+  }
+
   const requireIdentity = flag(env, ENV_REQUIRE_IDENTITY, false);
   if (requireIdentity === null) {
     problems.push(`${ENV_REQUIRE_IDENTITY} (invalid: expected true or false)`);
@@ -181,6 +202,7 @@ export function readIdentityConfig(env: Env = process.env): IdentityStatus {
     internalAuthSecret: secret!,
     apiBaseUrl: apiBaseUrl!,
     publicOrigin,
+    trustedLocalOrigins: Object.freeze(trustedLocalOrigins),
     requireIdentityForSessions: requireIdentity!,
     passwordLogin: passwordLogin!,
     allowInsecureCookies: allowInsecureCookies!,
@@ -192,7 +214,10 @@ export function readIdentityConfig(env: Env = process.env): IdentityStatus {
       return (
         `Multi-user identity enabled (${providers.join(' and ')}), backend ${this.apiBaseUrl}` +
         (this.requireIdentityForSessions ? ', anonymous voice sessions refused' : '') +
-        (this.allowInsecureCookies ? ', INSECURE cookies permitted over plain HTTP' : '')
+        (this.allowInsecureCookies ? ', INSECURE cookies permitted over plain HTTP' : '') +
+        (this.trustedLocalOrigins.length
+          ? `, explicit local browser origins: ${this.trustedLocalOrigins.join(',')}`
+          : '')
       );
     },
   };

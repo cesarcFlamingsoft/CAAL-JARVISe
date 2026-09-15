@@ -29,6 +29,9 @@ import time
 
 import pytest
 
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
+
 from caal import background_task_session, background_tasks, telegram_notify
 from caal.background_task_session import (
     CALLBACK_ABANDONED_NOTICE,

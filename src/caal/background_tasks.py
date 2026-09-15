@@ -215,6 +215,10 @@ def _connect() -> sqlite3.Connection:
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(STORE_PATH, timeout=_BUSY_TIMEOUT_SECONDS, isolation_level=None)
     connection.row_factory = sqlite3.Row
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS delegation_admissions "
+        "(task_id TEXT PRIMARY KEY, user_id TEXT NOT NULL)"
+    )
     connection.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_SECONDS * 1000)}")
     connection.execute(
         """
@@ -322,13 +326,18 @@ def _fetch(connection: sqlite3.Connection, task_id: str) -> BackgroundTask | Non
 
 
 def enqueue(
-    request: str, *, session_key: str | None = None, user_id: str | None = None
+    request: str, *, session_key: str | None = None, user_id: str | None = None,
+    delegation_scope=None,
 ) -> BackgroundTask:
     """Persist a new queued task. The stored request is redacted and bounded.
 
     ``user_id`` files the work under a verified user; only that user's
     sessions can later inspect, cancel, or arm a callback for it.
     """
+    from .ha_policy import require_delegated_scope
+    effective_scope = require_delegated_scope(delegation_scope)
+    if effective_scope is not None and effective_scope.user_id != user_id:
+        raise PermissionError("delegation_owner_mismatch")
     cleaned = _clean(request or "", MAX_REQUEST_CHARS)
     if not cleaned:
         raise ValueError("background task request must not be empty")
@@ -352,6 +361,12 @@ def enqueue(
                 """,
                 (task_id, session_key, QUEUED, cleaned, moment, moment, owner),
             )
+            if effective_scope is not None:
+                require_delegated_scope(effective_scope)
+                connection.execute(
+                    "INSERT INTO delegation_admissions (task_id, user_id) VALUES (?, ?)",
+                    (task_id, owner),
+                )
             connection.execute("COMMIT")
         except BaseException:
             connection.execute("ROLLBACK")

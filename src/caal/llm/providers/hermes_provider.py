@@ -98,7 +98,9 @@ class HermesProvider(LLMProvider):
         # LiveKit calls generate_reply for the initial greeting before any caller
         # speech exists. Hermes' API correctly rejects a system-only request, so
         # add a neutral user turn that asks it to carry out the greeting.
-        request_messages = list(messages)
+        from caal.llm.context_barrier import sanitize_for_escalation
+
+        request_messages = sanitize_for_escalation(messages)
         has_user_turn = any(
             message.get("role") == "user"
             and isinstance(message.get("content"), str)
@@ -131,7 +133,10 @@ class HermesProvider(LLMProvider):
         keeps its short default so an ordinary turn still fails fast.
         """
         payload = self._build_payload(messages, stream=False)
+        from caal.ha_policy import require_delegated_scope
+        require_delegated_scope(getattr(self, "_delegation_scope", None))
         client = await self._get_client()
+        require_delegated_scope(getattr(self, "_delegation_scope", None))
         response = await client.post(
             f"{self._base_url}/chat/completions",
             json=payload,
@@ -190,7 +195,10 @@ class HermesProvider(LLMProvider):
         first word reaches the caller.
         """
         payload = self._build_payload(messages, stream=True)
+        from caal.ha_policy import require_delegated_scope
+        require_delegated_scope(getattr(self, "_delegation_scope", None))
         client = await self._get_client()
+        require_delegated_scope(getattr(self, "_delegation_scope", None))
         async with client.stream(
             "POST",
             f"{self._base_url}/chat/completions",

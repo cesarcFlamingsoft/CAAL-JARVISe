@@ -34,6 +34,7 @@ from typing import Any
 
 from caal.llm.context_barrier import sanitize_for_escalation
 from caal.model_routing import Destination, classify_request
+from caal.work_router import request_reasoning
 
 from .base import LLMProvider, LLMResponse, ToolCall
 
@@ -146,6 +147,25 @@ class RoutedProvider(LLMProvider):
             return messages
         return sanitize_for_escalation(messages)
 
+    def _request_options(
+        self, provider: LLMProvider, messages: list[dict[str, Any]], options: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Reuse the existing semantic reading; no extra classifier and no shared think toggle.
+
+        Ordinary local work needs no separate thinking phase. Hard work that
+        lands locally (including a harness outage) keeps reasoning enabled.
+        Hermes owns its reasoning semantics and receives no Ollama override.
+        Explicit caller overrides remain useful for bounded semantic tool reads.
+        """
+        request = dict(options)
+        if provider is self._primary:
+            request.setdefault(
+                "think", request_reasoning.get() if request_reasoning.get() is not None else True
+            )
+        else:
+            request.pop("think", None)
+        return request
+
     @staticmethod
     def _usable(response: LLMResponse | None) -> bool:
         if response is None:
@@ -168,7 +188,7 @@ class RoutedProvider(LLMProvider):
             response = await provider.chat(
                 self._messages_for(provider, messages),
                 tools=self._tools_for(provider, tools),
-                **kwargs,
+                **self._request_options(provider, messages, kwargs),
             )
         except Exception as exc:  # noqa: BLE001 - the caller decides what happens next
             # No exception text: an upstream error can carry a host or a token.
@@ -209,7 +229,7 @@ class RoutedProvider(LLMProvider):
             async for chunk in first.chat_stream(
                 self._messages_for(first, messages),
                 tools=self._tools_for(first, tools),
-                **kwargs,
+                **self._request_options(first, messages, kwargs),
             ):
                 spoken = True
                 yield chunk
@@ -225,7 +245,7 @@ class RoutedProvider(LLMProvider):
                 async for chunk in second.chat_stream(
                     self._messages_for(second, messages),
                     tools=self._tools_for(second, tools),
-                    **kwargs,
+                    **self._request_options(second, messages, kwargs),
                 ):
                     spoken = True
                     yield chunk

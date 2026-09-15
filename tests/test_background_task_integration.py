@@ -21,6 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
+
 from caal import background_task_session, background_tasks
 from caal import settings as settings_module
 from caal.background_task_session import (

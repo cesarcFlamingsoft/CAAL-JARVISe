@@ -60,6 +60,8 @@ class OllamaProvider(LLMProvider):
         self._top_k = top_k
         self._num_ctx = num_ctx
         self._base_url = base_url
+        self._thinking_capability: bool | None = None
+        self._capability_lock = asyncio.Lock()
 
         # Create client with custom host if provided
         self._client = ollama.Client(host=base_url) if base_url else ollama.Client()
@@ -123,6 +125,26 @@ class OllamaProvider(LLMProvider):
             "num_ctx": self._num_ctx,
         }
 
+    async def _thinking_fields(self, think: bool) -> dict[str, Any]:
+        """Validate against this endpoint's model, without changing request defaults.
+
+        Failed discovery omits the optional field. Capability discovery is a
+        metadata read, never another model inference or a model-name guess.
+        """
+        async with self._capability_lock:
+            if self._thinking_capability is None:
+                try:
+                    info = await asyncio.wait_for(
+                        asyncio.to_thread(self._client.show, self._model),
+                        timeout=REACHABLE_TIMEOUT_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 - optional capability, fail to omission
+                    return {}
+                self._thinking_capability = "thinking" in (
+                    getattr(info, "capabilities", None) or []
+                )
+        return {"think": think} if self._thinking_capability else {}
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -139,7 +161,7 @@ class OllamaProvider(LLMProvider):
         Returns:
             Normalized LLMResponse
         """
-        think = kwargs.get("think", self._think)
+        think_fields = await self._thinking_fields(kwargs.get("think", self._think))
         options = self._get_options()
 
         # Run sync client.chat in thread pool
@@ -148,7 +170,7 @@ class OllamaProvider(LLMProvider):
             model=self._model,
             messages=messages,
             tools=tools,
-            think=think,
+            **think_fields,
             stream=False,
             options=options,
         )
@@ -190,7 +212,7 @@ class OllamaProvider(LLMProvider):
         Yields:
             String chunks of response content
         """
-        think = kwargs.get("think", self._think)
+        think_fields = await self._thinking_fields(kwargs.get("think", self._think))
         options = self._get_options()
 
         # Run sync client.chat with streaming in thread pool
@@ -200,15 +222,20 @@ class OllamaProvider(LLMProvider):
                 model=self._model,
                 messages=messages,
                 tools=tools,
-                think=think,
+                **think_fields,
                 stream=True,
                 options=options,
             )
 
         response = await asyncio.to_thread(_stream)
 
-        # Iterate over chunks (sync iterator from thread)
-        for chunk in response:
+        # Each network read must leave the voice loop free for audio/timers.
+        # StopIteration cannot cross an asyncio Future, so use a sentinel.
+        end = object()
+        while True:
+            chunk = await asyncio.to_thread(next, response, end)
+            if chunk is end:
+                break
             if hasattr(chunk, "message") and hasattr(chunk.message, "content"):
                 if chunk.message.content:
                     yield chunk.message.content

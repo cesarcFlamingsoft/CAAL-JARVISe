@@ -306,8 +306,16 @@ def capture_task_context(session: Any) -> str:
         "",
         "[Recent conversation]",
     ]
+    # Filter structured roles before flattening: once private answers are
+    # embedded in a system-context string the provider barrier cannot see them.
+    from caal.llm.context_barrier import sanitize_for_escalation
+
+    safe_turns = sanitize_for_escalation([
+        {"role": turn.role, "content": turn.text} for turn in snapshot.turns
+    ])
     turns = [
-        f"{'User' if turn.role == 'user' else 'Assistant'}: {turn.text}" for turn in snapshot.turns
+        f"{'User' if turn['role'] == 'user' else 'Assistant'}: {turn['content']}"
+        for turn in safe_turns
     ]
     closing = "[End of recent conversation]"
 
@@ -373,6 +381,7 @@ class BackgroundTaskBridge:
         dial_user_callback: DialUserCallback | None = None,
         work_router: SemanticWorkRouter | None = None,
         coding_execute: Execute | None = None,
+        delegation_scope=None,
     ) -> None:
         """``session_key`` is the room; ``conversation_id`` the ledger conversation, if any.
 
@@ -395,6 +404,7 @@ class BackgroundTaskBridge:
         """
         if not session_key:
             raise ValueError("background task bridge needs a session key")
+        self._delegation_scope = delegation_scope
         self._execute = execute
         self._room_key = session_key
         self._owner_key = owner_key_for(conversation_id, room_key=session_key)
@@ -584,7 +594,14 @@ class BackgroundTaskBridge:
             except Exception:
                 logger.warning("Background task context source failed", exc_info=True)
         try:
-            task = enqueue(text, session_key=self._owner_key, user_id=self._user_id)
+            task = enqueue(text, session_key=self._owner_key, user_id=self._user_id,
+                           delegation_scope=self._delegation_scope)
+        except PermissionError:
+            await self._say(
+                session,
+                "External background work requires a currently verified administrator account.",
+            )
+            return False
         except QueueFullError:
             logger.info("Background task declined: queue full")
             await self._say(session, BACKGROUND_BUSY_REPLY)
@@ -713,19 +730,22 @@ class BackgroundTaskBridge:
     # -- worker --------------------------------------------------------------
 
     async def _run_task(self, task: BackgroundTask) -> str:
-        context = self._contexts.pop(task.task_id, "")
-        if task.task_id in self._coding_tasks:
-            self._coding_tasks.discard(task.task_id)
-            assert self._coding is not None
-            # The transcript is deliberately not forwarded to a coding job: it
-            # would cross to the agent runtime, and a coding job needs the
-            # request, not the conversation.
-            return await self._coding(task.request, "")
-        task_runner = getattr(self._execute, "run_task", None)
-        if callable(task_runner):
-            runner = cast(Callable[[BackgroundTask, str], Awaitable[str]], task_runner)
-            return await runner(task, context)
-        return await self._execute(task.request, context)
+        from .ha_policy import task_dispatch_scope
+
+        with task_dispatch_scope(task):
+            context = self._contexts.pop(task.task_id, "")
+            if task.task_id in self._coding_tasks:
+                self._coding_tasks.discard(task.task_id)
+                assert self._coding is not None
+                # The transcript is deliberately not forwarded to a coding job: it
+                # would cross to the agent runtime, and a coding job needs the
+                # request, not the conversation.
+                return await self._coding(task.request, "")
+            task_runner = getattr(self._execute, "run_task", None)
+            if callable(task_runner):
+                runner = cast(Callable[[BackgroundTask, str], Awaitable[str]], task_runner)
+                return await runner(task, context)
+            return await self._execute(task.request, context)
 
     async def _on_settled(self, task_id: str) -> None:
         """A task of ours finished after the session ended: hand it to the fallback.

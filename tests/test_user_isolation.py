@@ -10,6 +10,9 @@ only ever learns about the other devices of its own user. Legacy sessions
 from __future__ import annotations
 
 import pytest
+
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
 from fastapi.testclient import TestClient
 
 from caal import background_tasks, conversation_ledger, device_registry, user_api, webhooks

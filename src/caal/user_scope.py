@@ -76,6 +76,7 @@ class UserScope:
     identity_configured: bool
     display_name: str | None = field(default=None, repr=False)
     role: str | None = None
+    delegation_authority: object | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def legacy(cls) -> UserScope:

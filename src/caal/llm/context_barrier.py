@@ -97,6 +97,8 @@ def is_knowledge_tool(name: object) -> bool:
     if not isinstance(name, str) or not name:
         return False
     cleaned = name.strip()
+    if cleaned == "hass_assist":
+        return True
     if cleaned in knowledge_tool_names():
         return True
     return cleaned.startswith(_PRIVATE_PREFIXES)
@@ -226,6 +228,9 @@ def _is_private_result(message: dict[str, Any], known: set[str], private: set[st
     trusted: the escalation cannot use a dangling tool result anyway, so the
     safe reading costs nothing and the unsafe one costs the user their mail.
     """
+    identifier = message.get("tool_call_id") or message.get("id")
+    if isinstance(identifier, str) and identifier in private:
+        return True
     name = message.get("name")
     if isinstance(name, str) and name.strip():
         return is_knowledge_tool(name)
@@ -248,6 +253,14 @@ def _sanitised_assistant(
     """One assistant message, with anything private removed. ``None`` drops it."""
     calls = _tool_calls(message)
     if calls:
+        if after_private or ledger.matches(message.get("content")):
+            # Tool arguments can paraphrase a private read just as an answer
+            # can. Mark those call ids too, so their subsequent results cannot
+            # reintroduce the same data under a public tool's name.
+            private.update(
+                call["id"] for call in calls if isinstance(call.get("id"), str)
+            )
+            return None
         kept = [
             call
             for call in calls

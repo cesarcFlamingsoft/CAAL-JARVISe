@@ -144,7 +144,7 @@ def test_integration_payloads_are_not_logged(monkeypatch):
     _, tools = voice_agent.create_hass_tools("http://home.test", "token", "agent")
     result = asyncio.run(tools["hass_assist"]("Is the garage closed?"))
 
-    assert result == "The garage is closed."
+    assert "not granted" in result  # Unverified factories never use the global HA credential.
     assert "never-log-this-token" not in "\n".join(messages)
 
 

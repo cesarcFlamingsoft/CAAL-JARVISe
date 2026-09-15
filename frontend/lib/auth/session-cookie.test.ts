@@ -105,3 +105,40 @@ describe('safe redirect targets', () => {
     assert.equal(safeNextPath('//user@evil.example.com'), '/');
   });
 });
+
+it('permits HTTP cookies only for the opted-in local origin and exact Host', () => {
+  const local = 'http://localhost:3000';
+  const headers = new Headers({ origin: local, host: 'localhost:3000' });
+  assert.deepEqual(cookieSecurity(headers, 'http://frontend:3000/api/auth/login', false, [local]), {
+    ok: true,
+    secure: false,
+  });
+  assert.equal(cookieSecurity(headers, 'http://frontend:3000/api/auth/login', false).ok, false);
+  for (const host of ['jarvis.mexcantech.io', 'localhost:3001', '127.0.0.1:3000', 'evil.example']) {
+    headers.set('host', host);
+    assert.equal(
+      cookieSecurity(headers, 'http://frontend:3000/api/auth/login', false, [local]).ok,
+      false,
+      host
+    );
+  }
+  headers.set('host', 'localhost:3000');
+  for (const origin of ['null', local + '/', 'http://localhost:3001', 'https://evil.example']) {
+    headers.set('origin', origin);
+    assert.equal(
+      cookieSecurity(headers, 'http://frontend:3000/api/auth/login', false, [local]).ok,
+      false,
+      origin
+    );
+  }
+  headers.set('origin', local);
+  assert.deepEqual(
+    cookieSecurity(headers, 'https://jarvis.mexcantech.io/api/auth/login', false, [local]),
+    { ok: true, secure: true }
+  );
+  headers.set('x-forwarded-proto', 'https');
+  assert.deepEqual(cookieSecurity(headers, 'http://frontend:3000/api/auth/login', false, [local]), {
+    ok: true,
+    secure: true,
+  });
+});

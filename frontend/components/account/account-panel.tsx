@@ -6,6 +6,7 @@
  * and the number itself is never shown, only whether one is on file.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { HomeAssistantAccess } from '@/components/home-assistant/access';
 import { Button } from '@/components/livekit/button';
 import { apiRequest, explain } from './api-client';
 
@@ -84,6 +85,8 @@ export function AccountPanel() {
           </dd>
         </dl>
       </section>
+
+      <HomeAssistantAccess />
 
       <section className="space-y-2">
         <label className="text-sm font-medium" htmlFor="display-name">

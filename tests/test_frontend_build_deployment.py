@@ -94,14 +94,12 @@ def test_frontend_installs_the_build_before_serving(name: str) -> None:
     assert str(service["user"]) == "0:0"
 
 
-def test_startup_script_publishes_before_composing() -> None:
-    """``start-apple.sh`` publishes the local build before it brings Docker up."""
+def test_startup_script_preserves_the_verified_published_artifact() -> None:
+    """Recovery uses the pinned artifact; publishing a local build is explicit."""
     text = START_APPLE.read_text()
-    publish = text.find("publish-frontend-build.sh")
-    compose_up = text.find("docker compose $COMPOSE_FILES $DOCKER_PROFILE up -d")
-    assert publish != -1, "start-apple.sh never publishes the frontend build"
-    assert compose_up != -1
-    assert publish < compose_up
+    assert 'startup_runtime.py' in text
+    assert 'publish-frontend-build.sh' not in text
+    assert 'docker compose' not in text
 
 
 @pytest.mark.parametrize("script", [ENTRYPOINT, PUBLISH])

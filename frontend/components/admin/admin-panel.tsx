@@ -9,6 +9,7 @@
  * again by the backend. Hiding a control here is never what protects it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { HomeAssistantAccess } from '@/components/home-assistant/access';
 import { Button } from '@/components/livekit/button';
 import { apiRequest, explain } from '@/components/account/api-client';
 
@@ -320,6 +321,7 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                           {user.emailHint} · {shortId(user.userId)}
                           {isSelf && ' · you'}
                         </span>
+                        <HomeAssistantAccess userId={user.userId} onChanged={()=>void refresh()} />
                       </div>
                     </td>
                     <td className="py-3 pr-4">

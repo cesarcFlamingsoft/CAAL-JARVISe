@@ -26,15 +26,7 @@ log()  ( echo "[durable-work] $1" )
 warn() ( echo "[durable-work] WARNING: $1" )
 fail() ( echo "[durable-work] ERROR: $1" >&2 )
 
-COMPOSE_FILES="-f docker-compose.apple.yaml"
-TELEPHONY="$(grep -E '^CAAL_TELEPHONY=' .env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d "\"'" || true)"
-case "$TELEPHONY" in
-    1|true|yes)
-        COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.telephony.yaml"
-        ;;
-esac
-
-compose() ( docker compose $COMPOSE_FILES "$@" )
+compose() ( /usr/bin/python3 ./startup_runtime.py compose "$@" )
 
 # The shared internal secret, read straight from .env into the environment of
 # the process that needs it, so it never reaches a command line or a log.

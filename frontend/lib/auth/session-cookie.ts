@@ -11,7 +11,9 @@
  * Over plain HTTP the default is to refuse a session outright rather than hand
  * out a bearer token that travels in the clear. A LAN deployment that really
  * wants this must set `CAAL_ALLOW_INSECURE_COOKIES=true`, which is loud in the
- * configuration summary. There is deliberately no silent downgrade.
+ * configuration summary. Alternatively CAAL_TRUSTED_LOCAL_ORIGINS explicitly
+ * permits cookies only for a listed localhost origin and its exact Host.
+ * There is deliberately no silent downgrade.
  */
 
 export const SESSION_COOKIE = 'caal_session';
@@ -76,7 +78,8 @@ export type CookieSecurity =
 export function cookieSecurity(
   headers: Headers,
   url: string,
-  allowInsecure: boolean
+  allowInsecure: boolean,
+  trustedLocalOrigins: readonly string[] = []
 ): CookieSecurity {
   const forwarded = headers.get('x-forwarded-proto');
   const firstHop = forwarded?.split(',')[0]?.trim().toLowerCase();
@@ -84,7 +87,15 @@ export function cookieSecurity(
   if (isHttps) {
     return { ok: true, secure: true };
   }
-  if (allowInsecure) {
+  const origin = headers.get('origin');
+  // This list is validated by identity config. Host is an additional binding,
+  // never a source of trust; proxy headers cannot add an allowed origin.
+  const local =
+    origin !== null &&
+    trustedLocalOrigins.includes(origin) &&
+    /^http:\/\/localhost:[1-9][0-9]{0,4}$/.test(origin) &&
+    headers.get('host') === origin.slice('http://'.length);
+  if (allowInsecure || local) {
     return { ok: true, secure: false };
   }
   return { ok: false, secure: true, reason: 'insecure_transport' };

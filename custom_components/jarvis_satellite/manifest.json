@@ -1,0 +1,14 @@
+{
+  "domain": "jarvis_satellite",
+  "name": "Jarvis Voice Satellites",
+  "version": "0.2.0",
+  "config_flow": true,
+  "documentation": "https://github.com/CoreWorxLab/caal",
+  "codeowners": [],
+  "dependencies": [
+    "conversation",
+    "tts"
+  ],
+  "iot_class": "local_push",
+  "requirements": []
+}

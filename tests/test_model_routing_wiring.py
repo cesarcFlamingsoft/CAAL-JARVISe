@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
+
 from caal import background_tasks
 from caal.background_task_session import CODING_ACK_REPLY
 from caal.coding_delegation import HermesCodingDelegate

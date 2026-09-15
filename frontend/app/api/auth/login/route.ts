@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   if (!config.passwordLogin) {
     return apiError(404, 'not_found');
   }
-  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin)) {
+  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin, config.trustedLocalOrigins)) {
     return apiError(403, 'bad_origin');
   }
   if (!verifyCsrf(req.headers)) {
@@ -52,7 +52,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Refuse to mint a session that would travel in the clear.
-  const transport = cookieSecurity(req.headers, req.url, config.allowInsecureCookies);
+  const transport = cookieSecurity(
+    req.headers,
+    req.url,
+    config.allowInsecureCookies,
+    config.trustedLocalOrigins
+  );
   if (!transport.ok) {
     return apiError(400, transport.reason);
   }

@@ -86,6 +86,7 @@ from caal.call_termination import (
 from caal.coding_delegation import build_coding_delegate
 from caal.conversation import AdaptiveEndpointer
 from caal.conversation_ledger import SESSION_LIVENESS_INTERVAL_SECONDS, ConversationRecorder
+from caal.delivery_router import DeliveryAnswerHandler
 from caal.document_work import DocumentWorker
 from caal.end_call_intent import END_CALL_CONTROL_REPLIES, EndCallAction, EndCallIntentMachine
 from caal.handoff_context import inject_continuation_preamble, restore_conversation_context
@@ -101,9 +102,7 @@ from caal.integrations import (
     load_mcp_config,
 )
 from caal.internal_auth import AUDIENCE_AGENT, PrincipalError, verify_principal
-from caal.delivery_router import DeliveryAnswerHandler
 from caal.knowledge_router import KnowledgeTurnHandler, LocalToolPath
-from caal.schedule_router import ScheduledChangeHandler
 from caal.llm import ToolDataCache, llm_node
 from caal.local_ollama import configured_endpoint
 from caal.log_privacy import install_pii_redaction
@@ -118,19 +117,28 @@ from caal.outbound_runtime import (
     uses_background_session,
     uses_llm_greeting,
 )
+from caal.schedule_router import ScheduledChangeHandler
 from caal.security_config import load_multi_user_config, log_startup_status
 from caal.settings import get_setting
 from caal.stt import WakeWordGatedSTT
 from caal.telegram_notify import TelegramCallNotifier
+from caal.telephony_auth import CallAccessGate, GateState
 from caal.tools import reminders_tools
 from caal.tools.delivery_semantics import SemanticDeliveryReader
 from caal.tools.schedule_semantics import SemanticScheduleReader
-from caal.telephony_auth import CallAccessGate, GateState
 from caal.user_scope import UserScope
+from caal.waiting_audio import (
+    WAITING_AUDIO_START,
+    WAITING_CUE,
+    WAITING_CUE_DELAY,
+    waiting_text_transform,
+    with_waiting_cue,
+)
 from caal.work_router import (
     DEFAULT_ROUTER_TIMEOUT_SECONDS,
     SemanticWorkRouter,
     provider_classifier,
+    request_reasoning,
 )
 
 # Configure logging - LiveKit adds LogQueueHandler to root in worker processes,
@@ -380,7 +388,8 @@ def resolve_inbound_scope(job_metadata: str, *, room_name: str, identity: Any) -
     if profile is None or not profile.is_active:
         logger.warning("Session principal names no active user; running anonymous")
         return UserScope.anonymous()
-    return UserScope.for_user(profile)
+    from caal.ha_policy import verified_user_scope
+    return verified_user_scope(profile, identity)
 
 
 def has_sip_participant(room: Any) -> bool:
@@ -416,7 +425,8 @@ def resolve_sip_caller_scope(room: Any, *, identity: Any) -> UserScope:
             logger.warning("Caller-id lookup failed; running anonymous", exc_info=False)
             continue
         if profile is not None and profile.is_active:
-            return UserScope.for_user(profile)
+            from caal.ha_policy import verified_user_scope
+            return verified_user_scope(profile, identity)
     return UserScope.anonymous()
 
 
@@ -447,7 +457,8 @@ def outbound_scope(config: OutboundRoomConfig | None, *, identity: Any) -> UserS
     if profile is None or not profile.is_active:
         logger.warning("Outbound leg names no active user; running anonymous")
         return UserScope.anonymous()
-    return UserScope.for_user(profile)
+    from caal.ha_policy import verified_user_scope
+    return verified_user_scope(profile, identity)
 
 
 def attach_conversation_capture(session: Any, recorder: ConversationRecorder) -> None:
@@ -784,7 +795,7 @@ class LocalTurnHandler:
         # Natural "we can wrap this up" / "call me when you finish" readings,
         # layered under the literal commands above. Uncertain readings only ask.
         self._end_call_intent = EndCallIntentMachine()
-        self._speech_task: asyncio.Task[bool] | None = None
+        self._speech_task: asyncio.Task[tuple[bool, bool | None]] | None = None
         self._speech_turn_claimed = False
         self._local_command_claimed = False
         self._awaiting_final_stt = False
@@ -804,7 +815,7 @@ class LocalTurnHandler:
         if self._start_end_call_if_requested(transcript):
             self._local_command_claimed = True
             return
-        self._speech_task = asyncio.create_task(self._handle_local_commands(transcript))
+        self._speech_task = asyncio.create_task(self._handle_speech_commands(transcript))
 
     async def turn_consumed(self, text: str) -> bool:
         """Report whether CAAL answered the turn that just ended by itself."""
@@ -829,7 +840,9 @@ class LocalTurnHandler:
             return True
         if task is not None:
             try:
-                return await task
+                consumed, effort = await task
+                request_reasoning.set(effort)
+                return consumed
             except Exception:
                 logger.exception("Phone handoff handling failed")
                 return False
@@ -838,6 +851,15 @@ class LocalTurnHandler:
             # words as typed text would answer or hang up twice.
             return False
         return await self._handle_typed_text(text)
+
+    async def _handle_speech_commands(self, text: str) -> tuple[bool, bool | None]:
+        """Return the semantic choice across the STT task boundary with its result."""
+        token = request_reasoning.set(None)
+        try:
+            consumed = await self._handle_local_commands(text)
+            return consumed, request_reasoning.get()
+        finally:
+            request_reasoning.reset(token)
 
     async def _handle_typed_text(self, text: str) -> bool:
         """Give typed chat the same local commands a spoken turn gets."""
@@ -911,7 +933,9 @@ class LocalTurnHandler:
                 outcome = await self._background.process_turn(
                     text,
                     self._session,
-                    offer_callback=self._arm_callback_and_end_call is not None and auto_callback is None,
+                    offer_callback=(
+                        self._arm_callback_and_end_call is not None and auto_callback is None
+                    ),
                     auto_callback=auto_callback,
                 )
             except Exception:
@@ -1534,6 +1558,8 @@ def build_background_task_bridge(
         logger.info("Reminder call: background task session disabled for this job")
         return None
     scope = user_scope or UserScope.legacy()
+    from caal.ha_policy import bind_provider_scope
+    bind_provider_scope(provider, scope)
     token = runtime.get("telegram_bot_token") or ""
     chat_id = runtime.get("telegram_chat_id") or ""
     fallback = None
@@ -1599,6 +1625,7 @@ def build_background_task_bridge(
         dial_user_callback=dial_user_callback,
         work_router=work_router,
         coding_execute=coding_worker,
+        delegation_scope=scope,
     )
 
 
@@ -1625,114 +1652,11 @@ ToolStatusCallback = callable  # async (bool, list[str], list[dict]) -> None
 # AI assistant (like JARVIS 2.0) configured in Home Assistant.
 
 
-def create_hass_tools(
-    hass_host: str, hass_token: str, hass_agent_id: str
-) -> tuple[list[dict], dict]:
-    """Create Home Assistant Assist API tool.
-
-    Args:
-        hass_host: Home Assistant URL (e.g., http://10.0.0.50:8123)
-        hass_token: Long-lived access token
-        hass_agent_id: Conversation agent entity_id (e.g., conversation.ollama_conversation_2)
-
-    Returns:
-        tuple: (tool_definitions, tool_callables)
-        - tool_definitions: List of tool definitions in OpenAI format for LLM
-        - tool_callables: Dict mapping tool name to callable function
-    """
-    import httpx
-
-    # Track conversation ID for context continuity
-    conversation_state = {"conversation_id": None}
-
-    async def hass_assist(text: str) -> str:
-        """Send a request to Home Assistant's AI assistant and get a response.
-        Use this for ANY smart home control: lights, switches, media, climate, etc.
-        Parameters: text (required: what you want to do or ask, in natural language).
-        """
-        if not hass_host or not hass_token:
-            return "Home Assistant is not configured"
-
-        url = f"{hass_host.rstrip('/')}/api/conversation/process"
-        headers = {
-            "Authorization": f"Bearer {hass_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "text": text,
-            "agent_id": hass_agent_id,
-        }
-        # Include conversation_id for context continuity if we have one
-        if conversation_state["conversation_id"]:
-            payload["conversation_id"] = conversation_state["conversation_id"]
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-
-            logger.info("Home Assistant API response received")
-
-            # Store conversation_id for follow-up requests
-            if "conversation_id" in data:
-                conversation_state["conversation_id"] = data["conversation_id"]
-
-            # Extract speech response
-            speech = data.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "")
-            if speech:
-                logger.info(f"hass_assist returning speech: {speech}")
-                return speech
-
-            # Fallback to response_type if no speech
-            response_type = data.get("response", {}).get("response_type", "unknown")
-            fallback = f"Action completed ({response_type})"
-            logger.info(f"hass_assist returning fallback: {fallback}")
-            return fallback
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"hass_assist HTTP error: {e}")
-            return f"Home Assistant error: {e.response.status_code}"
-        except Exception as e:
-            logger.error(f"hass_assist error: {e}")
-            return f"Failed to communicate with Home Assistant: {e}"
-
-    # Tool definitions in OpenAI format for LLM
-    tool_definitions = [
-        {
-            "type": "function",
-            "function": {
-                "name": "hass_assist",
-                "description": (
-                    "Send a command or question to Home Assistant's AI assistant for smart home "
-                    "control. Use this for ANY smart home request: turning lights on/off, "
-                    "controlling media players, checking device states, adjusting climate, etc. "
-                    "Pass natural "
-                    "language - the assistant understands context."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": (
-                                "Natural language command or question (e.g., 'turn on the office "
-                                "lamp', 'what's the temperature?', 'play music in the living room')"
-                            ),
-                        },
-                    },
-                    "required": ["text"],
-                },
-            },
-        },
-    ]
-
-    # Callable functions for tool execution
-    tool_callables = {
-        "hass_assist": hass_assist,
-    }
-
-    return tool_definitions, tool_callables
+def create_hass_tools(hass_host: str, hass_token: str, hass_agent_id: str, *, scope=None, identity=None, provider=None):
+    """Build only the owner-bound HA tool; legacy unverified callers fail closed."""
+    from caal.ha_assist import create_tools
+    return create_tools(scope=scope, identity=identity, provider=provider,
+                        settings_getter=settings_module.load_settings)
 
 
 # =========================================================================
@@ -1920,6 +1844,8 @@ class VoiceAssistant(WebSearchTools, Agent):
         self._max_turns = max_turns
 
         # Asks whether CAAL already handled the turn locally (e.g. phone handoff)
+        # Routine delay is not progress; keep ordinary replies free of spoken filler.
+        self._waiting_cues_enabled = False
         self._turn_consumed = turn_consumed
         # Catches this session up after a phone leg ended, before the LLM sees the turn
         self._sync_return_context = sync_return_context
@@ -1933,28 +1859,72 @@ class VoiceAssistant(WebSearchTools, Agent):
         text = getattr(new_message, "text_content", "")
         if not isinstance(text, str):
             text = ""
-        if self._turn_consumed is not None and await self._turn_consumed(text):
-            raise StopResponse
+        token = request_reasoning.set(None)
+        try:
+            if self._turn_consumed is not None and await self._turn_consumed(text):
+                raise StopResponse
+            if hasattr(new_message, "extra"):
+                new_message.extra["caal_reasoning"] = request_reasoning.get()
+        finally:
+            request_reasoning.reset(token)
         if self._sync_return_context is not None:
             await self._sync_return_context(self, turn_ctx)
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Custom LLM node using provider-agnostic interface."""
+        effort = None
+        for item in reversed(chat_ctx.items):
+            if getattr(item, "role", None) == "user":
+                effort = getattr(item, "extra", {}).get("caal_reasoning")
+                break
+        if self._waiting_cues_enabled:
+            yield WAITING_AUDIO_START
         async for chunk in llm_node(
             self,
             chat_ctx,
             provider=self._provider,
             tool_data_cache=self._tool_data_cache,
             max_turns=self._max_turns,
+            reasoning=effort,
         ):
             yield chunk
+
+    async def tts_node(self, text, model_settings):
+        """Synthesize one answer, with a delayed audio-only waiting cue."""
+        source = text.__aiter__()
+        first = await anext(source, None)
+        waiting = (
+            first == WAITING_AUDIO_START
+            and getattr(self, "_waiting_cues_enabled", False)
+        )
+
+        async def answer_text():
+            if first is not None and first != WAITING_AUDIO_START:
+                yield first
+            async for part in source:
+                yield part
+
+        answer = Agent.default.tts_node(self, answer_text(), model_settings)
+        if waiting:
+            async def cue_text():
+                yield WAITING_CUE
+
+            async for frame in with_waiting_cue(
+                answer,
+                lambda: Agent.default.tts_node(self, cue_text(), model_settings),
+                delay=getattr(self, "_waiting_cue_delay", WAITING_CUE_DELAY),
+            ):
+                yield frame
+        else:
+            async for frame in answer:
+                yield frame
 
 
 # =============================================================================
 # Session Integrations (MCP / n8n)
 # =============================================================================
 
-INITIAL_GREETING = "JARVIS online. How may I help you?"
+INITIAL_GREETING = "Hello, sir. How may I help you today?"
 
 
 class SessionIntegrations:
@@ -2320,23 +2290,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         stt_instance = base_stt
         logger.info("  Wake word: disabled")
 
-    # Create TTS instance based on provider
-    if runtime["tts_provider"] == "piper":
-        # Piper runs through Speaches container - voice is baked into model ID
-        tts_instance = openai.TTS(
-            base_url=f"{SPEACHES_URL}/v1",
-            api_key="not-needed",
-            model=runtime["tts_voice_piper"],  # e.g., "speaches-ai/piper-en_US-ljspeech-medium"
-            voice="default",  # Ignored by Piper but required by API
-        )
-    else:
-        # Kokoro uses separate model and voice params
-        tts_instance = openai.TTS(
-            base_url=f"{KOKORO_URL}/v1",
-            api_key="not-needed",
-            model=TTS_MODEL,
-            voice=runtime["tts_voice_kokoro"],
-        )
+    # TTS-only selection; opt-in Qwen retains the configured Kokoro fallback.
+    from caal.tts_selection import create_tts
+
+    tts_instance = create_tts(
+        runtime, kokoro_url=KOKORO_URL, speaches_url=SPEACHES_URL, kokoro_model=TTS_MODEL
+    )
 
     # SIP callers must clear the isolated DTMF gate before the Hermes-backed
     # session is created. Web/LAN participants proceed without this extra step.
@@ -2365,6 +2324,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.job.metadata, room_name=ctx.room.name, identity=identity
         )
     logger.info("  Session identity: %s", describe_scope(user_scope))
+    from caal.ha_policy import bind_provider_scope
+    bind_provider_scope(caal_llm.provider_instance, user_scope)
+
+    from caal.tts_selection import select_user_tts
+
+    tts_instance = await select_user_tts(
+        tts_instance, runtime, user_id=user_scope.user_id, identity=identity,
+        kokoro_url=KOKORO_URL, speaches_url=SPEACHES_URL, kokoro_model=TTS_MODEL,
+    )
 
     # Create session with STT and TTS (both OpenAI-compatible)
     logger.info(f"  STT instance type: {type(stt_instance).__name__}")
@@ -2391,6 +2359,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         stt=stt_instance,
         llm=caal_llm,
         tts=tts_instance,
+        tts_text_transforms=[waiting_text_transform],
         vad=vad_instance,
         turn_handling={
             "endpointing": {"mode": "fixed", "min_delay": endpointing_delay},
@@ -2658,20 +2627,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # ==========================================================================
 
-    # Create HASS tools if Home Assistant is enabled (uses Assist API directly)
-    hass_tool_definitions = []
-    hass_tool_callables = {}
-    if all_settings.get("hass_enabled", False):
-        hass_host = all_settings.get("hass_host", "")
-        hass_token = all_settings.get("hass_token", "")
-        hass_agent_id = all_settings.get("hass_agent_id", "conversation.home_assistant")
-        if hass_host and hass_token:
-            hass_tool_definitions, hass_tool_callables = create_hass_tools(
-                hass_host=hass_host,
-                hass_token=hass_token,
-                hass_agent_id=hass_agent_id,
-            )
-            logger.info(f"Home Assistant Assist enabled: agent={hass_agent_id}")
+    # Always offer the truthful HA surface; authorization is rechecked at execution.
+    hass_tool_definitions, hass_tool_callables = create_hass_tools(
+        hass_host=all_settings.get("hass_host", ""),
+        hass_token=all_settings.get("hass_token", ""),
+        hass_agent_id=all_settings.get("hass_agent_id", ""),
+        scope=user_scope, identity=identity, provider=caal_llm.provider_instance,
+    )
 
     # Create Friday tools if Friday assistant is enabled
     friday_tool_definitions = []

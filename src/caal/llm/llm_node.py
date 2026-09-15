@@ -134,6 +134,7 @@ async def llm_node(
     provider: LLMProvider,
     tool_data_cache: ToolDataCache | None = None,
     max_turns: int = 20,
+    reasoning: bool | None = None,
 ) -> AsyncIterable[str]:
     """Provider-agnostic LLM node with tool calling support.
 
@@ -157,6 +158,7 @@ async def llm_node(
                 ):
                     yield chunk
     """
+    request_options = {"think": reasoning} if type(reasoning) is bool else {}
     try:
         # Build messages from chat context with sliding window
         messages = _build_messages_from_context(
@@ -180,9 +182,41 @@ async def llm_node(
         else:
             tools = await _discover_tools(agent)
 
+        # An external tool's model-written arguments cross the same boundary
+        # as a Hermes prompt. Remove prior private results before that model
+        # can paraphrase them into arguments. Current native tool results still
+        # go to the local answer stream below.
+        if tools and any(_is_unscoped_tool(agent, tool["function"]["name"]) for tool in tools):
+            messages = sanitize_for_escalation(messages)
+
         # If tools available, check for tool calls first (non-streaming)
         if tools:
-            response = await provider.chat(messages=messages, tools=tools)
+            response = await provider.chat(messages=messages, tools=tools, **request_options)
+
+            # Validate the entire batch before running any member. A correction
+            # must never replay a mutation that ran beside an unknown tool.
+            if _invalid_tool_batch(agent, response.tool_calls, tools):
+                # No call ran, so there is no tool result to narrate. Inserting
+                # a rejected call/result here makes some local models apologize
+                # instead of selecting a supported tool. Re-evaluate the intact
+                # conversation once, keeping the failed batch out of history.
+                correction = (
+                    "The previous proposed tool batch was rejected before execution. "
+                    "No tools have run in this turn. Re-evaluate the user's request "
+                    "using only exact tool names and arguments from the available schemas. "
+                    "Preserve the requested account and time scope, including on a retry. "
+                    "Use a supported tool when needed; do not claim a lookup succeeded "
+                    "without its result."
+                )
+                messages = [dict(message) for message in messages]
+                if messages and messages[0].get("role") == "system":
+                    messages[0]["content"] += "\n\n" + correction
+                else:
+                    messages.insert(0, {"role": "system", "content": correction})
+                response = await provider.chat(messages=messages, tools=tools, **request_options)
+                if _invalid_tool_batch(agent, response.tool_calls, tools):
+                    yield "I couldn't complete that lookup. Please try again in a moment."
+                    return
 
             if response.tool_calls:
                 logger.info(
@@ -232,15 +266,20 @@ async def llm_node(
                 if outcomes.scheduled:
                     combined = " ".join([*outcomes.scheduled, *outcomes.hass])
                     logger.info(f"Speaking {len(outcomes.scheduled)} scheduled outcome(s) directly")
-                    yield strip_markdown_for_tts(combined)
+                    spoken = strip_markdown_for_tts(combined)
+                    if outcomes.hass:
+                        record_private_answer(spoken)
+                    yield spoken
                     return
 
                 # If hass_assist was called, speak its response directly
                 # (bypasses LLM follow-up which tends to summarize/paraphrase)
                 if outcomes.hass:
                     combined = " ".join(outcomes.hass)
-                    logger.info(f"Speaking hass_assist response directly: {combined[:100]}...")
-                    yield strip_markdown_for_tts(combined)
+                    logger.info("Speaking the private Home Assistant result")
+                    spoken = strip_markdown_for_tts(combined)
+                    record_private_answer(spoken)
+                    yield spoken
                     return
 
                 # Stream follow-up response with tool results
@@ -256,7 +295,9 @@ async def llm_node(
                     _keeps_contents_private(call.name) for call in response.tool_calls
                 )
                 spoken: list[str] = []
-                async for chunk in provider.chat_stream(messages=messages, tools=tools):
+                async for chunk in provider.chat_stream(
+                    messages=messages, tools=tools, **request_options
+                ):
                     chunk_count += 1
                     text = strip_markdown_for_tts(chunk)
                     if private_turn:
@@ -286,10 +327,12 @@ async def llm_node(
 
             asyncio.create_task(agent._on_tool_status(False, [], []))
 
-        async for chunk in provider.chat_stream(messages=messages):
+        async for chunk in provider.chat_stream(messages=messages, **request_options):
             yield strip_markdown_for_tts(chunk)
 
     except Exception as e:
+        if getattr(agent, "_satellite_restricted", False):
+            raise RuntimeError("satellite_model_unavailable") from None
         logger.error(f"Error in llm_node: {e}", exc_info=True)
         yield f"I encountered an error: {e}"
 
@@ -402,15 +445,69 @@ def _build_messages_from_context(
     return messages
 
 
+LEGACY_ACCOUNT_READS = frozenset(
+    {"calendar.list_events", "calendar.find_free_time", "email.search", "email.read"}
+)
+
+
+def _connected_argument_error(tool, arguments: dict) -> dict | None:
+    """Do not turn a misspelled account/day filter into a wider private read."""
+    if tool.category != "knowledge":
+        return None
+    if set(arguments) - set(tool.parameters.get("properties", {})) - {"user_id"}:
+        return {
+            "status": "invalid_request",
+            "message": (
+                "Use only schema-declared arguments, retaining the requested "
+                "account and time scope."
+            ),
+            "data": {},
+        }
+    return validate_tool_arguments(tool, arguments)
+
+
+def _invalid_tool_batch(agent, calls, tools: list[dict]) -> bool:
+    offered = {tool["function"]["name"] for tool in tools}
+    registry = getattr(agent, "_native_tool_registry", None)
+    for call in calls:
+        if call.name not in offered or not _tool_available(agent, call.name):
+            return True
+        if registry is not None and call.name in registry.names():
+            if _connected_argument_error(registry.get(call.name), call.arguments):
+                return True
+    return False
+
+
+def _is_unscoped_tool(agent, name: str) -> bool:
+    """External discovery is the boundary; native/class tools stay local."""
+    if name == "hass_assist":
+        return False
+    registry = getattr(agent, "_native_tool_registry", None) or create_default_registry()
+    return name not in registry.names() and resolve_agent_method_tool(agent, name) is None
+
+
+def _tool_available(agent, name: str) -> bool:
+    """Connected identities read their own accounts, never deployment-wide stores."""
+    from caal.ha_policy import tool_allowed
+    if not tool_allowed(agent, name):
+        return False
+    scope = getattr(agent, "_user_scope", None)
+    return not (getattr(scope, "identity_configured", False) and name in LEGACY_ACCOUNT_READS)
+
+
 async def _discover_tools(agent) -> list[dict] | None:
     """Discover tools from agent methods and MCP servers.
 
     Tools are cached on the agent instance after first discovery to avoid
     redundant MCP API calls on every user utterance.
     """
+    if getattr(agent, "_satellite_restricted", False):
+        return [{"type": "function", "function": {
+            "name": tool.name, "description": tool.description, "parameters": tool.parameters,
+        }} for tool in agent._native_tool_registry.list()]
     # Return cached tools if available
     if hasattr(agent, "_llm_tools_cache") and agent._llm_tools_cache is not None:
-        return agent._llm_tools_cache
+        return [t for t in agent._llm_tools_cache if _tool_available(agent, t["function"]["name"])]
 
     tools = []
 
@@ -426,6 +523,7 @@ async def _discover_tools(agent) -> list[dict] | None:
                 },
             }
             for tool in native_registry.list()
+            if _tool_available(agent, tool.name)
         )
         agent._native_tool_registry = native_registry
         logger.info(f"Added {len(native_registry.names())} native assistant tools")
@@ -516,6 +614,7 @@ async def _discover_tools(agent) -> list[dict] | None:
         logger.info(f"Discovered {len(tools)} tools: {tool_names}")
 
     # Cache tools on agent and return
+    tools = [t for t in tools if _tool_available(agent, t["function"]["name"])]
     result = tools if tools else None
     agent._llm_tools_cache = result
 
@@ -593,6 +692,9 @@ async def _execute_tool_calls(
     )
     messages.append(tool_call_message)
 
+    # This flag lasts one batch only. A private result must not be followed by
+    # an unscoped dispatch in that batch; a fresh sanitized turn stays usable.
+    private_result_seen = False
     # Execute each tool
     for tool_call in tool_calls:
         tool_name = tool_call.name
@@ -603,7 +705,15 @@ async def _execute_tool_calls(
         logger.info(f"Executing tool: {tool_name} (argument names: {sorted(arguments)})")
 
         try:
-            tool_result = await _execute_single_tool(agent, tool_name, arguments)
+            if private_result_seen and _is_unscoped_tool(agent, tool_name):
+                tool_result = {
+                    "status": "unsupported_tool",
+                    "message": "Private account results cannot be forwarded to external tools.",
+                    "data": {},
+                }
+            else:
+                tool_result = await _execute_single_tool(agent, tool_name, arguments)
+            private_result_seen = private_result_seen or is_knowledge_tool(tool_name)
             if _keeps_contents_private(tool_name) or isinstance(tool_result, dict):
                 status = tool_result.get("status") if isinstance(tool_result, dict) else None
                 logger.info(f"Tool {tool_name} returned status={status}")
@@ -707,6 +817,49 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     3. n8n workflows (webhook-based execution)
     4. MCP servers (with server_name__tool_name prefix parsing)
     """
+    if getattr(agent, "_satellite_restricted", False):
+        registry = agent._native_tool_registry
+        if tool_name not in registry.names() or not isinstance(arguments, dict):
+            return {
+                'status': 'unauthorized',
+                'message': 'Unavailable on this satellite.',
+                'data': {},
+            }
+        tool = registry.get(tool_name)
+        properties = tool.parameters.get("properties", {})
+        required = tool.parameters.get("required", [])
+        if set(arguments) - set(properties) or not set(required) <= set(arguments):
+            return {
+                'status': 'unauthorized',
+                'message': 'Invalid satellite tool arguments.',
+                'data': {},
+            }
+        try:
+            result = tool.handler(**arguments)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except (PermissionError, ValueError, TypeError):
+            return {
+                'status': 'unauthorized',
+                'message': "That request is unavailable with this satellite's current permissions.",
+                'data': {},
+            }
+        except Exception:
+            return {
+                'status': 'unavailable',
+                'message': 'Home Assistant is unavailable. No successful action was confirmed.',
+                'data': {},
+            }
+    if not _tool_available(agent, tool_name):
+        return {
+            "status": "unsupported_tool",
+            "message": (
+                "This tool is unavailable for this account. Use the available scoped tools; "
+                "unscoped delegation is not authorized."
+            ),
+            "data": {},
+        }
     logger.debug(
         f"Looking up tool '{tool_name}': "
         f"hass_callables={list(getattr(agent, '_hass_tool_callables', {}).keys())}"
@@ -720,6 +873,9 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     if native_registry is not None and tool_name in native_registry.names():
         logger.info(f"Calling native tool: {tool_name}")
         tool = native_registry.get(tool_name)
+        invalid = _connected_argument_error(tool, arguments)
+        if invalid is not None:
+            return invalid
         # The model never chooses whose data a tool touches: user-scoped tools
         # are bound to the session's verified scope, and an unidentified
         # session under multi-user is refused before any store is opened.

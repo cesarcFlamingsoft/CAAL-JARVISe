@@ -55,8 +55,11 @@ from . import (
     connections_api,
     dashboard_api,
     device_registry,
+    ha_api,
     local_model_api,
     local_ollama,
+    satellite_api,
+    tts_api,
     user_api,
     weather_api,
 )
@@ -96,6 +99,12 @@ app.include_router(weather_api.router)
 # Which local Ollama JARVIS runs on, and which model: an operator setting,
 # read by any signed-in user and changed by an administrator only.
 app.include_router(local_model_api.router)
+app.include_router(tts_api.router)
+
+app.include_router(ha_api.router)
+
+app.include_router(satellite_api.router)
+app.add_middleware(satellite_api.SatelliteBodyLimit)
 
 
 # Discovery of the models installed on the local Ollama. Tests replace the
@@ -209,6 +218,8 @@ class HealthResponse(BaseModel):
 
     status: str
     active_sessions: list[str]
+    satellite_turns: int = 0
+    satellite_audio_streams: int = 0
 
 
 class OutboundDialRequest(BaseModel):
@@ -351,9 +362,15 @@ async def health() -> HealthResponse:
         logger.warning(f"Failed to list rooms: {e}")
         rooms = []
 
+    from caal.user_api import get_runtime
+    runtime = get_runtime()
+    turns = getattr(getattr(runtime, "_satellite_engine", None), "active", {})
+    audio = getattr(runtime, "_satellite_audio_busy", set())
     return HealthResponse(
         status="ok",
         active_sessions=rooms,
+        satellite_turns=len(turns),
+        satellite_audio_streams=len(audio),
     )
 
 
@@ -544,6 +561,9 @@ async def update_settings(req: SettingsUpdateRequest) -> SettingsResponse:
     Returns:
         SettingsResponse with updated settings
     """
+    if req.settings.get("tts_provider") in {"qwen-trial", "voicebox"}:
+        raise HTTPException(status_code=403, detail="Use the authenticated TTS settings route")
+
     # Load current settings
     current = settings_module.load_settings()
 
@@ -1017,6 +1037,9 @@ async def complete_setup(req: SetupCompleteRequest) -> SetupCompleteResponse:
     Returns:
         SetupCompleteResponse with success status
     """
+    if req.tts_provider in {"qwen-trial", "voicebox"}:
+        raise HTTPException(status_code=403, detail="Use the authenticated TTS settings route")
+
     try:
         current = settings_module.load_settings()
 

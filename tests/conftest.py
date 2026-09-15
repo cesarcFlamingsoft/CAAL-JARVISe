@@ -32,3 +32,25 @@ def hermetic_environment(monkeypatch: pytest.MonkeyPatch):
     user_api.reset_runtime()
     yield
     user_api.reset_runtime()
+
+
+@pytest.fixture
+def isolated_harness_components(monkeypatch):
+    """Unit-test storage/transport separately from the administrator boundary.
+
+    Opt-in only: existing component suites exercise queue leases, ownership,
+    callbacks and HTTP parsing using synthetic/unowned rows. They have no live
+    identity dispatcher. Real authorization is exercised without this fixture
+    by test_delegation_correction, test_delegation_boundaries and test_ha_*.
+    """
+    from contextlib import nullcontext
+
+    from caal import ha_policy
+
+    monkeypatch.setattr(
+        ha_policy,
+        "require_delegated_scope",
+        lambda scope=None: scope if getattr(scope, "user_id", None) else None,
+    )
+    monkeypatch.setattr(ha_policy, "task_dispatch_scope", lambda task: nullcontext())
+    monkeypatch.setattr(ha_policy, "tool_allowed", lambda agent, name: True)

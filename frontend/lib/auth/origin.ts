@@ -4,7 +4,8 @@
  * Browsers attach `Origin` to cross-origin and same-origin POST/PUT/PATCH/
  * DELETE requests; a request whose origin is not our own is refused before any
  * other check runs. When the operator configures `CAAL_PUBLIC_ORIGIN` that is
- * the only accepted origin; otherwise it is derived from the forwarded host.
+ * the primary accepted origin. Explicit local origins may be added by the
+ * operator; otherwise the legacy unconfigured path derives it from the host.
  */
 
 function originOf(value: string | null): string | null {
@@ -40,15 +41,21 @@ export function expectedOrigin(headers: Headers, publicOrigin?: string | null): 
  * True only when the request's `Origin` (or, failing that, `Referer`) matches
  * our own origin exactly. A request with neither header is refused.
  */
-export function isTrustedMutationOrigin(headers: Headers, publicOrigin?: string | null): boolean {
+export function isTrustedMutationOrigin(
+  headers: Headers,
+  publicOrigin?: string | null,
+  trustedLocalOrigins: readonly string[] = []
+): boolean {
   const expected = expectedOrigin(headers, publicOrigin);
   if (!expected) {
     return false;
   }
   const origin = headers.get('origin');
   if (origin !== null) {
-    return originOf(origin) === expected;
+    return (
+      originOf(origin) === origin && (origin === expected || trustedLocalOrigins.includes(origin))
+    );
   }
   const referer = originOf(headers.get('referer'));
-  return referer !== null && referer === expected;
+  return referer !== null && (referer === expected || trustedLocalOrigins.includes(referer));
 }

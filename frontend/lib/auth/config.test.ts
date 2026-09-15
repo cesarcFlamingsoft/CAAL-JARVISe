@@ -160,3 +160,38 @@ describe('standalone identity configuration', () => {
     assert.ok(status.config!.describe().includes('INSECURE'));
   });
 });
+
+it('supports an explicit exact local origin list only with a pinned public origin', () => {
+  const env = { ...LOCAL, CAAL_PUBLIC_ORIGIN: 'https://jarvis.mexcantech.io' };
+  assert.deepEqual(readIdentityConfig(env).config?.trustedLocalOrigins, []);
+  assert.deepEqual(
+    readIdentityConfig({ ...env, CAAL_TRUSTED_LOCAL_ORIGINS: 'http://localhost:3000' }).config
+      ?.trustedLocalOrigins,
+    ['http://localhost:3000']
+  );
+  for (const value of [
+    '*',
+    'null',
+    'http://localhost',
+    'http://localhost:*',
+    'http://localhost:3000/',
+    'http://localhost:3000/path',
+    'http://user@localhost:3000',
+    'http://localhost:3000?x',
+    'http://127.0.0.1:3000',
+    'http://192.168.1.1:3000',
+    'https://evil.example',
+    'http://localhost:99999',
+    'http://localhost:3000,',
+    'http://localhost:3000,null',
+  ]) {
+    const status = readIdentityConfig({ ...env, CAAL_TRUSTED_LOCAL_ORIGINS: value });
+    assert.equal(status.status, 'invalid', value);
+    assert.ok(status.problems.some((p) => p.startsWith('CAAL_TRUSTED_LOCAL_ORIGINS')));
+    assert.equal(status.config, undefined);
+  }
+  assert.equal(
+    readIdentityConfig({ ...LOCAL, CAAL_TRUSTED_LOCAL_ORIGINS: 'http://localhost:3000' }).status,
+    'invalid'
+  );
+});

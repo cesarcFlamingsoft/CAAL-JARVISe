@@ -403,6 +403,8 @@ async def _discover_tools(agent) -> list[dict] | None:
         logger.info(f"Added {len(agent._hass_tool_definitions)} Home Assistant tools")
 
     # Cache tools on agent and return
+    from .llm_node import _tool_available
+    ollama_tools = [t for t in ollama_tools if _tool_available(agent, t["function"]["name"])]
     result = ollama_tools if ollama_tools else None
     agent._ollama_tools_cache = result
 
@@ -534,6 +536,10 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     3. n8n workflows (webhook-based execution)
     4. MCP servers (with server_name__tool_name prefix parsing)
     """
+
+    from .llm_node import _tool_available
+    if not _tool_available(agent, tool_name):
+        return {"status": "unsupported_tool", "message": "Unscoped delegation is not authorized.", "data": {}}
 
     # Check Home Assistant tools first (wrapper functions)
     if hasattr(agent, "_hass_tool_callables") and tool_name in agent._hass_tool_callables:

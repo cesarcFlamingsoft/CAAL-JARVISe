@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect a Jarvis voice satellite",
+        "description": "Use the dedicated credential issued for this device in Jarvis satellite administration. Home controls require an explicitly selected HA connection and device permissions in Jarvis. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
+        "data": {
+          "backend": "Backend address",
+          "credential": "Satellite credential"
+        }
+      },
+      "reconfigure": {
+        "title": "Update this satellite connection",
+        "description": "Use the dedicated credential issued for this device in Jarvis satellite administration. Home controls require an explicitly selected HA connection and device permissions in Jarvis. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
+        "data": {
+          "backend": "Backend address",
+          "credential": "Satellite credential"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Check the private backend address and satellite credential."
+    },
+    "abort": {
+      "already_configured": "This voice satellite is already configured.",
+      "reconfigure_successful": "This satellite connection was updated."
+    }
+  }
+}

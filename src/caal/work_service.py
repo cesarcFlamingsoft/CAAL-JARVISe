@@ -44,10 +44,10 @@ from .durable_work import (
     LiveKitCallbackPlacer,
 )
 from .internal_auth import MIN_SECRET_LENGTH
-from .reminder_dispatch import ReminderDispatcher
 from .llm.providers import create_provider_from_settings
 from .local_ollama import configured_endpoint
 from .model_routing import Destination, classify_request
+from .reminder_dispatch import ReminderDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +133,13 @@ class DurableWorker:
         self._coding = coding
 
     async def __call__(self, task: BackgroundTask) -> str:
-        if self._coding is not None and self._is_coding(task.request):
-            # A coding job gets the request, never the conversation.
-            return await self._coding(task.request, "")
-        return await self._compose(task.request, "")
+        from .ha_policy import task_dispatch_scope
+
+        with task_dispatch_scope(task):
+            if self._coding is not None and self._is_coding(task.request):
+                # A coding job gets the request, never the conversation.
+                return await self._coding(task.request, "")
+            return await self._compose(task.request, "")
 
     @staticmethod
     def _is_coding(request: str) -> bool:

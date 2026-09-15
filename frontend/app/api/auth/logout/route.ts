@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     return apiError(503, 'identity_not_configured');
   }
   const config = status.config;
-  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin)) {
+  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin, config.trustedLocalOrigins)) {
     return apiError(403, 'bad_origin');
   }
   if (!verifyCsrf(req.headers)) {

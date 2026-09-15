@@ -30,41 +30,13 @@ ok()   { echo "[ok]   $1"; }
 warn() { echo "[warn] $1"; }
 bad()  { echo "[fail] $1"; }
 
-# .env is the deployment own declaration of what it runs.
-TELEPHONY_SETTING="${CAAL_TELEPHONY:-}"
-if [ -f ./.env ]; then
-  FROM_ENV=$(grep -E '^CAAL_TELEPHONY=' ./.env | tail -n 1 | cut -d= -f2 | tr -d '[:space:]')
-  if [ -n "$FROM_ENV" ]; then
-    TELEPHONY_SETTING="$FROM_ENV"
-  fi
-fi
-
-if [ -z "${CAAL_BASE_COMPOSE:-}" ]; then
-  if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-    CAAL_BASE_COMPOSE="docker-compose.apple.yaml"
-  else
-    CAAL_BASE_COMPOSE="docker-compose.yaml"
-  fi
-fi
-
-COMPOSE_ARGS=(-f "$CAAL_BASE_COMPOSE")
-TELEPHONY=no
-case "$TELEPHONY_SETTING" in
-  1|true|yes)
-    COMPOSE_ARGS+=(-f docker-compose.telephony.yaml)
-    TELEPHONY=yes
-    ;;
-esac
-if [ -n "${HTTPS_DOMAIN:-}" ] || grep -qsE '^HTTPS_DOMAIN=.+' ./.env; then
-  COMPOSE_ARGS+=(--profile https)
-fi
-
-echo "compose set: docker compose ${COMPOSE_ARGS[*]}"
-echo "telephony:   $TELEPHONY"
+# The current deployment is pinned in the same private manifest as startup.
+TELEPHONY=yes
+compose() ( /usr/bin/python3 ./startup_runtime.py compose "$@" )
 
 validate() {
-  docker compose "${COMPOSE_ARGS[@]}" config -q
-  ok "compose configuration is valid"
+  compose config -q
+  ok "complete preserved compose configuration is valid"
 }
 
 # Report only whether a key is configured, never its value.
@@ -131,7 +103,7 @@ check_all() {
 case "${1:-check}" in
   config)
     validate
-    # `docker compose config` expands env_file values and would print every
+    # `compose config` expands env_file values and would print every
     # deployment credential. The compose set was already printed above and
     # config -q gives the only useful diagnostic without that disclosure.
     ok "compose set is safe to use (rendered configuration withheld)"
@@ -143,7 +115,7 @@ case "${1:-check}" in
   recreate)
     validate
     echo "recreating caal-livekit under the compose set above..."
-    docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps livekit
+    compose up -d --force-recreate --no-deps livekit
     for _ in $(seq 1 30); do
       if docker inspect -f '{{.State.Health.Status}}' caal-livekit 2>/dev/null | grep -qx healthy; then
         break
@@ -153,7 +125,7 @@ case "${1:-check}" in
     # SIP registers with LiveKit through Redis; restart it so it re-registers
     # against the LiveKit process that just came up.
     if [ "$TELEPHONY" = "yes" ]; then
-      docker compose "${COMPOSE_ARGS[@]}" restart sip >/dev/null
+      compose restart sip >/dev/null
       sleep 5
     fi
     check_all

@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 import { ConnectedAccounts } from '@/components/settings/connected-accounts';
+import { TtsSettings } from '@/components/settings/tts';
 import { LocalModelSettings } from '@/components/settings/local-model';
 import { WeatherLocation } from '@/components/settings/weather-location';
 
@@ -811,7 +812,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         n8n_url: settings.n8n_enabled ? getN8nMcpUrl(settings.n8n_url) : settings.n8n_url,
         wake_greetings: settings.wake_greetings.filter((g) => g.trim()),
       };
-      for (const owned of ['llm_provider', 'ollama_host', 'ollama_model']) {
+      for (const owned of ['llm_provider', 'ollama_host', 'ollama_model', 'tts_provider']) {
         delete finalSettings[owned];
       }
 
@@ -875,23 +876,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     // Empty lines are filtered out when saving
     const greetings = value.split('\n');
     setSettings({ ...settings, wake_greetings: greetings });
-  };
-
-  const handleTtsProviderChange = async (provider: 'kokoro' | 'piper') => {
-    if (provider === settings.tts_provider) return;
-
-    setSettings({ ...settings, tts_provider: provider });
-
-    // Fetch voices for the new provider
-    try {
-      const res = await fetch(`/api/voices?provider=${provider}`);
-      if (res.ok) {
-        const data = await res.json();
-        setVoices(data.voices || []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch voices for provider:', err);
-    }
   };
 
   const handlePiperVoiceChange = (voice: string) => {
@@ -1055,39 +1039,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
           to Hermes coding delegation. */}
       <LocalModelSettings />
 
-      {/* TTS Provider */}
-      <div className="space-y-4">
-        <label className="text-muted-foreground text-xs font-bold tracking-wide uppercase">
-          TTS Provider
-        </label>
-        <div className="bg-muted inline-flex rounded-lg p-1">
-          <button
-            onClick={() => handleTtsProviderChange('kokoro')}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              settings.tts_provider === 'kokoro'
-                ? 'bg-background text-foreground shadow'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Kokoro
-          </button>
-          <button
-            onClick={() => handleTtsProviderChange('piper')}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              settings.tts_provider === 'piper'
-                ? 'bg-background text-foreground shadow'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Piper
-          </button>
-        </div>
-        <p className="text-muted-foreground text-xs">
-          {settings.tts_provider === 'kokoro'
-            ? 'High-quality neural TTS (requires Kokoro container)'
-            : 'Lightweight CPU-friendly TTS with 35+ languages'}
-        </p>
-      </div>
+      <TtsSettings />
     </div>
   );
 

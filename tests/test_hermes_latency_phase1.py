@@ -16,6 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -352,7 +355,7 @@ def test_initial_greeting_is_spoken_verbatim_without_an_llm_round_trip() -> None
     asyncio.run(voice_agent.deliver_initial_greeting(_Session()))
 
     assert said == [voice_agent.INITIAL_GREETING]
-    assert "JARVIS" in voice_agent.INITIAL_GREETING
+    assert said == ["Hello, sir. How may I help you today?"]
 
 
 # ---------------------------------------------------------------------------

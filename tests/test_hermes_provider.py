@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+# This component suite mocks the separately tested delegation authorization boundary.
+pytestmark = pytest.mark.usefixtures("isolated_harness_components")
+
 from caal.llm.providers import create_provider_from_settings
 from caal.settings import DEFAULT_SETTINGS
 

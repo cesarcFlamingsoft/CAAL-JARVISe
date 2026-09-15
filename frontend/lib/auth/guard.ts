@@ -157,7 +157,7 @@ export function guardMutation(
   config: IdentityConfig,
   actorId: string
 ): NextResponse | null {
-  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin)) {
+  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin, config.trustedLocalOrigins)) {
     return apiError(403, 'bad_origin');
   }
   if (!verifyCsrf(req.headers)) {
