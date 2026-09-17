@@ -43,10 +43,10 @@ export function WorkspaceHeader({
     : '--:--';
 
   return (
-    <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <header className="workspace-heading mb-6 flex flex-wrap items-end justify-between gap-4">
       <div className="min-w-0">
         <p className="text-muted-foreground font-mono text-xs font-medium tracking-wider uppercase">
-          Monitor
+          FRIDAY / COMMAND CENTER
         </p>
         <h1 className="truncate text-2xl font-semibold tracking-tight md:text-3xl">
           {greeting}

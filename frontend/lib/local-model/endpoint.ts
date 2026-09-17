@@ -173,7 +173,7 @@ function routingOf(value: unknown): LocalModelRouting | null {
  *
  * An endpoint the backend would no longer accept, or a model name that is not
  * one, means the answer is not usable: nothing is shown rather than something
- * misleading being offered as what JARVIS is running on.
+ * misleading being offered as what FRIDAY is running on.
  */
 export function browserLocalModel(data: unknown): LocalModelView | null {
   const row = data as Record<string, unknown> | null;
@@ -228,7 +228,7 @@ const SENTENCES: Record<string, string> = {
   forbidden: 'Only an administrator can change the local model.',
   unauthorized: 'Your session has expired. Sign in again.',
   rate_limited: 'Too many attempts just now. Wait a moment and try again.',
-  backend_unavailable: 'JARVIS is not answering just now. Try again in a moment.',
+  backend_unavailable: 'FRIDAY is not answering just now. Try again in a moment.',
 };
 
 const FALLBACK = 'That did not work. Check the address and try again.';

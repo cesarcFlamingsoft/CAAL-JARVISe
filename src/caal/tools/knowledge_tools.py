@@ -73,7 +73,7 @@ SESSION_UNAVAILABLE = (
     "and this session is not signed in, so I have not looked anything up."
 )
 BACKEND_UNAVAILABLE = (
-    "Connected email and calendar knowledge is not available on this JARVIS backend right now."
+    "Connected email and calendar knowledge is not available on this FRIDAY backend right now."
 )
 NO_ACCOUNTS = (
     "No email or calendar accounts are connected to your profile yet. You can link Google, "

@@ -58,7 +58,7 @@ export function ChangePasswordForm({ forced }: { forced: boolean }) {
   }
 
   if (done) {
-    return <p className="text-sm">Password changed. Taking you back to JARVIS…</p>;
+    return <p className="text-sm">Password changed. Taking you back to FRIDAY…</p>;
   }
 
   return (

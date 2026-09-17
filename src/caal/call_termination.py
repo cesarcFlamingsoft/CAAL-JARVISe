@@ -8,13 +8,15 @@ from typing import Any
 from livekit import api
 
 _END_CALL_PATTERNS = (
-    re.compile(r"^(?:jarvis[,. ]+)?(?:please )?hang up(?: now)?[.!]*$", re.IGNORECASE),
+    re.compile(r"^(?:(?:friday|jarvis)[,. ]+)?(?:please )?hang up(?: now)?[.!]*$", re.IGNORECASE),
     re.compile(
-        r"^(?:jarvis[,. ]+)?(?:please )?end (?:this |the )?call(?: now)?[.!]*$",
+        r"^(?:(?:friday|jarvis)[,. ]+)?(?:please )?end (?:this |the )?call(?: now)?[.!]*$",
         re.IGNORECASE,
     ),
-    re.compile(r"^(?:jarvis[,. ]+)?(?:please )?disconnect(?: now)?[.!]*$", re.IGNORECASE),
-    re.compile(r"^goodbye(?:,? jarvis)?[.!]*$", re.IGNORECASE),
+    re.compile(
+        r"^(?:(?:friday|jarvis)[,. ]+)?(?:please )?disconnect(?: now)?[.!]*$", re.IGNORECASE
+    ),
+    re.compile(r"^goodbye(?:,? (?:friday|jarvis))?[.!]*$", re.IGNORECASE),
 )
 
 
@@ -30,7 +32,7 @@ def end_call_requested(transcript: str) -> bool:
 # hypotheticals, reported speech, a third-party callee, a dictated number, or
 # any extra request in the same breath all fall through to Hermes untouched.
 _CALLBACK_MAX_CHARS = 200
-_CALLBACK_LEAD_IN = r"(?:(?:okay|ok|alright|jarvis)[,. ]+)*(?:please )?"
+_CALLBACK_LEAD_IN = r"(?:(?:okay|ok|alright|friday|jarvis)[,. ]+)*(?:please )?"
 _CALLBACK_HANG_UP = r"(?:hang up|end (?:this |the )?call|disconnect)(?: now| for now)?"
 _CALLBACK_JOIN = r"[,]? ?(?:and then|and|then) "
 _CALLBACK_CALL_ME = r"(?:call me(?: back| again)?|ring me back|give me a call)"
@@ -80,6 +82,13 @@ async def end_livekit_room(room_service: Any, room_name: str) -> None:
 
 
 async def acknowledge_and_end_call(session: Any, room_service: Any, room_name: str) -> None:
-    """Give a brief confirmation, then terminate the current call room."""
-    await session.say("Ending the call. Goodbye.")
+    """Give a brief confirmation, then terminate the current call room.
+
+    The confirmation is the same fixed line it has always been, said in this
+    turn's language (see :mod:`caal.reply_localization`). Ending the call is
+    decided before this is reached and is not affected by it.
+    """
+    from .reply_localization import END_CALL_REPLY, speech_reply
+
+    await session.say(speech_reply(END_CALL_REPLY))
     await end_livekit_room(room_service, room_name)

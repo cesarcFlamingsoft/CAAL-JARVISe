@@ -117,7 +117,7 @@ _CONTRACTIONS = (
 _NON_WORD = re.compile(r"[^a-z0-9' ]+")
 _LEAD_IN = re.compile(
     r"^(?:(?:hey|hi|ok|okay|so|um|uh|well|and|also)\s+)*"
-    r"(?:jarvis\s*)?"
+    r"(?:(?:friday|jarvis)\s*)?"
     r"(?:please\s+)?"
     r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
     r"(?:i\s+(?:want|need|would like|d like)\s+(?:you\s+)?to\s+)?"
@@ -131,6 +131,8 @@ def _normalized(text: object) -> str:
     if not isinstance(text, str):
         return ""
     lowered = text[:MAX_INPUT_CHARS].replace("’", "'").lower()
+    # A trailing Friday can be a calendar date; only strip an explicit address.
+    lowered = re.sub(r",\s*friday[.!?]*$", "", lowered)
     lowered = lowered.replace("e-mail", "email").replace("e mail", "email")
     for pattern, replacement in _CONTRACTIONS:
         lowered = pattern.sub(replacement, lowered)

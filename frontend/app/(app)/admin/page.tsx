@@ -39,7 +39,7 @@ export default async function AdminPage() {
     <main className="mx-auto max-w-6xl px-6 py-20">
       <header className="mb-8 flex items-baseline justify-between">
         <div>
-          <h1 className="text-xl font-semibold">JARVIS administration</h1>
+          <h1 className="text-xl font-semibold">FRIDAY administration</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Users, roles, approved callback numbers and the audit trail.
           </p>
@@ -48,7 +48,7 @@ export default async function AdminPage() {
           href="/"
           className="text-muted-foreground hover:text-foreground text-sm underline-offset-4 hover:underline"
         >
-          Back to JARVIS
+          Back to FRIDAY
         </Link>
       </header>
       <AdminPanel selfId={auth.user.userId} />

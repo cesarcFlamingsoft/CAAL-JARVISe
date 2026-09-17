@@ -71,7 +71,7 @@ SUPPORTED_CHANNELS = frozenset({TELEGRAM_CHANNEL})
 # A document is delivered under a fixed, neutral name. A filename travels
 # through notification previews, download folders, and chat history; deriving
 # it from the request or the task id would leak both into all of them.
-DELIVERED_FILENAME = "jarvis-document.pdf"
+DELIVERED_FILENAME = "friday-document.pdf"
 
 DEFAULT_DELIVERY_TIMEOUT_SECONDS = 60.0
 MAX_CLASSIFIER_CHARS = 2_000

@@ -20,8 +20,8 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'JARVIS',
-  pageTitle: 'JARVIS Voice Assistant',
+  companyName: 'FRIDAY',
+  pageTitle: 'FRIDAY Voice Assistant',
   pageDescription: 'A local voice assistant with Home Assistant and n8n integrations',
 
   supportsChatInput: true,
@@ -33,8 +33,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   accent: '#45997c',
   logoDark: '/mexcantech-mark.png',
   accentDark: '#45997c',
-  startButtonText: 'Talk to JARVIS',
+  startButtonText: 'Talk to FRIDAY',
 
-  // LiveKit routing worker; user-facing identity remains JARVIS.
+  // LiveKit routing worker; user-facing identity remains FRIDAY.
   agentName: 'caal',
 };

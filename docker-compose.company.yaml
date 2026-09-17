@@ -1,0 +1,122 @@
+# =============================================================================
+# Company document library -- the read-only MCP reader process
+# =============================================================================
+#
+# An **overlay**. It adds one service and one volume and changes nothing that
+# already exists, so it composes on top of the nine overlay files this
+# deployment already runs with rather than replacing any of them:
+#
+#   docker compose \
+#     -f docker-compose.apple.yaml \
+#     -f docker-compose.telephony.yaml \
+#     ... the rest of the current list, unchanged, in order ... \
+#     -f docker-compose.company.yaml \
+#     config            # render and check it; this file never starts anything
+#
+# Why a separate process at all
+# -----------------------------
+# The company library has exactly one writer. The writer is the agent
+# (`CAAL_COMPANY_ROLE=owner`), which holds an exclusive `flock` on `writer.lock`
+# and is the only role that may publish the encrypted index. Everything the
+# model reads goes through this service, which opens the same library as a
+# reader: no lock, no write, and a refresh from the identity of `index.enc`
+# before every authorization and every read. Two writers is the failure the
+# store rewrite exists to make impossible, and this is the half of it the
+# platform enforces rather than the lock.
+#
+# Why it shares the agent's network namespace
+# -------------------------------------------
+# The service binds private loopback 8791 and is published nowhere. With
+# `network_mode: service:agent` the agent reaches it at `127.0.0.1:8791` inside
+# its own namespace, and nothing else on `caal-network` -- including the
+# frontend -- can address it at all. `network_mode` and `networks` are mutually
+# exclusive in Compose, so this service deliberately declares no network.
+#
+# What is not in here
+# -------------------
+# No published port. No owner: `CAAL_COMPANY_OWNER_USER_ID` must be provided by
+# the operator and this file refuses to start without it, because a library
+# whose owner was guessed is a library belonging to the wrong person. No
+# generated key and no generated service token, for the same reason. No change
+# to the agent, the frontend or any other service. Nothing here runs at all
+# until an operator adds it to the compose invocation.
+services:
+  company-mcp:
+    # The same image the agent runs: one build, two roles. No `build:` key, so
+    # adding this overlay never triggers a second image build.
+    image: caal-agent:latest
+    container_name: caal-company-mcp
+    # Explicit, so what this process is cannot be inherited from the image's
+    # entrypoint and cannot be mistaken for the agent.
+    #
+    # The image entrypoint (`entrypoint.sh`) does *not* swallow this command --
+    # it ends in `exec gosu agent "$@"` -- but it first runs
+    # `chown -R agent:agent "$CAAL_DATA_DIR"`, and this service mounts
+    # /app/data read only on purpose. Under `set -e` that chown is a non-zero
+    # exit and the reader never starts. So the reader drops privilege directly
+    # and skips the writer's config bootstrap, which it does not need: it has
+    # no /app/config, no settings.json and no mcp_servers.json.
+    entrypoint: ["/usr/sbin/gosu", "agent"]
+    command: ["python", "-m", "caal.company.server_main"]
+    # Private loopback 8791 inside the agent's namespace. Never published.
+    network_mode: service:agent
+    # Deliberately **no** `env_file: ./.env`. The reader needs exactly what is
+    # listed below, and the shared env file carries every unrelated integration
+    # secret this deployment has -- provider OAuth, telephony, Telegram, the
+    # harness. A read-only query service has no use for any of them, and
+    # Compose can only append to an `env_file` list, never subtract, so the
+    # narrow surface has to be the one that is written down here. The two
+    # identity secrets it genuinely shares are interpolated from the project
+    # `.env` by name, below, which does not put the rest in its environment.
+    environment:
+      # Pinned *after* the shared env file, so a stray CAAL_COMPANY_ROLE in
+      # .env cannot turn the reader into a second writer. `server_main` forces
+      # the reader role again in code; this is the outer of the two.
+      - CAAL_COMPANY_ROLE=reader
+      - CAAL_COMPANY_LIBRARY_DIR=/app/company
+      # A reader's library mount is read only, so the single-use principal
+      # nonces it must write live in their own volume.
+      - CAAL_COMPANY_READER_STATE_DIR=/app/reader-state
+      - CAAL_COMPANY_MCP_HOST=127.0.0.1
+      - CAAL_COMPANY_MCP_PORT=8791
+      - CAAL_DATA_DIR=/app/data
+      # Provided by the operator or the service does not start. Compose's
+      # `:?` form fails the whole invocation with this message rather than
+      # starting something half-configured.
+      - CAAL_COMPANY_OWNER_USER_ID=${CAAL_COMPANY_OWNER_USER_ID:?CAAL_COMPANY_OWNER_USER_ID must be provided}
+      - CAAL_COMPANY_LIBRARY_KEYS=${CAAL_COMPANY_LIBRARY_KEYS:?CAAL_COMPANY_LIBRARY_KEYS must be provided}
+      - CAAL_COMPANY_MCP_TOKEN=${CAAL_COMPANY_MCP_TOKEN:?CAAL_COMPANY_MCP_TOKEN must be provided}
+      # The three `load_multi_user_config` requires, and only those.
+      # `server_main` resolves the provisioned owner's role and status against
+      # the identity database on every request, and it cannot open that store
+      # without the secret that signs principals and the ring that decrypts
+      # profiles. The bootstrap **email** is required by the same validator;
+      # the bootstrap **password hash** deliberately is not passed, because
+      # this process never authenticates anybody -- it only reads role and
+      # status for an already-signed principal.
+      - CAAL_INTERNAL_AUTH_SECRET=${CAAL_INTERNAL_AUTH_SECRET:-}
+      - CAAL_PROFILE_ENCRYPTION_KEYS=${CAAL_PROFILE_ENCRYPTION_KEYS:-}
+      - CAAL_BOOTSTRAP_ADMIN_EMAIL=${CAAL_BOOTSTRAP_ADMIN_EMAIL:-}
+    volumes:
+      # The library itself, read only. This is the platform half of
+      # "exactly one writer".
+      - caal-company:/app/company:ro
+      # The authoritative identity database, read only: `server_main` refuses
+      # to start unless the provisioned owner resolves to an active
+      # administrator, and it resolves that against the same store the rest of
+      # the deployment uses.
+      - caal-memory:/app/data:ro
+      # The only writable thing this process has.
+      - caal-company-reader:/app/reader-state
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+volumes:
+  # Persistent and named, so the library survives a container recreate. It is
+  # deliberately *not* mounted into the frontend: the browser tier never sees
+  # an encrypted original, an index, or the MCP service.
+  caal-company:
+    name: caal-company
+  caal-company-reader:
+    name: caal-company-reader

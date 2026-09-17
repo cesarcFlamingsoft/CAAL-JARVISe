@@ -1,0 +1,5 @@
+# Explicit opt-in for this deployment only. HTTPS session cookies stay Secure.
+services:
+  frontend:
+    environment:
+      CAAL_TRUSTED_LOCAL_ORIGINS: http://localhost:3000

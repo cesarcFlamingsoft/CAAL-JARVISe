@@ -135,7 +135,7 @@ _VOCABULARY = _CUES | frozenset(
     a an the and also too plus as well but both either or nor not no never
     i im id ive me my myself mine we us our
     it its that this these those there
-    you your jarvis
+    you your friday jarvis
     to of on in at by with for
     want wants wanted would like liked need needs prefer rather love
     make makes making sure keep keeps keeping kept add adds adding

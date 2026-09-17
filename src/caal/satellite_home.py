@@ -5,6 +5,7 @@ Device grants are application restrictions, not reduced provider-token privilege
 """
 
 import asyncio
+import logging
 import re
 import time
 
@@ -114,6 +115,8 @@ class SatelliteHome:
         self.storage, self.principal = storage, principal
         self.client_factory, self.settings_getter = client_factory, settings_getter
         self.lock = asyncio.Lock()
+        self._write_results = {}
+        self._write_uncertain = False
 
     def tools(self):
         scope = self.storage.permissions(self.principal)["scope"]
@@ -261,24 +264,59 @@ class SatelliteHome:
             raise ValueError("invalid_arguments")
         async with self.lock:
             client, token, recheck, audit = await self._context(write=True)
+            key = (operation, tuple(sorted(set(entity_ids))))
+            if self._write_uncertain:
+                return self._uncertain_result()
+            if key in self._write_results:
+                return self._write_results[key]
             rows = await client.request("GET", "/api/states", token=token)
             available = {r["entity_id"] for r in rows if self.safe_state(r)}
+            recheck()
             if not set(entity_ids) <= available:
                 raise PermissionError("light_not_available")
-            recheck()
             audit("light." + operation, "requested")
-            await client.request(
-                "POST",
-                "/api/services/light/" + operation,
-                token=token,
-                body={"entity_id": list(dict.fromkeys(entity_ids))},
-            )
-            recheck()
-            audit("light." + operation, "accepted")
-            return {
+            # Keep the guard set on cancellation or an uncertain transport outcome.
+            # This instance belongs to one turn, including its model continuations.
+            self._write_uncertain = True
+            try:
+                await client.request(
+                    "POST",
+                    "/api/services/light/" + operation,
+                    token=token,
+                    body={"entity_id": list(dict.fromkeys(entity_ids))},
+                )
+            except PermissionError:
+                # An explicit provider refusal is different from a lost response.
+                raise
+            except Exception:
+                return self._uncertain_result()
+            try:
+                recheck()
+                audit("light." + operation, "accepted")
+            except Exception:
+                return self._uncertain_result()
+            result = {
                 "status": "ok",
                 "message": "Home Assistant accepted the light "
                 + ("on" if operation == "turn_on" else "off")
                 + " request.",
                 "data": {},
             }
+            self._write_uncertain = False
+            self._write_results[key] = result
+            return result
+
+    @staticmethod
+    def _uncertain_result():
+        logging.getLogger(__name__).info(
+            "Satellite tool refused reason_code=light_action_uncertain"
+        )
+        return {
+            "status": "action_uncertain",
+            "reason_code": "light_action_uncertain",
+            "spoken_message": "I couldn't confirm the light request's outcome, "
+            "so I haven't sent it again.",
+            "message": "The light request's outcome could not be confirmed. Do not retry "
+            "the write. Read home.states to check the current state and explain the uncertainty.",
+            "data": {},
+        }

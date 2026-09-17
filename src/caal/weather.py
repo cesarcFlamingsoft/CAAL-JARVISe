@@ -548,7 +548,7 @@ class WeatherClient:
     async def current(self, user_id: str) -> WeatherSnapshot:
         """This user's current conditions: cached within the hour, truthful otherwise."""
         now = self.now()
-        preference = self._store.preferences(user_id, now=now)
+        preference = self._store.preferences(user_id, now=now, purge_expired=False)
         location = preference.resolved
         if location is None:
             return WeatherSnapshot(state="no_location")

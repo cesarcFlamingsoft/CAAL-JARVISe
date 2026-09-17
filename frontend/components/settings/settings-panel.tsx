@@ -15,6 +15,7 @@ import {
 import { Button } from '@/components/livekit/button';
 import { ConnectedAccounts } from '@/components/settings/connected-accounts';
 import { TtsSettings } from '@/components/settings/tts';
+import { LanguageSettings } from '@/components/settings/language';
 import { LocalModelSettings } from '@/components/settings/local-model';
 import { WeatherLocation } from '@/components/settings/weather-location';
 
@@ -55,7 +56,7 @@ interface Settings {
   agent_name: string;
   prompt: string;
   wake_greetings: string[];
-  // Providers. The LLM side is not chosen here: JARVIS routes every turn
+  // Providers. The LLM side is not chosen here: FRIDAY routes every turn
   // (local Ollama, Hermes escalation, Hermes coding delegation) and the local
   // endpoint and model are owned by the local-model settings route.
   tts_provider: 'kokoro' | 'piper';
@@ -1034,12 +1035,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const renderProvidersTab = () => (
     <div className="space-y-8">
       {/* The local model, and what the routing does with it. There is no
-          provider chooser: JARVIS runs the local Ollama model, escalates work
+          provider chooser: FRIDAY runs the local Ollama model, escalates work
           that needs an agent harness to Hermes, and sends anything about code
           to Hermes coding delegation. */}
       <LocalModelSettings />
 
       <TtsSettings />
+
+      {/* Which language FRIDAY answers in. Personal and owner-scoped, next to
+          the voice it is spoken with. */}
+      <LanguageSettings />
     </div>
   );
 
@@ -1283,7 +1288,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
           <div>
             <span className="font-semibold">Native Assistant Tools</span>
             <p className="text-muted-foreground text-xs">
-              Preferred JARVIS capabilities: email, calendars, reminders, alarms and timers.
+              Preferred FRIDAY capabilities: email, calendars, reminders, alarms and timers.
             </p>
           </div>
           <Toggle
@@ -1483,7 +1488,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
                 {(settings.calendar_sources || []).length === 0 && (
                   <p className="text-muted-foreground rounded-lg border border-dashed p-3 text-xs">
-                    No calendars configured. Add a source here and JARVIS can read it at runtime.
+                    No calendars configured. Add a source here and FRIDAY can read it at runtime.
                   </p>
                 )}
 
@@ -1617,7 +1622,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 <div>
                   <label className="text-sm font-medium">Alarms and timers</label>
                   <p className="text-muted-foreground text-xs">
-                    Let JARVIS schedule audible alarms and timer announcements.
+                    Let FRIDAY schedule audible alarms and timer announcements.
                   </p>
                 </div>
                 <Toggle

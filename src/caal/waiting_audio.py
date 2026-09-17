@@ -71,5 +71,8 @@ async def waiting_text_transform(text):
         async for part in source:
             yield part
 
+    from .speech_request import SpeechText
+
+    profile = getattr(first, "profile", None)
     async for part in filter_emoji(filter_markdown(words())):
-        yield part
+        yield SpeechText(part, profile.language) if profile is not None else part

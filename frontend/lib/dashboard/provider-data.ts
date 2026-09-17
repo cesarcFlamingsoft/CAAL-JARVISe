@@ -324,7 +324,7 @@ export function describeAccountStatus(entry: FeedAccount): string {
     case 'ok':
       return 'Connected';
     case 'reconnect_required':
-      return 'Needs reconnecting: JARVIS no longer holds working access. Reconnect it under Settings.';
+      return 'Needs reconnecting: FRIDAY no longer holds working access. Reconnect it under Settings.';
     case 'insufficient_scope':
       return 'Missing permission: this account was linked without access to this data. Reconnect it under Settings to grant it.';
     case 'not_configured':
@@ -334,7 +334,7 @@ export function describeAccountStatus(entry: FeedAccount): string {
     case 'unavailable':
       return 'The provider did not answer just now.';
     case 'stale':
-      return 'The provider did not answer just now, so this shows what JARVIS last saw.';
+      return 'The provider did not answer just now, so this shows what FRIDAY last saw.';
   }
 }
 

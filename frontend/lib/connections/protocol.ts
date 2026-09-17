@@ -487,31 +487,31 @@ export function describeOutcome(outcome: Outcome, provider: Provider | null): Re
     case 'connected':
       return {
         title: `${Name} is connected`,
-        detail: `JARVIS can now use the ${name} account you approved. You can review or disconnect it under Settings → Integrations → Connected accounts.`,
+        detail: `FRIDAY can now use the ${name} account you approved. You can review or disconnect it under Settings → Integrations → Connected accounts.`,
         connected: true,
       };
     case 'token_exchange_unavailable':
       return {
         title: 'Authorization received, but not completed',
-        detail: `${Name} approved the request, but the JARVIS backend reports that it cannot perform the final token exchange, so the ${name} account is not connected and nothing was stored. The approval was discarded. Ask the operator to configure a provider, then connect again.`,
+        detail: `${Name} approved the request, but the FRIDAY backend reports that it cannot perform the final token exchange, so the ${name} account is not connected and nothing was stored. The approval was discarded. Ask the operator to configure a provider, then connect again.`,
         connected: false,
       };
     case 'unsupported_scope':
       return {
         title: `${Name} rejected the requested permissions`,
-        detail: `${Name} did not accept the set of permissions this JARVIS server asks for, so the account could not be linked. Nothing was connected. Ask the operator to review the ${name} scope setting on the server.`,
+        detail: `${Name} did not accept the set of permissions this FRIDAY server asks for, so the account could not be linked. Nothing was connected. Ask the operator to review the ${name} scope setting on the server.`,
         connected: false,
       };
     case 'datacenter_mismatch':
       return {
         title: `Your ${name} account lives in a different data center`,
-        detail: `${Name} reported that your account is served from a different data center than the one this JARVIS server is configured for, so the approval could not be redeemed. Nothing was connected. Ask the operator to point the ${name} accounts domain at your data center.`,
+        detail: `${Name} reported that your account is served from a different data center than the one this FRIDAY server is configured for, so the approval could not be redeemed. Nothing was connected. Ask the operator to point the ${name} accounts domain at your data center.`,
         connected: false,
       };
     case 'identity_unavailable':
       return {
         title: `${Name} did not say which account was approved`,
-        detail: `${Name} approved the request but did not say which account it was for, and JARVIS will not guess. Nothing was connected. ${START_AGAIN}`,
+        detail: `${Name} approved the request but did not say which account it was for, and FRIDAY will not guess. Nothing was connected. ${START_AGAIN}`,
         connected: false,
       };
     case 'denied':
@@ -547,7 +547,7 @@ export function describeOutcome(outcome: Outcome, provider: Provider | null): Re
     case 'configuration_needed':
       return {
         title: `${Name} is not set up on this server`,
-        detail: `The operator has not configured the ${name} OAuth client on this JARVIS server. Nothing was connected.`,
+        detail: `The operator has not configured the ${name} OAuth client on this FRIDAY server. Nothing was connected.`,
         connected: false,
       };
     case 'exchange_failed':
@@ -559,19 +559,19 @@ export function describeOutcome(outcome: Outcome, provider: Provider | null): Re
     case 'not_signed_in':
       return {
         title: 'You are not signed in',
-        detail: 'Sign in to JARVIS first, then start again from Settings → Integrations → Connected accounts.',
+        detail: 'Sign in to FRIDAY first, then start again from Settings → Integrations → Connected accounts.',
         connected: false,
       };
     case 'unauthorized':
       return {
         title: 'Your account cannot do this right now',
-        detail: 'Your JARVIS account is not allowed to connect accounts at the moment. Nothing was connected.',
+        detail: 'Your FRIDAY account is not allowed to connect accounts at the moment. Nothing was connected.',
         connected: false,
       };
     case 'identity_not_configured':
       return {
         title: 'Multi-user identity is not configured',
-        detail: 'Per-user connected accounts need multi-user identity, which is not configured on this JARVIS server.',
+        detail: 'Per-user connected accounts need multi-user identity, which is not configured on this FRIDAY server.',
         connected: false,
       };
     case 'rate_limited':
@@ -583,7 +583,7 @@ export function describeOutcome(outcome: Outcome, provider: Provider | null): Re
     case 'backend_unavailable':
       return {
         title: 'The backend did not respond',
-        detail: `JARVIS could not reach its backend to finish the connection. Nothing was connected. ${START_AGAIN}`,
+        detail: `FRIDAY could not reach its backend to finish the connection. Nothing was connected. ${START_AGAIN}`,
         connected: false,
       };
   }

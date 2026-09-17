@@ -150,6 +150,8 @@ def test_registry_marks_every_per_user_tool_as_user_scoped_and_nothing_else() ->
         [
             "memory.remember",
             "memory.recall",
+            "weather.current",
+            "time.current",
             "inbox.recent",
             "inbox.search",
             "inbox.read_summary",
@@ -161,6 +163,10 @@ def test_registry_marks_every_per_user_tool_as_user_scoped_and_nothing_else() ->
             "reminders.set_delivery",
             "reminders.list",
             "scheduled.change",
+            # The company document library belongs to one verified owner, so
+            # both of its tools take their user from the session, never the model.
+            "company.search",
+            "company.read",
         ]
     )
     for name in ("memory.remember", "memory.recall"):

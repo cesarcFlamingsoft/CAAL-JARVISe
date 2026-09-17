@@ -50,9 +50,9 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, ".env"))
 
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, StopResponse, mcp
+from livekit.agents import Agent, AgentSession, StopResponse, mcp, stt
 from livekit.plugins import groq as groq_plugin
-from livekit.plugins import openai, silero
+from livekit.plugins import silero
 
 from caal import CAALLLM, conversation_ledger, scheduled_events, user_api
 from caal.alarm_delivery import announce_due_alarms, has_listening_participant, may_deliver
@@ -351,17 +351,25 @@ def describe_scope(scope: UserScope) -> str:
     return f"verified user (role={scope.role})"
 
 
-def resolve_inbound_scope(job_metadata: str, *, room_name: str, identity: Any) -> UserScope:
-    """Identify a web/mobile session from the principal in its signed room configuration.
+def resolve_inbound_session(
+    job_metadata: str, *, room_name: str, identity: Any
+) -> tuple[UserScope, bool]:
+    """Identify a web/mobile session, and read what kind of session it asked to be.
 
     The BFF mints a short-lived ``caal-agent`` principal for the verified user
     and places it in the LiveKit room configuration it signs, so it reaches the
     worker as job metadata that no participant can read or forge. It must be
     bound to this very room. Anything that fails to verify, or names a user
     who is not active, leaves the session anonymous.
+
+    The second value is the **company-private entry request**. It is read only
+    from the verified token's claims -- never from the surrounding metadata
+    object, which is not signed -- and only as the literal boolean ``True``.
+    Whether it is honoured is a separate decision, made in
+    :mod:`caal.company_privacy` against the provisioned library owner.
     """
     if identity is None:
-        return UserScope.legacy()
+        return UserScope.legacy(), False
     store = _identity_store(identity)
     try:
         raw = json.loads(job_metadata or "{}")
@@ -369,10 +377,10 @@ def resolve_inbound_scope(job_metadata: str, *, room_name: str, identity: Any) -
         raw = None
     token = raw.get("caal_principal") if isinstance(raw, dict) else None
     if not isinstance(token, str) or not token:
-        return UserScope.anonymous()
+        return UserScope.anonymous(), False
     if store is None:
         logger.warning("Session principal ignored: identity runtime is locked")
-        return UserScope.anonymous()
+        return UserScope.anonymous(), False
     try:
         principal = verify_principal(
             token,
@@ -383,13 +391,20 @@ def resolve_inbound_scope(job_metadata: str, *, room_name: str, identity: Any) -
         )
     except PrincipalError:
         logger.warning("Session principal failed verification; running anonymous")
-        return UserScope.anonymous()
+        return UserScope.anonymous(), False
     profile = store.get_user(principal.subject)
     if profile is None or not profile.is_active:
         logger.warning("Session principal names no active user; running anonymous")
-        return UserScope.anonymous()
+        return UserScope.anonymous(), False
     from caal.ha_policy import verified_user_scope
-    return verified_user_scope(profile, identity)
+    requested = principal.claims.get("company_private") is True
+    return verified_user_scope(profile, identity), requested
+
+
+def resolve_inbound_scope(job_metadata: str, *, room_name: str, identity: Any) -> UserScope:
+    """The user a web/mobile session acts for. See :func:`resolve_inbound_session`."""
+    scope, _ = resolve_inbound_session(job_metadata, room_name=room_name, identity=identity)
+    return scope
 
 
 def has_sip_participant(room: Any) -> bool:
@@ -574,12 +589,77 @@ class ReturnSyncHydrator:
             logger.warning("Could not settle conversation return sync", exc_info=False)
 
 
+def build_handoff_reader(runtime: dict[str, Any], *, provider: Any = None, settings=None):
+    """The local-model reader for handoff requests the English net cannot see.
+
+    Always the local model, and now *checked* rather than assumed. The reader
+    is given the words of a turn -- "sigamos por teléfono", but equally
+    whatever preceded them in the same sentence -- so a reader on a cloud
+    provider is that turn leaving the machine, every turn, before anyone has
+    decided anything. ``work_router_provider`` only unwraps the wrappers the
+    runtime passes around; it does not check what it unwrapped to, and an
+    independent probe wired a spy declaring ``provider_name="hermes"`` and an
+    external ``base_url`` straight into this builder and watched it classify.
+
+    So the provider goes through the same resolver the cross-language
+    translator uses: :func:`caal.company.expansion_runtime.local_provider`
+    (a routed provider is unwrapped to its primary, the router itself is never
+    called, and the result must name itself the local model) and then
+    :func:`~caal.company.expansion_runtime.validated_endpoint`, which is
+    ``local_ollama``'s narrow local-only allowance. Anything else builds **no
+    reader at all**, is refused before a single classifier call, and is logged
+    with its reason -- never silently.
+
+    A validated local provider is not turned off by any of this: it keeps the
+    runtime's existing timeout and no-tools behaviour, and gains a bounded
+    ``num_predict`` the provider declares it reads.
+
+    It is also off when there is no provider and when the operator turned the
+    semantic turn reading off, in which case the handoff surface is exactly the
+    English offline net it is today.
+    """
+    if provider is None:
+        return None
+    if not runtime.get("handoff_reader_enabled", runtime.get("work_router_enabled", True)):
+        return None
+    from caal.company import expansion_runtime
+    from caal.handoff_semantics import (
+        DEFAULT_READER_TIMEOUT_SECONDS,
+        MAX_READER_REPLY_TOKENS,
+        SemanticHandoffReader,
+    )
+
+    direct = expansion_runtime.local_provider(provider)
+    if direct is None:
+        logger.warning(
+            "Handoff reader disabled: the configured model is not the direct local one, "
+            "and a turn is never read anywhere else"
+        )
+        return None
+    if expansion_runtime.validated_endpoint(direct, settings=settings) is None:
+        logger.warning(
+            "Handoff reader disabled: the local model endpoint is not an approved local "
+            "address"
+        )
+        return None
+
+    return SemanticHandoffReader(
+        classify=provider_classifier(direct, max_tokens=MAX_READER_REPLY_TOKENS),
+        timeout_seconds=runtime.get(
+            "handoff_reader_timeout_seconds",
+            runtime.get("work_router_timeout_seconds", DEFAULT_READER_TIMEOUT_SECONDS),
+        ),
+    )
+
+
 def build_phone_handoff_controller(
     ctx: agents.JobContext,
     *,
     conversation_id: str | None = None,
     user_scope: UserScope | None = None,
     identity: Any = None,
+    provider: Any = None,
+    runtime: dict[str, Any] | None = None,
 ) -> PhoneHandoffController | None:
     """Let an inbound caller move the conversation to their one approved phone.
 
@@ -591,10 +671,17 @@ def build_phone_handoff_controller(
     call is dispatched; a caller-supplied number is never used. With a
     ``conversation_id`` the confirmed call carries only that opaque id and the
     phone leg hydrates from the private ledger.
+
+    With a ``provider`` the controller can also read a request the English
+    offline net does not recognise -- every Spanish one -- on the local model.
+    That reading only ever asks the confirmation question; the dial still needs
+    the explicit answer, and the destination still comes from the profile. With
+    no provider the controller is exactly what it was.
     """
     if is_outbound_job(ctx.job.metadata):
         return None
 
+    semantic = build_handoff_reader(runtime or {}, provider=provider)
     scope = user_scope or UserScope.legacy()
     if scope.identity_configured:
         store = _identity_store(identity)
@@ -626,6 +713,7 @@ def build_phone_handoff_controller(
             conversation_id=conversation_id,
             user_id=user_id,
             destination_resolver=_resolve_destination,
+            semantic=semantic,
         )
 
     allowed = os.getenv("CAAL_OUTBOUND_ALLOWED_DESTINATIONS", "")
@@ -648,6 +736,7 @@ def build_phone_handoff_controller(
         start_call=coordinator.start,
         allowed_destinations=allowed,
         conversation_id=conversation_id,
+        semantic=semantic,
     )
 
 
@@ -787,6 +876,10 @@ class LocalTurnHandler:
         # Questions about the connected email and calendar accounts are answered
         # here from the per-user index; Hermes never receives those tools.
         self._knowledge = knowledge
+        # An ordinary session that wandered into company wording is answered
+        # here and goes no further. Bound after the agent exists.
+        self._agent: Any | None = None
+        self._company_gate: Any | None = None
         self._session = session
         self._end_call = end_call
         # "Hang up and call me back when you're done" is only a local command
@@ -801,6 +894,23 @@ class LocalTurnHandler:
         self._awaiting_final_stt = False
         self._final_stt_ready = asyncio.Event()
         self._end_call_task: asyncio.Task[None] | None = None
+
+    def bind_agent(self, agent: Any) -> None:
+        """Attach the agent whose session privacy this handler must respect.
+
+        Done after the agent exists, because the agent needs the handler's
+        ``turn_consumed``. Until it is bound the handler behaves exactly as it
+        did before this slice.
+        """
+        from caal import company_privacy
+
+        self._agent = agent
+        self._company_gate = company_privacy.CompanyModeGate(agent)
+        if self._phone_handoff is not None:
+            # The handoff's own reading of a turn carries that turn's language;
+            # binding it here means the confirmation question is asked in the
+            # language of the request that prompted it, not the previous one.
+            self._phone_handoff.set_language_binder(self.bind_turn_language)
 
     def on_speech_transcript_started(self) -> None:
         """Mark that the active turn is speech whose final STT is still due."""
@@ -881,7 +991,37 @@ class LocalTurnHandler:
         asked. The inferred exit comes last, and a callback question must be
         able to consume its own "yes".
         """
-        if self._delivery is not None:
+        if self._agent is not None:
+            # Local commands run in their own task, and a context variable set
+            # in the LLM node's task is not visible here. Decide the session's
+            # privacy again, from the session state carried on the agent, so
+            # the route gate and the durable-work admission below see it too.
+            from caal import company_privacy, reply_localization
+            from caal.company import expansion_runtime as company_expansion
+
+            company_privacy.begin_turn(self._agent, text)
+            # The session's cross-language expander is carried the same way and
+            # for the same reason: it lives on the agent, and this task did not
+            # inherit the context it was bound in.
+            company_expansion.rebind_session_expansion(self._agent)
+            # The same reason applies to the language of the replies CAAL says
+            # itself: the handlers below run in this task, and the session's
+            # language lives on the agent. Published from session state only,
+            # never from the words of the turn.
+            reply_localization.begin_turn(self._agent)
+        if self._company_gate is not None:
+            try:
+                if await self._company_gate.handle(text, self._session):
+                    # Company business in an ordinary session. It was answered
+                    # with the "open a company session" notice and stops here:
+                    # no model, no provider, no destination ever saw it.
+                    self._end_call_intent.reset()
+                    return True
+            except Exception as exc:
+                # No exception text: it could carry the utterance into the log.
+                logger.error("Company-session gate failed (%s)", type(exc).__name__)
+                return True
+        if self._delivery is not None and self._route_allowed("delivery_answer"):
             try:
                 if await self._delivery.handle(text, self._session):
                     # A reminder was just settled; a pending exit question is
@@ -891,7 +1031,7 @@ class LocalTurnHandler:
             except Exception as exc:
                 # No exception text: it could carry the utterance into the log.
                 logger.error("Delivery-answer handling failed (%s)", type(exc).__name__)
-        if self._schedule is not None:
+        if self._schedule is not None and self._route_allowed("scheduled_change"):
             try:
                 if await self._schedule.handle(text, self._session):
                     # Something of theirs changed; a pending exit question is
@@ -901,14 +1041,14 @@ class LocalTurnHandler:
             except Exception as exc:
                 # No exception text: it could carry the utterance into the log.
                 logger.error("Scheduled-change handling failed (%s)", type(exc).__name__)
-        if self._phone_handoff is not None:
+        if self._phone_handoff is not None and self._route_allowed("phone_handoff"):
             try:
                 if await self._phone_handoff.handle_final_transcript(text, self._session):
                     return True
             except Exception:
                 logger.exception("Phone handoff handling failed")
                 return False
-        if self._knowledge is not None:
+        if self._knowledge is not None and self._route_allowed("connected_knowledge"):
             try:
                 if await self._knowledge.handle(text, self._session):
                     # A fresh question replaces a pending exit question rather
@@ -918,7 +1058,7 @@ class LocalTurnHandler:
             except Exception as exc:
                 # No exception text: it could carry the question back into the log.
                 logger.error("Connected-account question handling failed (%s)", type(exc).__name__)
-        if self._background is not None:
+        if self._background is not None and self._route_allowed("durable_work"):
             try:
                 # A file request has a bounded, real delivery path. On an
                 # outbound phone leg Cesar asked for it to end and callback
@@ -937,10 +1077,22 @@ class LocalTurnHandler:
                         self._arm_callback_and_end_call is not None and auto_callback is None
                     ),
                     auto_callback=auto_callback,
+                    # Bound at the action boundary: the router has answered and
+                    # nothing has been said yet, so a turn that switched
+                    # language is acknowledged in the language it switched to.
+                    bind_language=self.bind_turn_language,
                 )
             except Exception:
                 logger.exception("Background task handling failed")
                 outcome = None
+            if outcome is not None:
+                # The router just read this turn on the local model. That same
+                # reply says which language to answer in, so it is folded in
+                # here -- before the turn reaches the LLM node, which reads the
+                # session for its reply-language directive. The bind above
+                # already applied it for this turn's own fixed reply; applying
+                # the same reading twice is idempotent on the session.
+                apply_language_reading(self._agent, outcome.language, text)
             if outcome is not None and outcome.consumed:
                 # A fresh command replaces a pending question rather than answering it.
                 self._end_call_intent.reset()
@@ -952,6 +1104,49 @@ class LocalTurnHandler:
                 return True
         except Exception:
             logger.exception("End-call inference handling failed")
+        return False
+
+    def bind_turn_language(self, reading: Any, text: str) -> None:
+        """Adopt a local-model language reading for the turn being answered now.
+
+        Two steps, and both are needed. The reading is folded into the session
+        object, which is shared and therefore visible to the LLM node and to the
+        next turn; then the language it settled on is published *by value* in
+        this task, because a context variable set in the reading's task is not
+        the one the handlers below will read. Never raises: the language of a
+        reply cannot be allowed to disturb the reply.
+        """
+        if self._agent is None:
+            return
+        from caal import reply_localization
+
+        try:
+            language = apply_language_reading(self._agent, reading, text)
+            reply_localization.begin_turn(self._agent, language=language)
+        except Exception:
+            logger.debug("Binding this turn's reply language failed", exc_info=True)
+
+    def _route_allowed(self, route: str) -> bool:
+        """Whether a company-private session may use this local-command route.
+
+        The native tool surface is narrowed in the LLM node, which does nothing
+        for these routes: they are deterministic readings of plain speech that
+        run beside the model, and "remind me at four" creates the same reminder
+        the tool would have. A company-private session is query only, so the
+        routes that schedule, send or hand the call off are not offered it and
+        the turn is left to the local model.
+
+        With no agent bound the handler behaves exactly as it did before this
+        slice: every route is offered.
+        """
+        if self._agent is None:
+            return True
+        from caal import company_privacy
+
+        if company_privacy.local_route_allowed(route):
+            return True
+        # A policy name, never the words of the turn.
+        logger.info("A company-private turn was not offered the %s route", route)
         return False
 
     def _start_end_call_if_requested(self, text: str) -> bool:
@@ -968,7 +1163,13 @@ class LocalTurnHandler:
         closing never terminates or arms twice.
         """
         if callback_requested(text):
-            if self._arm_callback_and_end_call is None:
+            if self._arm_callback_and_end_call is None or not self._route_allowed(
+                "end_call_callback"
+            ):
+                # Nothing can arm it, or this is a company-private session and
+                # arming an outbound call back to the user is a send. Released
+                # to the ordinary turn path, which in a private session is the
+                # local model.
                 return False
             self._start_termination_once(
                 self._arm_callback_and_end_call,
@@ -983,8 +1184,14 @@ class LocalTurnHandler:
         return True
 
     def _callback_available(self) -> bool:
-        """A callback can only be offered when something can arm it and work is open."""
+        """A callback can only be offered when something can arm it and work is open.
+
+        A company-private session is query only and has no durable work to be
+        called back about, so it is never offered one.
+        """
         if self._arm_callback_and_end_call is None or self._background is None:
+            return False
+        if not self._route_allowed("end_call_callback"):
             return False
         return self._background.can_arm_callback
 
@@ -1059,7 +1266,7 @@ CALLBACK_GREETING_INSTRUCTIONS = (
 # carry invented or echoed content before the real reminder was ever read. This
 # names no reminder, no task, no history and no user, and the one trusted
 # reminder is spoken right after it.
-REMINDER_CALL_GREETING = "Hello, this is JARVIS. I am calling about a reminder you set."
+REMINDER_CALL_GREETING = "Hello, this is FRIDAY. I am calling about a reminder you set."
 
 
 def greeting_instructions(config: OutboundRoomConfig | None) -> str:
@@ -1197,7 +1404,7 @@ async def run_outbound_call(
                     sip_call_to=config.destination,
                     room_name=ctx.room.name,
                     participant_identity=identity,
-                    participant_name="JARVIS outbound call",
+                    participant_name="FRIDAY outbound call",
                     wait_until_answered=True,
                     ringing_timeout=ringing_timeout,
                     max_call_duration=max_call_duration,
@@ -1510,6 +1717,35 @@ def background_worker_provider(provider: Any) -> Any:
     return getattr(provider, "escalation", None) or provider
 
 
+def apply_language_reading(agent: Any, reading: Any, text: str) -> str | None:
+    """Fold the local model's reading of this turn into the session's language.
+
+    The reading comes from the classification call the work router already
+    makes on the local model for every turn (see
+    :func:`caal.work_router.parse_language_reading`), so no extra model call and
+    no extra request is spent on the language. It is applied here, on the shared
+    session object, rather than published in a context variable: the speech path
+    reads a turn inside its own task, and a context variable set there is not
+    visible to the agent.
+
+    Never raises: the language decision must not be able to disturb a turn. With
+    no reading, no session, or an unusable one, the session keeps whatever the
+    speech-server evidence already gave it.
+
+    Returns the language the session settled on, so the caller can publish that
+    value for *this* turn's own fixed replies rather than re-reading session
+    state from another task; ``None`` when there was nothing to apply.
+    """
+    session = getattr(agent, "_language_session", None)
+    if session is None or reading is None:
+        return None
+    try:
+        return session.observe(text, semantic=reading)
+    except Exception:
+        logger.debug("Applying the language reading failed", exc_info=True)
+        return None
+
+
 def work_router_provider(provider: Any) -> Any:
     """The provider the semantic turn classifier runs on: always the local one.
 
@@ -1629,6 +1865,26 @@ def build_background_task_bridge(
     )
 
 
+def load_language_preference(user_id, *, identity) -> str:
+    """The verified user's stored reply language, or the safe default.
+
+    Never consults global settings and never trusts a model-supplied id: with
+    no signed principal there is nothing to look up, so the session stays on
+    ``auto``.
+    """
+    from caal.language_policy import AUTO
+
+    if not user_id or identity is None:
+        return AUTO
+    try:
+        from caal.language_store import LanguageStore
+
+        return LanguageStore(identity).preference(user_id)
+    except Exception:
+        logger.warning("Could not read the language preference; using auto", exc_info=True)
+        return AUTO
+
+
 def load_prompt() -> str:
     """Load and populate prompt template with date context."""
     return settings_module.load_prompt_with_context(
@@ -1649,7 +1905,7 @@ ToolStatusCallback = callable  # async (bool, list[str], list[dict]) -> None
 # Home Assistant Assist API Integration
 # =========================================================================
 # Calls Home Assistant's Conversation API directly to interact with an
-# AI assistant (like JARVIS 2.0) configured in Home Assistant.
+# AI assistant (like FRIDAY 2.0) configured in Home Assistant.
 
 
 def create_hass_tools(hass_host: str, hass_token: str, hass_agent_id: str, *, scope=None, identity=None, provider=None):
@@ -1796,6 +2052,7 @@ class VoiceAssistant(WebSearchTools, Agent):
         sync_return_context: Callable[[Any, Any], Awaitable[bool]] | None = None,
         user_scope: UserScope | None = None,
         tool_data_cache: ToolDataCache | None = None,
+        language_session=None,
     ) -> None:
         super().__init__(
             instructions=load_prompt(),
@@ -1843,6 +2100,14 @@ class VoiceAssistant(WebSearchTools, Agent):
         )
         self._max_turns = max_turns
 
+        # Which language this session answers in. Built from the verified
+        # principal's own preference before the first turn; an unidentified
+        # satellite gets the safe default (auto, starting in English). Never
+        # read from a model-supplied value. See caal.language_policy.
+        from caal.language_policy import LanguageSession
+
+        self._language_session = language_session or LanguageSession()
+
         # Asks whether CAAL already handled the turn locally (e.g. phone handoff)
         # Routine delay is not progress; keep ordinary replies free of spoken filler.
         self._waiting_cues_enabled = False
@@ -1865,20 +2130,56 @@ class VoiceAssistant(WebSearchTools, Agent):
                 raise StopResponse
             if hasattr(new_message, "extra"):
                 new_message.extra["caal_reasoning"] = request_reasoning.get()
+                new_message.extra["caal_reply_language"] = self._language_session.current
         finally:
             request_reasoning.reset(token)
         if self._sync_return_context is not None:
             await self._sync_return_context(self, turn_ctx)
 
+    async def stt_node(self, audio, model_settings):
+        """Pass transcripts through, folding the detected language into the session.
+
+        This is the only place the language decision is made, and it is made
+        from the speech server's own answer plus the verified user's stored
+        preference. It costs no extra request and no model call.
+        """
+        async for event in Agent.default.stt_node(self, audio, model_settings):
+            try:
+                if (
+                    getattr(event, "type", None) == stt.SpeechEventType.FINAL_TRANSCRIPT
+                    and getattr(event, "alternatives", None)
+                ):
+                    best = event.alternatives[0]
+                    self._language_session.observe(
+                        getattr(best, "text", "") or "",
+                        detected=str(getattr(best, "language", "") or "") or None,
+                    )
+            except Exception:
+                # Language selection must never be able to drop a transcript.
+                logger.debug("Language observation failed", exc_info=True)
+            yield event
+
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Custom LLM node using provider-agnostic interface."""
+        # This node -- and the tool calls it makes below -- runs in whichever
+        # task the SDK started the turn in, and typed room ingress starts in a
+        # task that existed before the session bound anything. So the session's
+        # own cross-language expander is re-bound here, from this agent, exactly
+        # as `company_privacy.begin_turn` re-binds the session's privacy state.
+        # Nothing is shared between sessions: the expander comes off `self`.
+        from caal.company import expansion_runtime as company_expansion
+
+        company_expansion.rebind_session_expansion(self)
         effort = None
         for item in reversed(chat_ctx.items):
             if getattr(item, "role", None) == "user":
                 effort = getattr(item, "extra", {}).get("caal_reasoning")
                 break
+        from caal.speech_request import SpeechText, turn_language
+
+        language = turn_language(self, chat_ctx)
         if self._waiting_cues_enabled:
-            yield WAITING_AUDIO_START
+            yield SpeechText(WAITING_AUDIO_START, language)
         async for chunk in llm_node(
             self,
             chat_ctx,
@@ -1887,12 +2188,32 @@ class VoiceAssistant(WebSearchTools, Agent):
             max_turns=self._max_turns,
             reasoning=effort,
         ):
-            yield chunk
+            yield SpeechText(chunk, language)
 
     async def tts_node(self, text, model_settings):
         """Synthesize one answer, with a delayed audio-only waiting cue."""
+        from contextlib import aclosing
+
+        from caal.speech_request import SpeechProfile, speech_profile
+
+        # Read tagged producer metadata after crossing the SDK's text queue.
+        # Untagged greetings capture the session once, before awaiting input.
+        initial = SpeechProfile(self._language_session.current)
         source = text.__aiter__()
         first = await anext(source, None)
+        profile = getattr(first, "profile", initial)
+        token = speech_profile.set(profile)
+        try:
+            async with aclosing(self._speak_answer(source, first, model_settings)) as audio:
+                async for frame in audio:
+                    yield frame
+        finally:
+            speech_profile.reset(token)
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
+
+    async def _speak_answer(self, source, first, model_settings):
         waiting = (
             first == WAITING_AUDIO_START
             and getattr(self, "_waiting_cues_enabled", False)
@@ -1904,20 +2225,27 @@ class VoiceAssistant(WebSearchTools, Agent):
             async for part in source:
                 yield part
 
+        from contextlib import aclosing
+
         answer = Agent.default.tts_node(self, answer_text(), model_settings)
         if waiting:
             async def cue_text():
-                yield WAITING_CUE
+                from caal.speech_request import speech_profile
 
-            async for frame in with_waiting_cue(
+                profile = speech_profile.get()
+                yield "Un momento." if profile and profile.language == "es" else WAITING_CUE
+
+            audio = with_waiting_cue(
                 answer,
                 lambda: Agent.default.tts_node(self, cue_text(), model_settings),
                 delay=getattr(self, "_waiting_cue_delay", WAITING_CUE_DELAY),
-            ):
-                yield frame
+            )
         else:
-            async for frame in answer:
+            audio = answer
+        async with aclosing(audio):
+            async for frame in audio:
                 yield frame
+
 
 
 # =============================================================================
@@ -2156,9 +2484,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             language="en",
         )
     else:
-        base_stt = openai.STT(
-            base_url=f"{SPEACHES_URL}/v1",
-            api_key="not-needed",  # Speaches doesn't require auth
+        # The local Whisper server detects the language and returns it on every
+        # transcription. The stock OpenAI plugin pins language="en" by default
+        # and drops the detected code for any model that is not "whisper-1", so
+        # a Spanish turn arrives tagged English. This wrapper makes the very
+        # same request and keeps the answer; see caal.stt.language_aware.
+        from caal.stt.language_aware import LanguageAwareSTT
+
+        base_stt = LanguageAwareSTT(
+            base_url=SPEACHES_URL,
             model=WHISPER_MODEL,
         )
 
@@ -2309,6 +2643,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # a web session is identified by the principal in its signed room config.
     identity = load_identity_runtime()
     outbound_config: OutboundRoomConfig | None = None
+    # Only a web/mobile session can ask to be a company session, and only in
+    # the signed room-bound principal. A phone call and an outbound leg never
+    # carry one.
+    company_session_requested = False
     if is_outbound_job(ctx.job.metadata):
         try:
             outbound_config = parse_outbound_config(ctx.job.metadata, identity=identity)
@@ -2320,12 +2658,26 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     elif has_sip_participant(ctx.room):
         user_scope = resolve_sip_caller_scope(ctx.room, identity=identity)
     else:
-        user_scope = resolve_inbound_scope(
+        user_scope, company_session_requested = resolve_inbound_session(
             ctx.job.metadata, room_name=ctx.room.name, identity=identity
         )
     logger.info("  Session identity: %s", describe_scope(user_scope))
     from caal.ha_policy import bind_provider_scope
     bind_provider_scope(caal_llm.provider_instance, user_scope)
+
+    # The language this session answers in, read once from the verified
+    # principal's own row. An unidentified session (satellite, telephone gate)
+    # keeps the safe default rather than inheriting anyone else's choice.
+    from caal.language_policy import LanguageSession
+
+    language_session = LanguageSession(
+        load_language_preference(user_scope.user_id, identity=identity)
+    )
+    logger.info(
+        "  Reply language: preference=%s starting=%s",
+        language_session.preference,
+        language_session.current,
+    )
 
     from caal.tts_selection import select_user_tts
 
@@ -2407,6 +2759,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         conversation_id=session_conversation_id,
         user_scope=user_scope,
         identity=identity,
+        provider=caal_llm.provider_instance,
+        runtime=runtime,
     )
 
     async def _end_call_at_caller_request() -> None:
@@ -2669,6 +3023,45 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         sync_return_context=return_sync.hydrate if return_sync is not None else None,
         user_scope=user_scope,
         tool_data_cache=tool_data_cache,
+        language_session=language_session,
+    )
+
+    # What kind of session this is, decided once, before any turn is read. The
+    # request came from the verified principal; whether it is honoured is
+    # decided against the provisioned company owner.
+    from caal import company_privacy
+
+    company_privacy.bind_session(assistant, requested=company_session_requested)
+    local_turn_handler.bind_agent(assistant)
+    logger.info(
+        "  Company session: %s (policy=%s)",
+        "requested" if company_session_requested else "ordinary",
+        company_privacy.private_mode(),
+    )
+
+    # Cross-language company search, bound for **this session only**. The
+    # translator is the directly configured local model -- the routed provider
+    # is unwrapped to its primary and the endpoint is re-validated against the
+    # local-only allowance, so a question is never rendered by an escalation or
+    # by a host that is not this network. Anything unvalidated binds nothing
+    # and company.search runs on the original query, exactly as before.
+    # `company_tools_offered` is re-asked for every tool call, with that call's
+    # own subject, before the question is composed: a session that is not the
+    # library owner never reaches the translator. Released in the finally
+    # below, so no binding and no cached question outlives the session.
+    from caal.company import expansion_runtime as company_expansion
+
+    # The expander is kept on this session's own agent (``owner``) so the turn
+    # and tool entries can re-bind it into the task they actually run in. The
+    # room is connected before this point, and the SDK's ingress tasks -- typed
+    # RoomIO text among them -- carry a context copied before this call, so a
+    # ContextVar written here alone never reaches them.
+    company_expansion.bind_session_expansion(
+        caal_llm,
+        owner=assistant,
+        authorize=company_privacy.company_tools_offered,
+        settings=all_settings,
+        label=ledger_session_key,
     )
 
     # Create event to wait for session close (BEFORE session.start to avoid race condition)
@@ -2850,6 +3243,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             end_phone_leg_conversation(conversation_recorder, session_key=ledger_session_key)
         else:
             close_session_conversation(conversation_recorder, session_key=ledger_session_key)
+        # The session's own cross-language binding, and the questions it
+        # cached, go with the session: the expander is closed, so a task that
+        # inherited the handle cannot translate with it afterwards either.
+        company_expansion.release(assistant)
         await _cancel(liveness_task)
         await _cancel(alarm_delivery_task)
         await _cancel(background_task)

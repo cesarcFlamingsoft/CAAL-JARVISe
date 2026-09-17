@@ -31,7 +31,7 @@ export default async function ConnectionResultPage({ searchParams }: { searchPar
           href="/"
           className="text-muted-foreground hover:text-foreground text-sm underline-offset-4 hover:underline"
         >
-          Back to JARVIS
+          Back to FRIDAY
         </Link>
       </header>
       <section
@@ -44,7 +44,7 @@ export default async function ConnectionResultPage({ searchParams }: { searchPar
         <p className="text-muted-foreground mt-2 text-sm">{view.detail}</p>
       </section>
       <p className="text-muted-foreground mt-6 text-xs">
-        Open JARVIS, then Settings → Integrations → Connected accounts to see the current state of
+        Open FRIDAY, then Settings → Integrations → Connected accounts to see the current state of
         every provider.
       </p>
     </main>

@@ -7,7 +7,7 @@
  * our own origin, the CSRF token and the per-user budget.
  *
  * PATCH saves the names the user gives that account -- a short label and a
- * few aliases, which is how they will ask JARVIS for it. The provider's own
+ * few aliases, which is how they will ask FRIDAY for it. The provider's own
  * account label is not touched, the names are normalized here exactly as the
  * backend normalizes them, and neither the submitted text nor the backend's
  * wording is echoed back: a refusal is a bounded code. An id belonging to

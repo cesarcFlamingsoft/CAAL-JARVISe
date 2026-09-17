@@ -202,7 +202,7 @@ HANDOFF_NOTICE_ENV = "CAAL_OUTBOUND_NOTIFY_FAILED_HANDOFF"
 # What that opt-in line says. No number, no invitation to give one, no claim
 # that a call took place, and nothing about what the call was for.
 HANDOFF_FAILURE_NOTICE = (
-    "JARVIS: I could not complete an outbound call I was asked to place, and I left no message."
+    "FRIDAY: I could not complete an outbound call I was asked to place, and I left no message."
 )
 
 

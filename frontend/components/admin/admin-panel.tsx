@@ -9,6 +9,7 @@
  * again by the backend. Hiding a control here is never what protects it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { HomeAssistantAccess } from '@/components/home-assistant/access';
 import { Button } from '@/components/livekit/button';
 import { apiRequest, explain } from '@/components/account/api-client';
@@ -183,6 +184,13 @@ export function AdminPanel({ selfId }: { selfId: string }) {
 
   return (
     <div className="space-y-8">
+      <section className="border-input flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+        <p className="text-muted-foreground text-sm">Configure Home Assistant voice speakers.</p>
+        <Link
+          href="/admin/satellite"
+          className="border-input hover:bg-muted focus-visible:ring-ring inline-flex min-h-11 items-center rounded-lg border px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+        >Home Assistant Voice</Link>
+      </section>
       {(error || notice) && (
         <p className={error ? 'text-destructive text-sm' : 'text-muted-foreground text-sm'} role="status">
           {error ?? notice}

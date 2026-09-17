@@ -1477,7 +1477,7 @@ _BACKGROUND_VETOES: tuple[re.Pattern[str], ...] = (
 # Exact local control phrases. These are whole-utterance matches so that a
 # sentence which merely mentions a background task ("cancel the background
 # task and also book the flight") still goes to the normal conversation.
-_CTRL_PREFIX = r"(?:jarvis[,. ]+)?(?:please )?"
+_CTRL_PREFIX = r"(?:(?:friday|jarvis)[,. ]+)?(?:please )?"
 _CTRL_SUFFIX = r"(?: please)?[.!?]*"
 _CTRL_TASK = (
     r"(?:the |that |my |our |this |all |all the |all my |all of my )?"
@@ -1566,7 +1566,7 @@ def background_task_requested(text: str) -> bool:
 
 # Politeness and address that may precede the imperative.
 _LONG_WORK_LEAD_IN = re.compile(
-    r"^(?:(?:hey|hi|ok|okay|alright|so|and|also|now|actually|jarvis|please|um|uh)[,.! ]+)*"
+    r"^(?:(?:hey|hi|ok|okay|alright|so|and|also|now|actually|friday|jarvis|please|um|uh)[,.! ]+)*"
     r"(?:(?:can|could|would|will) you(?: please)?(?: just)? )?"
     r"(?:(?:please|just|go ahead and|go and) )*"
 )

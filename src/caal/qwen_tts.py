@@ -1,11 +1,14 @@
 """Opt-in private Qwen PCM adapter. Kokoro remains the normal provider."""
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import replace
 
 import httpx
 from livekit.agents import APIConnectionError, APIConnectOptions, tokenize, tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS
+
+from .speech_request import SpeechProfile, speech_profile
 
 
 class QwenTTS(tts.TTS):
@@ -33,6 +36,10 @@ class QwenTTS(tts.TTS):
         )
         self.endpoint = endpoint
         self.token = token
+        # Which language to ask this turn's speech in. ``None`` (and "en") send
+        # the request body unchanged, so the approved British English profile
+        # keeps exactly the request it has today.
+        self._language = ContextVar(f"qwen_language_{id(self)}", default=None)
         self.fallback = fallback
         self.total_timeout = total_timeout
         self.owns_client = client is None
@@ -44,11 +51,21 @@ class QwenTTS(tts.TTS):
             ),
         )
 
+    @property
+    def language(self):
+        return self._language.get()
+
+    @language.setter
+    def language(self, value):
+        self._language.set(value)
+
     def synthesize(
         self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
     ):
         return QwenStream(
-            tts=self, input_text=text, conn_options=replace(conn_options, max_retry=0)
+            tts=self, input_text=text, conn_options=replace(conn_options, max_retry=0),
+            profile=speech_profile.get() or SpeechProfile(self.language),
+            fallback=self.fallback,
         )
 
     async def aclose(self):
@@ -59,6 +76,15 @@ class QwenTTS(tts.TTS):
 
 
 class QwenStream(tts.ChunkedStream):
+    def __init__(self, *, profile, fallback, **kwargs):
+        self.profile = profile
+        self.fallback = fallback
+        self.fallback_allowed = (
+            not profile.language or profile.language == "en"
+            or profile.language in getattr(fallback, "supports_language", ())
+        )
+        super().__init__(**kwargs)
+
     async def _run(self, output_emitter: tts.AudioEmitter):
         provider = self._tts
         output_emitter.initialize(
@@ -70,18 +96,26 @@ class QwenStream(tts.ChunkedStream):
         )
         emitted = False
 
+        body = {
+            "input": self.input_text,
+            "model": self.profile.model,
+            "voice": self.profile.voice,
+            "response_format": "pcm",
+        }
+        # Additive: only a non-English turn carries the field, so an English
+        # request is byte-identical to the one the live service answers today
+        # and an older service that ignores the field still speaks English.
+        language = self.profile.language
+        if language and language != "en":
+            body["language"] = language
+
         async def primary():
             nonlocal emitted
             async with provider.client.stream(
                 "POST",
                 provider.endpoint + "/v1/audio/speech",
                 headers={"Authorization": "Bearer " + provider.token},
-                json={
-                    "input": self.input_text,
-                    "model": "qwen-trial",
-                    "voice": "jarvis-designed",
-                    "response_format": "pcm",
-                },
+                json=body,
             ) as response:
                 response.raise_for_status()
                 if (
@@ -104,9 +138,9 @@ class QwenStream(tts.ChunkedStream):
         try:
             await asyncio.wait_for(primary(), provider.total_timeout)
         except Exception:
-            if emitted or provider.fallback is None:
+            if emitted or self.fallback is None or not self.fallback_allowed:
                 raise APIConnectionError("Qwen synthesis failed", retryable=False) from None
-            fallback = provider.fallback.synthesize(
+            fallback = self.fallback.synthesize(
                 self.input_text, conn_options=self._conn_options
             )
             try:

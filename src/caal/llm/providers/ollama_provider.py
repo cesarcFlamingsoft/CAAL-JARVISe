@@ -116,14 +116,30 @@ class OllamaProvider(LLMProvider):
     def num_ctx(self) -> int:
         return self._num_ctx
 
-    def _get_options(self) -> dict[str, Any]:
-        """Get Ollama options dict."""
-        return {
+    #: The per-call keyword options this provider actually reads. Declared
+    #: because ``chat`` ends in ``**kwargs``, which would otherwise accept an
+    #: option and silently drop it; a caller that needs a bound to be real can
+    #: check here instead of hoping. See
+    #: :func:`caal.company.query_expansion.supported_chat_options`.
+    supported_chat_options = frozenset({"think", "num_predict"})
+
+    def _get_options(self, num_predict: int | None = None) -> dict[str, Any]:
+        """Get Ollama options dict.
+
+        ``num_predict`` caps the tokens one call may *generate*. It is a
+        per-call bound for short, non-conversational uses (a classification, a
+        rendering of a search phrase); omitted, the request is exactly what it
+        has always been.
+        """
+        options = {
             "temperature": self._temperature,
             "top_p": self._top_p,
             "top_k": self._top_k,
             "num_ctx": self._num_ctx,
         }
+        if num_predict is not None:
+            options["num_predict"] = max(1, int(num_predict))
+        return options
 
     async def _thinking_fields(self, think: bool) -> dict[str, Any]:
         """Validate against this endpoint's model, without changing request defaults.
@@ -156,13 +172,14 @@ class OllamaProvider(LLMProvider):
         Args:
             messages: List of message dicts
             tools: Optional tool definitions
-            **kwargs: Additional options (think override, etc.)
+            **kwargs: ``think`` override, ``num_predict`` generated-token cap.
+                See :attr:`supported_chat_options`; anything else is not read.
 
         Returns:
             Normalized LLMResponse
         """
         think_fields = await self._thinking_fields(kwargs.get("think", self._think))
-        options = self._get_options()
+        options = self._get_options(kwargs.get("num_predict"))
 
         # Run sync client.chat in thread pool
         response = await asyncio.to_thread(

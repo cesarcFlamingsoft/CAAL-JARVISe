@@ -26,7 +26,7 @@ const BRAND_WORDMARK_PATH = 'public/mexcantech-logo.png';
 const BRAND_MARK_PATH = 'public/mexcantech-mark.png';
 
 // Image metadata
-export const alt = 'JARVIS by MexcanTech - Learn. Build. Empower.';
+export const alt = 'FRIDAY by MexcanTech - Learn. Build. Empower.';
 export const size = {
   width: 1200,
   height: 628,

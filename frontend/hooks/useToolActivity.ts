@@ -8,7 +8,7 @@ import { type ToolActivity, appendToolActivity, parseToolStatus } from '@/lib/da
 /**
  * Every tool call the agent reports over the room's `tool_status` topic,
  * newest first and bounded. Survives the end of a call so the workspace can
- * still show what JARVIS did after voice is docked again.
+ * still show what FRIDAY did after voice is docked again.
  */
 export function useToolActivity(): ToolActivity[] {
   const room = useRoomContext();

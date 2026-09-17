@@ -47,6 +47,7 @@ _LEADING_FILLER = frozenset(
         "uh",
         "well",
         "alright",
+        "friday",
         "jarvis",
     )
 )

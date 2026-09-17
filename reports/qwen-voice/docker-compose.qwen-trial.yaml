@@ -1,0 +1,6 @@
+# Optional overlay. Include AFTER both existing Apple and telephony overlays.
+# This supplies private infrastructure only; it does not select Qwen globally.
+services:
+  agent:
+    environment:
+      CAAL_QWEN_TRIAL_TOKEN: ${CAAL_QWEN_TRIAL_TOKEN:?Load the local trial token before using this overlay}

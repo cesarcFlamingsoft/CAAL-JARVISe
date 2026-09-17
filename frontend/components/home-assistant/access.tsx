@@ -51,7 +51,7 @@ export function HomeAssistantAccess({
     else {
       setError(
         r.error === 'ha_use_public_origin'
-          ? 'Open the configured public Jarvis URL and sign in there before connecting Home Assistant.'
+          ? 'Open the configured public FRIDAY URL and sign in there before connecting Home Assistant.'
           : explain(r.error)
       );
       setBusy(false);
@@ -112,7 +112,7 @@ export function HomeAssistantAccess({
           )}
           <p className="text-muted-foreground text-xs">
             Device-state reads and light on/off only, subject to the authenticated HA user’s
-            permissions. Security, lock and garage actions are unavailable. Jarvis roles do not
+            permissions. Security, lock and garage actions are unavailable. FRIDAY roles do not
             change HA roles.
           </p>
           {access.status === 'service_account' && (
@@ -125,14 +125,14 @@ export function HomeAssistantAccess({
             <>
               {!access.enabled && (
                 <p className="text-xs">
-                  You may connect now; an administrator must grant access before Jarvis can use it.
+                  You may connect now; an administrator must grant access before FRIDAY can use it.
                 </p>
               )}
               <Button size="sm" variant="secondary" disabled={busy} onClick={() => void connect()}>
                 Connect Home Assistant
               </Button>
               <p className="text-muted-foreground text-xs">
-                Start and finish in the same Jarvis browser session at the configured public URL.
+                Start and finish in the same FRIDAY browser session at the configured public URL.
                 Sign in to the intended HA user in Home Assistant’s login screen.
               </p>
               {access.connections

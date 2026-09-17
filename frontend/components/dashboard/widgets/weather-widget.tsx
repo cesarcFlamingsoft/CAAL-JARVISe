@@ -45,7 +45,7 @@ export function WeatherWidget({
     return (
       <WidgetEmpty
         title="Weather needs multi-user identity"
-        detail="This JARVIS server runs in single-user mode, so there is no per-user place to read the weather for."
+        detail="This FRIDAY server runs in single-user mode, so there is no per-user place to read the weather for."
       />
     );
   }

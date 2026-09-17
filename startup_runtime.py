@@ -20,7 +20,7 @@ def load_manifest(path):
     for name in data["compose_files"]:
         if not Path(name).is_file():
             raise StartupError("Required file missing: " + name)
-    for name in [str(path)] + data["private_files"]:
+    for name in [str(path)] + data["private_files"] + data.get("compose_env_files", []):
         p = Path(name)
         if not p.is_file():
             raise StartupError("Required file missing: " + name)
@@ -96,6 +96,24 @@ class Runtime:
             timeout=150,
         )
 
+    def compose_env(self):
+        """Interpolation values for Compose that are not in the project .env.
+
+        The company overlays use ``${VAR:?}`` so a half-configured library
+        cannot start, and their values are deliberately outside the repository
+        in a 0600 file. `load_manifest` has already checked the mode and owner
+        of every entry here, exactly as it does for the other private files.
+        Returned, never printed: `run` suppresses subprocess output.
+        """
+        values = {}
+        for name in self.data.get("compose_env_files", []):
+            for line in Path(name).read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key.strip()] = value.strip()
+        return values
+
     def run(self, args, timeout=30, stream=False):
         env = {
             "HOME": str(Path.home()),
@@ -105,6 +123,7 @@ class Runtime:
             ),
             "CAAL_QWEN_TRIAL_TOKEN": self.token,
         }
+        env.update(self.compose_env())
         try:
             result = subprocess.run(
                 args,

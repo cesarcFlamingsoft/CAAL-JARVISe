@@ -1,5 +1,5 @@
 /**
- * The local Ollama JARVIS runs on: read it, or (as an administrator) change it.
+ * The local Ollama FRIDAY runs on: read it, or (as an administrator) change it.
  *
  * The browser never reaches an Ollama itself. It asks this route, which asks
  * the agent as the signed-in user, and the agent is the only thing that opens

@@ -42,7 +42,7 @@ export function InboxWidget({ feed, passwordLogin, now, onOpenSettings }: InboxW
     return (
       <WidgetEmpty
         title="Connected accounts need multi-user identity"
-        detail="This JARVIS server runs in single-user mode, so there are no per-user mail accounts to read."
+        detail="This FRIDAY server runs in single-user mode, so there are no per-user mail accounts to read."
       />
     );
   }
@@ -109,6 +109,19 @@ interface AccountGroupProps {
 function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
   return (
     <AccountSection
+      preview={
+        group.messages.length > 0 ? (
+          <ol>
+            {group.messages.slice(0, 2).map((message) => (
+              <li key={message.id}>
+                <MessageRow message={message} now={now} />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-muted-foreground text-sm">No recent messages.</p>
+        )
+      }
       account={group.account}
       count={messageCount(group)}
       emptyLabel="No recent messages."

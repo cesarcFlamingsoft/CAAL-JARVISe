@@ -70,39 +70,39 @@ describe('voice status', () => {
       tone: 'idle',
     });
     assert.deepEqual(voiceStatus({ isConnected: false, connecting: true }), {
-      label: 'Connecting to JARVIS…',
+      label: 'Connecting to FRIDAY…',
       tone: 'busy',
     });
     assert.deepEqual(
       voiceStatus({ isConnected: true, connecting: false, agentState: 'listening' }),
       {
-        label: 'JARVIS is listening',
+        label: 'FRIDAY is listening',
         tone: 'live',
       }
     );
     assert.deepEqual(
       voiceStatus({ isConnected: true, connecting: false, agentState: 'thinking' }),
       {
-        label: 'JARVIS is thinking',
+        label: 'FRIDAY is thinking',
         tone: 'busy',
       }
     );
     assert.deepEqual(
       voiceStatus({ isConnected: true, connecting: false, agentState: 'speaking' }),
       {
-        label: 'JARVIS is speaking',
+        label: 'FRIDAY is speaking',
         tone: 'live',
       }
     );
     assert.deepEqual(
       voiceStatus({ isConnected: true, connecting: false, agentState: 'connecting' }),
       {
-        label: 'Waiting for JARVIS to join…',
+        label: 'Waiting for FRIDAY to join…',
         tone: 'busy',
       }
     );
     assert.deepEqual(voiceStatus({ isConnected: true, connecting: false, agentState: 'failed' }), {
-      label: 'JARVIS did not join the call',
+      label: 'FRIDAY did not join the call',
       tone: 'error',
     });
   });

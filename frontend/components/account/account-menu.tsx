@@ -8,6 +8,7 @@
  * from `/api/auth/me`, which never includes an email or phone number.
  */
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { UserCircle } from '@phosphor-icons/react/dist/ssr';
 import { apiRequest } from './api-client';
 
@@ -64,7 +65,7 @@ export function AccountMenu() {
   return (
     <nav
       aria-label="Account"
-      className="bg-background/80 border-input text-muted-foreground fixed top-4 right-20 z-40 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs backdrop-blur"
+      className="bg-background/80 border-input text-muted-foreground fixed top-4 right-20 left-4 z-40 flex flex-wrap items-center gap-2 rounded-2xl border px-3 py-1.5 text-xs backdrop-blur md:left-auto md:max-w-[calc(100vw-24rem)] md:rounded-full"
     >
       <UserCircle className="size-4" weight="bold" aria-hidden />
       <span className="text-foreground max-w-40 truncate font-medium">{label}</span>
@@ -74,9 +75,19 @@ export function AccountMenu() {
         </a>
       )}
       {me.authenticated && me.user?.role === 'admin' && (
-        <a href="/admin" className="hover:text-foreground underline-offset-4 hover:underline">
-          Admin
-        </a>
+        <>
+          <Link href="/admin" className="hover:text-foreground underline-offset-4 hover:underline">
+            Admin
+          </Link>
+          <Link
+            href="/admin/satellite"
+            className="hover:text-foreground focus-visible:ring-ring rounded-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+          >Home Assistant Voice</Link>
+          <Link
+            href="/admin/company"
+            className="hover:text-foreground focus-visible:ring-ring rounded-sm underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+          >Company Library</Link>
+        </>
       )}
       {me.authenticated ? (
         <button

@@ -1,6 +1,7 @@
+import hashlib
+
 import httpx
 import pytest
-
 import trial_service
 from trial_stream import Engine
 
@@ -9,8 +10,8 @@ from trial_stream import Engine
 async def test_api_requires_auth_and_streams_only_validated_requests():
     calls = []
 
-    def generate(text):
-        calls.append(text)
+    def generate(text, language=None):
+        calls.append((text, language))
         yield b"\x01\x00" * 480
 
     engine = Engine(generate)
@@ -36,7 +37,7 @@ async def test_api_requires_auth_and_streams_only_validated_requests():
             assert r.status_code == 200
             assert r.headers["content-type"].startswith("audio/pcm")
             assert r.content == b"\x01\x00" * 480
-            assert calls == ["Understood."]
+            assert calls == [("Understood.", "en")]
     finally:
         await engine.close()
 
@@ -44,7 +45,7 @@ async def test_api_requires_auth_and_streams_only_validated_requests():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure,status", [(ValueError("bad"), 502), (TimeoutError(), 504)])
 async def test_failure_before_audio_returns_failure_status(failure, status):
-    def generate(text):
+    def generate(text, language=None):
         raise failure
         yield
 
@@ -112,7 +113,6 @@ async def test_disconnect_before_first_audio_cancels_generation():
 
 @pytest.mark.asyncio
 async def test_voice_readback_is_authenticated_and_matches_synthesis_design():
-    import hashlib
     import trial_model
 
     engine = Engine(lambda text: iter(()))
@@ -124,13 +124,21 @@ async def test_voice_readback_is_authenticated_and_matches_synthesis_design():
             assert (await c.get("/voice")).status_code == 401
             r = await c.get("/voice", headers={"Authorization": "Bearer " + "a" * 32})
             assert r.status_code == 200
-            assert r.json() == {
-                "model": trial_model.MODEL,
-                "revision": trial_model.REVISION,
-                "voice": "jarvis-designed",
-                "seed": 42,
-                "style": trial_model.STYLE,
-                "style_sha256": hashlib.sha256(trial_model.STYLE.encode()).hexdigest(),
+            body = r.json()
+            assert body["model"] == trial_model.MODEL
+            assert body["revision"] == trial_model.REVISION
+            assert body["voice"] == "jarvis-designed"
+            assert body["seed"] == 42
+            assert body["style"] == trial_model.STYLE
+            assert body["style_sha256"] == hashlib.sha256(trial_model.STYLE.encode()).hexdigest()
+            assert body["default_language"] == "en"
+            assert body["designs"] == {
+                code: {
+                    "lang_code": trial_model.LANG_CODES[code],
+                    "style": trial_model.STYLES[code],
+                    "style_sha256": hashlib.sha256(trial_model.STYLES[code].encode()).hexdigest(),
+                }
+                for code in trial_model.SUPPORTED
             }
     finally:
         await engine.close()

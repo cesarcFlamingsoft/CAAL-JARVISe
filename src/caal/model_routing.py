@@ -66,6 +66,9 @@ class RoutingSource(str, Enum):
     LONG_WORK = "long_work"
     # An explicit multi-step / research phrasing.
     HARNESS = "harness"
+    # The session is company-private: it stays on this machine, whatever the
+    # turn is about. See caal.company_privacy.
+    COMPANY_PRIVATE = "company_private"
     LOCAL = "local"
 
 
@@ -173,6 +176,13 @@ def classify_request(text: object) -> RoutingDecision:
     Never raises and never blocks: anything unusable is ordinary local
     conversation, which is what the assistant did before this module existed.
     """
+    from .company_privacy import is_local_only
+
+    if is_local_only():
+        # A company-private session has one destination. The reading below
+        # would otherwise hand the *user's own words* to another runtime
+        # before a single company tool had run, which is the leak.
+        return RoutingDecision(Destination.LOCAL, RoutingSource.COMPANY_PRIVATE)
     words = _normalized(text)
     if not words:
         return RoutingDecision(Destination.LOCAL, RoutingSource.LOCAL)

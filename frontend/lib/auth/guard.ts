@@ -169,6 +169,28 @@ export function guardMutation(
   return null;
 }
 
+/**
+ * Origin and CSRF checks for a POST that is a *read*.
+ *
+ * Some reads cannot be a GET: the company search query is the confidential
+ * half of a company question, and a query string is recorded by the Next.js
+ * request log, by any reverse proxy in front of it and by the browser's own
+ * history. Such a request still has to be same-origin and CSRF-checked -- it
+ * is a POST, so it is reachable from a cross-site form -- but it must not
+ * spend the mutation rate-limit budget, because it changes nothing and the
+ * user may well search ten times in a row. The read limit in `requireUser`
+ * already applies to it.
+ */
+export function guardReadPost(req: Request, config: IdentityConfig): NextResponse | null {
+  if (!isTrustedMutationOrigin(req.headers, config.publicOrigin, config.trustedLocalOrigins)) {
+    return apiError(403, 'bad_origin');
+  }
+  if (!verifyCsrf(req.headers)) {
+    return apiError(403, 'csrf');
+  }
+  return null;
+}
+
 /** Parse a small JSON object body; null for anything else. */
 export async function readJsonObject(req: Request): Promise<Record<string, unknown> | null> {
   const length = Number(req.headers.get('content-length') ?? '0');

@@ -104,7 +104,7 @@ class WelcomeScreen extends StatelessWidget {
                         final isProgressing =
                             appCtrl.isSessionStarting || session.connectionState != sdk.ConnectionState.disconnected;
                         return buttons.Button(
-                          text: isProgressing ? 'Connecting' : 'Talk to JARVIS',
+                          text: isProgressing ? 'Connecting' : 'Talk to FRIDAY',
                           isProgressing: isProgressing,
                           onPressed: () => appCtrl.connect(),
                         );

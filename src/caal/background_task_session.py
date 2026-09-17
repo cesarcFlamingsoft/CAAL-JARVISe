@@ -64,9 +64,12 @@ from caal.conversation_ledger import is_valid_conversation_id
 from caal.end_call_intent import END_CALL_CONTROL_REPLIES
 from caal.handoff_context import capture_conversation_snapshot
 from caal.handoff_intent import HANDOFF_CONTROL_REPLIES
+from caal.company_privacy import is_local_only
 from caal.model_routing import Destination, classify_request
 from caal.telegram_notify import MAX_TEXT_CHARS
 from caal.user_scope import require_user_id
+from caal.language_policy import LanguageReading
+from caal.reply_localization import speech_reply
 from caal.work_router import Route, SemanticWorkRouter
 
 logger = logging.getLogger(__name__)
@@ -89,7 +92,7 @@ CALLBACK_ARMED_REPLY = (
 CALLBACK_NOTHING_RUNNING_REPLY = (
     "There's no background task running right now, so I'll stay on the line."
 )
-# Work JARVIS recognised as long-running on its own (a PDF, a report, some
+# Work FRIDAY recognised as long-running on its own (a PDF, a report, some
 # research) and scheduled without being told "in the background".
 LONG_WORK_ACK_REPLY = (
     "Understood. I'll get started on that now and let you know as soon as it's done."
@@ -141,6 +144,14 @@ class BackgroundTurnOutcome:
     consumed: bool
     scheduled: bool = False
     callback_offered: bool = False
+    #: What the router's own model reply read the reply language as, if
+    #: anything. Reported for every turn the router saw, not only a consumed
+    #: one: the ordinary case is a conversational turn that goes on to the LLM,
+    #: and that is exactly the turn whose language matters. Returned by value
+    #: rather than published in a context variable, because the speech path
+    #: reads a turn inside its own task (see
+    #: ``voice_agent.LocalTurnHandler._handle_speech_commands``).
+    language: LanguageReading | None = None
 
 
 _SUCCESS_PREFIX = "Here's what I found from the task you asked me to work on in the background. "
@@ -156,13 +167,13 @@ _INTERRUPTED_MESSAGE = (
     "The task I was working on in the background was interrupted before it finished. "
     "Let me know if you'd like me to try again."
 )
-_FALLBACK_PREFIX = "JARVIS background task: "
+_FALLBACK_PREFIX = "FRIDAY background task: "
 # The one line a callback that will never happen owes its owner. It names no
 # task, no id and no number, does not claim a call took place, and never asks
 # for a number: callback destinations come from the profile an administrator
 # controls, and are not negotiable over chat.
 CALLBACK_ABANDONED_NOTICE = (
-    "JARVIS: I could not complete a callback I owed you, so I have stopped trying. "
+    "FRIDAY: I could not complete a callback I owed you, so I have stopped trying. "
     "The outcome is waiting for you here whenever you want it."
 )
 _CALLBACK_EMPTY_OUTCOME = (
@@ -181,7 +192,7 @@ STALE_NOTIFICATION_SECONDS = 60
 _TRUNCATION_MARK = "…"
 
 BACKGROUND_SYSTEM_PROMPT = (
-    "You are JARVIS carrying out a task the user asked you to handle in the background "
+    "You are FRIDAY carrying out a task the user asked you to handle in the background "
     "while the conversation moved on. Complete the task fully using whatever tools you "
     "have, then reply with a concise, spoken-style summary of the outcome in plain "
     "sentences: no headings, lists, links, or markdown. Lead with the answer. If you "
@@ -499,6 +510,7 @@ class BackgroundTaskBridge:
         *,
         offer_callback: bool = False,
         auto_callback: Callable[[], Awaitable[None]] | None = None,
+        bind_language: Callable[[LanguageReading, str], None] | None = None,
     ) -> BackgroundTurnOutcome:
         """Answer a background command locally and report what was done.
 
@@ -518,8 +530,23 @@ class BackgroundTaskBridge:
 
         A routing failure can only ever leave the turn as conversation, so an
         unreachable router costs a semantic reading, never a hung turn.
+
+        ``bind_language`` is called with the language the router's own reply
+        read, once, as soon as that reply is in and **before** any fixed reply
+        of this turn is spoken. That ordering is the whole point: the
+        acknowledgement for a turn that switched language belongs to the new
+        language, not to the one the session had when the turn started. The
+        reading is still returned on the outcome for the caller that needs the
+        value afterwards, and a binder that fails changes nothing about the turn.
         """
         if not isinstance(text, str) or not text.strip() or self._closed:
+            return BackgroundTurnOutcome(consumed=False)
+        if is_local_only():
+            # A company-private session queues nothing. The durable worker is
+            # another process, it composes on the escalation provider, and the
+            # request text it would be handed is the user's own words. Left as
+            # ordinary conversation, which stays on this machine.
+            logger.info("A company-private turn was not admitted to durable work")
             return BackgroundTurnOutcome(consumed=False)
         coding = self._coding_requested(text)
         if coding:
@@ -537,17 +564,25 @@ class BackgroundTaskBridge:
         except Exception:
             logger.warning("Work router failed; treating the turn as conversation", exc_info=True)
             return BackgroundTurnOutcome(consumed=False)
+        if bind_language is not None and decision.language is not None:
+            try:
+                bind_language(decision.language, text)
+            except Exception:
+                # The language of a reply must never be able to disturb a turn.
+                logger.debug("Binding this turn's reply language failed", exc_info=True)
         if decision.route is Route.CANCEL:
             await self._cancel_own(session)
-            return BackgroundTurnOutcome(consumed=True)
+            return BackgroundTurnOutcome(consumed=True, language=decision.language)
         if decision.route is Route.STATUS:
             await self._report_status(session)
-            return BackgroundTurnOutcome(consumed=True)
+            return BackgroundTurnOutcome(consumed=True, language=decision.language)
         if decision.route is Route.BACKGROUND:
             scheduled = await self._schedule(text, session, ack=BACKGROUND_ACK_REPLY)
             if scheduled and auto_callback is not None:
                 await self._run_auto_callback(auto_callback)
-            return BackgroundTurnOutcome(consumed=True, scheduled=scheduled)
+            return BackgroundTurnOutcome(
+                consumed=True, scheduled=scheduled, language=decision.language
+            )
         if decision.route is Route.WORK:
             ack = LONG_WORK_OFFER_CALLBACK_REPLY if offer_callback else LONG_WORK_ACK_REPLY
             scheduled = await self._schedule(text, session, ack=ack)
@@ -557,11 +592,12 @@ class BackgroundTaskBridge:
             # it was queued, the busy reply when it could not be. The callback
             # is only offered for work that actually exists.
             return BackgroundTurnOutcome(
+                language=decision.language,
                 consumed=True,
                 scheduled=scheduled,
                 callback_offered=scheduled and offer_callback and auto_callback is None,
             )
-        return BackgroundTurnOutcome(consumed=False)
+        return BackgroundTurnOutcome(consumed=False, language=decision.language)
 
     @staticmethod
     async def _run_auto_callback(callback: Callable[[], Awaitable[None]]) -> None:
@@ -587,6 +623,11 @@ class BackgroundTaskBridge:
 
     async def _schedule(self, text: str, session: Any, *, ack: str, coding: bool = False) -> bool:
         """Queue the request and speak ``ack``; report whether it was queued."""
+        if is_local_only():
+            # Enforced again at the queue boundary, so a future caller cannot
+            # route around the admission check above by accident.
+            logger.error("Refused to queue durable work from a company-private session")
+            return False
         context = ""
         if self._context_source is not None:
             try:
@@ -922,7 +963,8 @@ class BackgroundTaskBridge:
     async def _say(session: Any, text: str) -> None:
         """Speak a control reply on a best-effort basis; the decision already stands."""
         try:
-            await session.say(text)
+            # Fixed replies only: an unknown string is spoken as written.
+            await session.say(speech_reply(text))
         except Exception:
             logger.warning("Background task bridge could not speak its reply", exc_info=True)
 

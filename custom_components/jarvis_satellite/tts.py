@@ -34,7 +34,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class JarvisTTS(TextToSpeechEntity):
-    _attr_name = "Jarvis Bedroom Pilot Voice"
+    _attr_name = "FRIDAY Bedroom Pilot Voice"
     _attr_default_language = "en"
     _attr_supported_languages = ["en", "en-CA", "en-GB"]
 

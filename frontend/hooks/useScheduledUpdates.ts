@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Reloads the scheduled dashboard feed the moment JARVIS changes it.
+ * Reloads the scheduled dashboard feed the moment FRIDAY changes it.
  *
  * The agent publishes one constant on this browser own LiveKit room when a
  * reminder or an alarm of this person is created or changed. This hook listens

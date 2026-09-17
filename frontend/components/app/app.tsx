@@ -13,6 +13,7 @@ import { SetupWizard } from '@/components/setup';
 // import { useAgentErrors } from '@/hooks/useAgentErrors';
 import { useConnectionErrors } from '@/hooks/useConnectionErrors';
 import { useDebugMode } from '@/hooks/useDebug';
+import { ORDINARY_SESSION_HREF, companySessionRequested } from '@/lib/company/session-mode';
 import { getSandboxTokenSource } from '@/lib/utils';
 
 // Porcupine access key from environment
@@ -32,6 +33,39 @@ function AppSetup() {
   useConnectionErrors(); // Show MCP connection errors from agent
 
   return null;
+}
+
+/**
+ * What a company session looks like, so that it is never a surprise.
+ *
+ * A company session is more private and much less capable -- it can answer
+ * questions about the library and do nothing else -- and both halves are
+ * stated here rather than discovered. It is shown for the whole session,
+ * because the session cannot stop being one.
+ *
+ * The wording must keep matching `caal.company_privacy.PRIVATE_SESSION_TOOLS`
+ * and `PRIVATE_SESSION_BLOCKED_ROUTES`, which are what actually enforce it.
+ */
+function CompanySessionBanner() {
+  return (
+    <div
+      role="status"
+      className="border-input bg-muted/60 text-foreground sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2 text-sm"
+    >
+      <p className="max-w-3xl">
+        <strong className="font-semibold">Company session — questions only.</strong> This
+        conversation stays on this machine: the local model answers it, and the only thing I can do
+        in it is look things up in the company library. No reminders, no alarms, no notes to memory,
+        no mail or calendar, no Home Assistant, no web, no background work — nothing that sends
+        anything, and nothing that outlives this session. If the local model cannot answer, I will
+        say so rather than ask anything else. Everything else is back to normal in an ordinary
+        session.
+      </p>
+      <a className="border-input hover:bg-accent shrink-0 rounded-md border px-3 py-1.5" href={ORDINARY_SESSION_HREF}>
+        Leave company session
+      </a>
+    </div>
+  );
 }
 
 interface AppProps {
@@ -65,6 +99,17 @@ export function App({ appConfig }: AppProps) {
   // Generate unique session ID once when component mounts
   const sessionId = useMemo(() => generateSessionId(), []);
 
+  // Whether this page load is asking for a company-private session. Read once,
+  // at mount, from the URL the user navigated to -- the kind of a session is
+  // fixed when its room is created, so entering and leaving are both fresh
+  // loads. The request is only granted if the BFF signs it for a verified user
+  // and the voice worker matches that user to the company library's owner.
+  const companyPrivate = useMemo(
+    () =>
+      typeof window === 'undefined' ? false : companySessionRequested(window.location.search),
+    []
+  );
+
   const tokenSource = useMemo(() => {
     if (typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string') {
       return getSandboxTokenSource(appConfig);
@@ -81,11 +126,12 @@ export function App({ appConfig }: AppProps) {
           ...options,
           client_id: sessionId,
           agentName: appConfig.agentName,
+          company_private: companyPrivate,
         }),
       });
       return await response.json();
     });
-  }, [appConfig, sessionId]);
+  }, [appConfig, sessionId, companyPrivate]);
 
   const session = useSession(tokenSource);
 
@@ -155,6 +201,7 @@ export function App({ appConfig }: AppProps) {
         defaultEnabled={false}
       >
         <AppSetup />
+        {companyPrivate && <CompanySessionBanner />}
         <SkipToVoiceLink />
         <DevicePresence />
         {/* The workspace is the application session; a voice call is docked inside it. */}

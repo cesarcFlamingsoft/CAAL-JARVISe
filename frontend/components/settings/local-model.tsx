@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Choosing the local Ollama JARVIS runs on, from the settings panel.
+ * Choosing the local Ollama FRIDAY runs on, from the settings panel.
  *
  * The operator types an address on their own network, refreshes the list of
  * models installed there, picks one and saves. The browser never talks to the
@@ -104,7 +104,7 @@ export function LocalModelSettings() {
     setModel(result.data.model);
     setNote({
       kind: 'ok',
-      text: 'Saved. The next JARVIS session uses it; a conversation already in progress keeps the model it started with.',
+      text: 'Saved. The next FRIDAY session uses it; a conversation already in progress keeps the model it started with.',
     });
   }, [endpoint, model]);
 
@@ -121,7 +121,7 @@ export function LocalModelSettings() {
           Local model
         </label>
         <p className="text-muted-foreground text-xs">
-          JARVIS answers ordinary turns on this Ollama. Work that needs an agent harness is
+          FRIDAY answers ordinary turns on this Ollama. Work that needs an agent harness is
           escalated to Hermes, and anything about code goes to Hermes coding delegation. Choosing a
           model here does not change that routing.
         </p>

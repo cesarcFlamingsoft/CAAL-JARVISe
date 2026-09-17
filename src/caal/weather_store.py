@@ -306,8 +306,10 @@ class WeatherStore:
 
     # --- preferences ---------------------------------------------------------------
 
-    def preferences(self, user_id: object, *, now: int) -> WeatherPreference:
-        """This user's city and unexpired browser fix. Expired fixes are erased."""
+    def preferences(
+        self, user_id: object, *, now: int, purge_expired: bool = True
+    ) -> WeatherPreference:
+        """Resolve preferences; optionally erase expired fixes during housekeeping."""
         owner = _require_user(user_id)
         moment = int(now)
         with closing(self._connect()) as connection:
@@ -318,12 +320,13 @@ class WeatherStore:
                 return WeatherPreference()
             browser = self._browser_of(row)
             if browser is not None and browser.expires_at <= moment:
-                connection.execute(
-                    "UPDATE weather_preferences SET browser_latitude = NULL, "
-                    "browser_longitude = NULL, browser_updated_at = NULL, "
-                    "browser_expires_at = NULL, updated_at = ? WHERE user_id = ?",
-                    (moment, owner),
-                )
+                if purge_expired:
+                    connection.execute(
+                        "UPDATE weather_preferences SET browser_latitude = NULL, "
+                        "browser_longitude = NULL, browser_updated_at = NULL, "
+                        "browser_expires_at = NULL, updated_at = ? WHERE user_id = ?",
+                        (moment, owner),
+                    )
                 browser = None
         return WeatherPreference(city=self._city_of(row), browser=browser)
 

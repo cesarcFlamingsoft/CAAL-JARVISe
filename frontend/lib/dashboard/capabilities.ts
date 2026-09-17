@@ -2,7 +2,7 @@
  * What the dashboard is allowed to know about the deployment.
  *
  * The operator settings the backend returns from `GET /settings` include every
- * credential JARVIS uses. The dashboard needs none of them: it only needs to
+ * credential FRIDAY uses. The dashboard needs none of them: it only needs to
  * know *whether* a calendar or reminder source exists so it can show an honest
  * empty state instead of an invented one. This module is the boundary that
  * keeps it that way: it is the only shape the browser ever receives.

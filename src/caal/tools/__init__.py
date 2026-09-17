@@ -1,6 +1,13 @@
 """Native assistant tools."""
 
-from caal.tools import alarms_tools, calendar_tools, email_tools, memory_tools, reminders_tools
+from caal.tools import (
+    alarms_tools,
+    calendar_tools,
+    clock_tools,
+    email_tools,
+    memory_tools,
+    reminders_tools,
+)
 from caal.tools.registry import ToolDefinition, ToolRegistry, create_default_registry
 
 __all__ = [
@@ -8,6 +15,7 @@ __all__ = [
     "ToolRegistry",
     "alarms_tools",
     "calendar_tools",
+    "clock_tools",
     "create_default_registry",
     "email_tools",
     "memory_tools",

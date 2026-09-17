@@ -3,7 +3,7 @@
  *
  * A legacy single-user deployment has no accounts, so the dashboard is local.
  * Once identity is configured the dashboard is a signed-in surface: anonymous
- * LAN visitors may still talk to JARVIS, but they get no one's calendar or
+ * LAN visitors may still talk to FRIDAY, but they get no one's calendar or
  * work, and a one-time password buys the change-password form and nothing else.
  *
  * This file stays free of Next.js imports so the rule can be unit tested; the

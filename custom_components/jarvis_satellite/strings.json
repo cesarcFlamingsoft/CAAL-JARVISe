@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect a Jarvis voice satellite",
-        "description": "Use the dedicated credential issued for this device in Jarvis satellite administration. Home controls require an explicitly selected HA connection and device permissions in Jarvis. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
+        "title": "Connect a FRIDAY voice satellite",
+        "description": "Use the dedicated credential issued for this device in FRIDAY satellite administration. Home controls require an explicitly selected HA connection and device permissions in FRIDAY. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
         "data": {
           "backend": "Backend address",
           "credential": "Satellite credential"
@@ -11,7 +11,7 @@
       },
       "reconfigure": {
         "title": "Update this satellite connection",
-        "description": "Use the dedicated credential issued for this device in Jarvis satellite administration. Home controls require an explicitly selected HA connection and device permissions in Jarvis. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
+        "description": "Use the dedicated credential issued for this device in FRIDAY satellite administration. Home controls require an explicitly selected HA connection and device permissions in FRIDAY. Personal data and administrator access are unavailable. HA uses native random bearer URLs for audio.",
         "data": {
           "backend": "Backend address",
           "credential": "Satellite credential"

@@ -395,7 +395,11 @@ async def test_the_router_never_logs_the_request_text() -> None:
 def test_a_decision_carries_no_request_text() -> None:
     decision = RouteDecision(route=Route.WORK, source=RouteSource.SEMANTIC)
     assert "Alberta" not in repr(decision)
-    assert set(vars(decision)) == {"route", "source"}
+    # ``language`` was added in stage 3 of the bilingual work: the same model
+    # reply is now also read for the reply language. It is a two-value code and
+    # a boolean, never a word of the turn -- which is what this test guards.
+    assert set(vars(decision)) == {"route", "source", "language"}
+    assert decision.language is None
 
 
 # --- provider transport ------------------------------------------------------

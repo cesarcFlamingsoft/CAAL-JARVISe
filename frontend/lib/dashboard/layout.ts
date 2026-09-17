@@ -49,11 +49,11 @@ export const WIDGETS: Record<WidgetId, WidgetDefinition> = {
 export const WIDGET_IDS = Object.keys(WIDGETS) as WidgetId[];
 
 export const DEFAULT_LAYOUT: Layout = [
-  { id: 'weather', x: 0, y: 0, w: 3, h: 3 },
-  { id: 'calendar', x: 3, y: 0, w: 5, h: 5 },
-  { id: 'reminders', x: 8, y: 0, w: 4, h: 5 },
-  { id: 'work', x: 0, y: 3, w: 3, h: 4 },
-  { id: 'inbox', x: 3, y: 5, w: 9, h: 5 },
+  { id: 'calendar', x: 0, y: 0, w: 6, h: 4 },
+  { id: 'inbox', x: 6, y: 0, w: 6, h: 4 },
+  { id: 'reminders', x: 0, y: 4, w: 6, h: 4 },
+  { id: 'work', x: 6, y: 4, w: 6, h: 4 },
+  { id: 'weather', x: 0, y: 8, w: 12, h: 2 },
 ];
 
 const STORAGE_PREFIX = 'caal.dashboard.layout';

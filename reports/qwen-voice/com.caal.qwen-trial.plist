@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HF_HUB_OFFLINE</key>
+		<string>1</string>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+		<key>TOKENIZERS_PARALLELISM</key>
+		<string>false</string>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>25</integer>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.caal.qwen-trial</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/cesar/caal/reports/qwen-voice/venv/bin/python</string>
+		<string>/Users/cesar/caal/reports/qwen-voice/run_service.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/cesar/caal/reports/qwen-voice/service-error.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/cesar/caal/reports/qwen-voice/service.log</string>
+	<key>ThrottleInterval</key>
+	<integer>20</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/cesar/caal/reports/qwen-voice</string>
+</dict>
+</plist>

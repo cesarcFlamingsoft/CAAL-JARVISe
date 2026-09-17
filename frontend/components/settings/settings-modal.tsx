@@ -504,7 +504,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         : 'bg-muted hover:bg-muted/80'
                     }`}
                   >
-                    JARVIS Graphics
+                    FRIDAY Graphics
                   </button>
                   <button
                     onClick={() => setSettings({ ...settings, visualization_type: 'soundbars' })}

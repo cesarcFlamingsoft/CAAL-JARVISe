@@ -7,7 +7,7 @@ import { authenticate } from '@/lib/auth/session';
 export const dynamic = 'force-dynamic';
 
 const DENIED_TEXT: Record<string, string> = {
-  no_account: 'Your identity was verified, but there is no JARVIS account for it yet. Ask an administrator to create one.',
+  no_account: 'Your identity was verified, but there is no FRIDAY account for it yet. Ask an administrator to create one.',
   suspended: 'This account is suspended. Ask an administrator if you think this is a mistake.',
   unavailable: 'The identity service is unavailable right now. Try again shortly.',
 };
@@ -50,7 +50,7 @@ export default async function AccountPage() {
           href="/"
           className="text-muted-foreground hover:text-foreground text-sm underline-offset-4 hover:underline"
         >
-          Back to JARVIS
+          Back to FRIDAY
         </Link>
       </header>
       {body}

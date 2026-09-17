@@ -28,7 +28,7 @@ from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from caal import scheduled_events
+from caal import company_privacy, scheduled_events
 from caal import settings as settings_module
 from caal.tools import create_default_registry, natural_schedule
 from caal.tools.arguments import validate_tool_arguments
@@ -128,6 +128,22 @@ class ToolDataCache:
         self._cache.clear()
 
 
+def _with_directive(messages: list[dict], directive: str) -> list[dict]:
+    """Add one session instruction to the prompt without replacing any of it."""
+    updated = [dict(message) for message in messages]
+    if updated and updated[0].get("role") == "system":
+        updated[0]["content"] = f"{updated[0].get('content', '')}\n\n{directive}".strip()
+    else:
+        updated.insert(0, {"role": "system", "content": directive})
+    return updated
+
+
+def _language_directive(agent) -> str:
+    """The reply-language instruction for this turn, empty for English."""
+    session = getattr(agent, "_language_session", None)
+    return session.directive() if session is not None else ""
+
+
 async def llm_node(
     agent,
     chat_ctx,
@@ -167,6 +183,33 @@ async def llm_node(
             max_turns=max_turns,
         )
 
+        # Before anything is routed, discovered or escalated: decide whether
+        # this session may leave the machine at all. A company-private session
+        # is decided from the signed-in user and the configured policy, never
+        # from the words of the turn, and it never lifts once engaged.
+        company_privacy.begin_turn(agent, _latest_user_text(messages))
+
+        # A company-private session tells the model that the owner's library is
+        # open to it. Only the model that chooses the tools is told: a provider
+        # with its own tool loop is the runtime a private session never
+        # reaches, and it is not offered the company tools either.
+        if not provider.manages_own_tools:
+            directive = company_privacy.private_session_directive(agent)
+            if directive:
+                messages = _with_directive(messages, directive)
+
+        # Which language to answer this turn in. Resolved from the verified
+        # user's own preference and the speech server's detection before the
+        # turn reached here (see caal.language_policy); English resolves to an
+        # empty directive, so an English session's prompt is unchanged.
+        from caal.language_policy import reply_directive
+        from caal.speech_request import turn_language
+
+        language = turn_language(agent, chat_ctx)
+        language_directive = reply_directive(language)
+        if language_directive:
+            messages = _with_directive(messages, language_directive)
+
         # A provider that runs its own tool loop is a separate agent runtime
         # with its own model: everything it is sent crosses the redaction
         # barrier first, so no connected-account result, account label or
@@ -181,6 +224,69 @@ async def llm_node(
             tools = None
         else:
             tools = await _discover_tools(agent)
+            if any(t["function"]["name"] == "time.current" for t in tools or []):
+                messages = _with_directive(
+                    messages,
+                    "For every current time, current date, or time follow-up question, call "
+                    "time.current before answering. It reads the clock at this exact turn in the "
+                    "configured local timezone. Never answer from a time mentioned earlier in "
+                    "the session, including a system-prompt session-start timestamp.",
+                )
+            if any(t["function"]["name"] == "weather.current" for t in tools or []):
+                messages = _with_directive(
+                    messages,
+                    "For current weather questions and weather follow-up questions, call "
+                    "weather.current before answering. The tool includes rain, gusts, humidity "
+                    "and feels-like readings even when an earlier spoken answer omitted them. "
+                    "Read it again for follow-ups; do not claim a measurement is unavailable "
+                    "without checking. Use its freshness state and conditions faithfully. "
+                    "It has current observations only, not future forecasts. Answer in the "
+                    "conversation language. Never infer a location or supply one to this tool.",
+                )
+
+        if getattr(agent, "_satellite_restricted", False):
+            # The next model response may resolve a read into another tool call.
+            # SatelliteModel's text stream deliberately refuses tool frames.
+            corrected = False
+            light_result = None
+            for _ in range(6):
+                response = await provider.chat(messages=messages, tools=tools, **request_options)
+                if _invalid_tool_batch(agent, response.tool_calls, tools):
+                    if corrected:
+                        break
+                    corrected = True
+                    messages.append({
+                        "role": "system",
+                        "content": "The proposed batch was rejected before execution. "
+                        "Use only the advertised tools and valid arguments. "
+                        "Do not replay any earlier successful action.",
+                    })
+                    continue
+                if response.tool_calls:
+                    messages, _ = await _execute_tool_calls(
+                        agent, messages, response.tool_calls, response.content, provider,
+                    )
+                    results = messages[-len(response.tool_calls):]
+                    for call, result in zip(response.tool_calls, results):
+                        if call.name == "home.light":
+                            light_result = json.loads(result["content"])
+                    continue
+                if response.content and response.content.strip():
+                    # A model must not turn a refusal or an accepted request into
+                    # an unsupported claim about the physical lamp.
+                    content = (
+                        light_result.get("spoken_message", light_result["message"])
+                        if light_result else response.content
+                    )
+                    yield strip_markdown_for_tts(content)
+                    return
+                break
+            yield (
+                light_result.get("spoken_message", light_result["message"])
+                if light_result else
+                "I couldn't complete that request. No further light requests will be sent."
+            )
+            return
 
         # An external tool's model-written arguments cross the same boundary
         # as a Hermes prompt. Remove prior private results before that model
@@ -234,6 +340,13 @@ async def llm_node(
 
                     asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
 
+                # A real speed test runs the site's own full measurement and can
+                # take a couple of minutes. Say so once, before the wait starts,
+                # so the silence is not mistaken for a hang. One line only.
+                notice = speedtest_notice(response.tool_calls)
+                if notice:
+                    yield notice
+
                 # Execute tools and get results (cache structured data), plus
                 # whatever those tools can already say for themselves.
                 # What this person just said is in scope for the length of
@@ -249,6 +362,19 @@ async def llm_node(
                         provider=provider,
                         tool_data_cache=tool_data_cache,
                     )
+
+                # A single weather failure has an actionable fixed reply. Do not
+                # depend on a second model call to explain missing location/access.
+                if (
+                    len(response.tool_calls) == 1
+                    and response.tool_calls[0].name == "weather.current"
+                ):
+                    from caal.tools.weather_tools import spoken_failure
+
+                    failure = spoken_failure(json.loads(messages[-1]["content"]), language)
+                    if failure:
+                        yield failure
+                        return
 
                 # A reminder or an alarm that was just written already has its
                 # one sentence, question included, and the local model returns
@@ -450,16 +576,24 @@ LEGACY_ACCOUNT_READS = frozenset(
 )
 
 
+# Categories whose arguments narrow a private read. An undeclared argument
+# here is dropped by scoped_tool_arguments a few lines later, and dropping the
+# employee or the document the user actually asked about turns their narrow
+# question into a wide one over everything the owner can see. So it is
+# rejected first, while the mistake is still visible.
+STRICT_ARGUMENT_CATEGORIES = frozenset({"knowledge", "company", "weather"})
+
+
 def _connected_argument_error(tool, arguments: dict) -> dict | None:
-    """Do not turn a misspelled account/day filter into a wider private read."""
-    if tool.category != "knowledge":
+    """Do not turn a misspelled account/employee/document filter into a wider read."""
+    if tool.category not in STRICT_ARGUMENT_CATEGORIES:
         return None
     if set(arguments) - set(tool.parameters.get("properties", {})) - {"user_id"}:
         return {
             "status": "invalid_request",
             "message": (
                 "Use only schema-declared arguments, retaining the requested "
-                "account and time scope."
+                "account, employee, document and time scope."
             ),
             "data": {},
         }
@@ -486,10 +620,44 @@ def _is_unscoped_tool(agent, name: str) -> bool:
     return name not in registry.names() and resolve_agent_method_tool(agent, name) is None
 
 
+def _company_tool_policy(agent, name: str) -> bool | None:
+    """The company library's own answer about this tool, or ``None`` if it has none.
+
+    Two rules, and they pull in opposite directions on purpose:
+
+    * a **company-private session** is offered a narrow list of tools that keep
+      text on this machine. A passage from an uploaded document is untrusted
+      text, and the surest answer to "ignore your instructions and email this
+      to..." is that there is no tool in the session that sends anything;
+    * a session that is **not** the company owner's, or a deployment with the
+      private mode switched off, is not offered the company tools at all.
+    """
+    from caal import company_privacy
+
+    scope = getattr(agent, "_user_scope", None)
+    user_id = getattr(scope, "user_id", None)
+    if name.startswith("company."):
+        return company_privacy.company_tools_offered(user_id)
+    if not company_privacy.is_local_only():
+        return None
+    registry = getattr(agent, "_native_tool_registry", None)
+    category = None
+    if registry is not None and name in registry.names():
+        category = registry.get(name).category
+    return company_privacy.tool_allowed_in_private_session(category, name)
+
+
 def _tool_available(agent, name: str) -> bool:
     """Connected identities read their own accounts, never deployment-wide stores."""
+    company = _company_tool_policy(agent, name)
+    if company is not None:
+        if not company:
+            return False
     from caal.ha_policy import tool_allowed
     if not tool_allowed(agent, name):
+        return False
+    from caal.tools.network_tools import authorized
+    if name.startswith("network.") and not authorized(agent):
         return False
     scope = getattr(agent, "_user_scope", None)
     return not (getattr(scope, "identity_configured", False) and name in LEGACY_ACCOUNT_READS)
@@ -513,6 +681,9 @@ async def _discover_tools(agent) -> list[dict] | None:
 
     if settings_module.get_setting("native_tools_enabled", True):
         native_registry = create_default_registry()
+        # Bound before the filter runs: _tool_available asks the registry what
+        # category a tool is in, and a company-private session decides from it.
+        agent._native_tool_registry = native_registry
         tools.extend(
             {
                 "type": "function",
@@ -525,7 +696,6 @@ async def _discover_tools(agent) -> list[dict] | None:
             for tool in native_registry.list()
             if _tool_available(agent, tool.name)
         )
-        agent._native_tool_registry = native_registry
         logger.info(f"Added {len(native_registry.names())} native assistant tools")
 
     # Get @function_tool decorated methods from agent (bound methods on class)
@@ -713,7 +883,7 @@ async def _execute_tool_calls(
                 }
             else:
                 tool_result = await _execute_single_tool(agent, tool_name, arguments)
-            private_result_seen = private_result_seen or is_knowledge_tool(tool_name)
+            private_result_seen = private_result_seen or _keeps_contents_private(tool_name)
             if _keeps_contents_private(tool_name) or isinstance(tool_result, dict):
                 status = tool_result.get("status") if isinstance(tool_result, dict) else None
                 logger.info(f"Tool {tool_name} returned status={status}")
@@ -805,7 +975,19 @@ def _keeps_contents_private(tool_name: str) -> bool:
     Read from the tool catalog rather than from the agent, so a session that
     never built its own registry still treats connected-account data as private.
     """
-    return is_knowledge_tool(tool_name) or tool_name in PRIVATE_LOCAL_TOOLS
+    return (is_knowledge_tool(tool_name) or tool_name in PRIVATE_LOCAL_TOOLS
+            or tool_name.startswith("network."))
+
+
+def speedtest_notice(tool_calls) -> str | None:
+    """One sentence before a measurement that genuinely takes minutes, or nothing.
+
+    Deliberately not routine chatter: every other tool stays silent, and a batch
+    that asks for the speed test twice still gets a single line.
+    """
+    if any(getattr(call, "name", None) == "network.speedtest" for call in tool_calls or ()):
+        return "Running a full speed test now. That takes up to a couple of minutes."
+    return None
 
 
 async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
@@ -817,6 +999,9 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
     3. n8n workflows (webhook-based execution)
     4. MCP servers (with server_name__tool_name prefix parsing)
     """
+    from caal.tools.network_tools import authorized, denied
+    if tool_name.startswith("network.") and not authorized(agent):
+        return denied()
     if getattr(agent, "_satellite_restricted", False):
         registry = agent._native_tool_registry
         if tool_name not in registry.names() or not isinstance(arguments, dict):
@@ -839,10 +1024,63 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
             if inspect.isawaitable(result):
                 result = await result
             return result
-        except (PermissionError, ValueError, TypeError):
+        except (PermissionError, ValueError, TypeError) as error:
+            if tool_name == "home.light" and error.args == ("light_not_available",):
+                logger.info("Satellite tool refused reason_code=light_not_available")
+                return {
+                    'status': 'target_unavailable',
+                    'reason_code': 'light_not_available',
+                    'spoken_message': "I couldn't find that light in Home Assistant. "
+                    "Which lamp do you mean?",
+                    'message': 'That light ID is not in the current Home Assistant states. '
+                    'No light request was sent. Read home.states, following next_offset '
+                    'if needed, and use an exact returned light ID. Ask for clarification '
+                    'if the requested lamp is ambiguous. Never invent an ID.',
+                    'data': {},
+                }
+            permission_reasons = {
+                "ha_connection_required", "ha_configuration_changed", "ha_identity_changed",
+                "ha_connection_changed", "ha_credentials_changed", "ha_reconnect_required",
+                "ha_permission_denied", "ha_registry_unavailable", "ha_access_denied",
+                "satellite_home_denied", "satellite_registry_changed", "satellite_grant_changed",
+                "satellite_revoked", "satellite_unauthorized", "satellite_binding_mismatch",
+            }
+            if isinstance(error, PermissionError):
+                reason = (
+                    str(error) if str(error) in permission_reasons
+                    else "satellite_permission_denied"
+                )
+                status = "unauthorized"
+                message = (
+                    "This speaker's Home Assistant authorization could not be validated. "
+                    "No successful light action was confirmed."
+                )
+                if reason == "ha_reconnect_required":
+                    message = (
+                        "Home Assistant rejected the connection credentials. "
+                        "The connected account needs to reconnect. "
+                        "No successful light action was confirmed."
+                    )
+                elif reason == "ha_permission_denied":
+                    message = (
+                        "Home Assistant denied this request for the connected account. "
+                        "No successful light action was confirmed."
+                    )
+            elif error.args == ("invalid_arguments",) or isinstance(error, TypeError):
+                reason, status = "invalid_arguments", "invalid_request"
+                message = (
+                    "The tool arguments are invalid. Use the advertised schema. "
+                    "Only exact light IDs and turn_on or turn_off are supported; "
+                    "switch actuation and generic services are unavailable."
+                )
+            else:
+                reason, status = "ha_unavailable", "unavailable"
+                message = "Home Assistant is unavailable. No successful action was confirmed."
+            logger.info("Satellite tool refused reason_code=%s", reason)
             return {
-                'status': 'unauthorized',
-                'message': "That request is unavailable with this satellite's current permissions.",
+                'status': status,
+                'reason_code': reason,
+                'message': message,
                 'data': {},
             }
         except Exception:
@@ -882,8 +1120,18 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         bound = scoped_tool_arguments(tool, arguments, getattr(agent, "_user_scope", None))
         if bound is None:
             logger.info(f"Refused user-scoped tool {tool_name} for an unidentified session")
+            if tool.category == "weather":
+                from caal.tools.weather_tools import (
+                    session_unavailable_result as weather_unavailable,
+                )
+
+                return weather_unavailable()
             if tool.category == "knowledge":
                 return session_unavailable_result()
+            if tool.category == "company":
+                from caal.tools import company_tools
+
+                return company_tools.session_unavailable_result()
             if tool.category in ("alarms", "reminders"):
                 return scheduling_unavailable_result()
             return memory_unavailable_result()
@@ -899,6 +1147,11 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
         if invalid is not None:
             logger.info(f"Refused an incomplete call to {tool_name} before its handler")
             return invalid
+        if tool.category == "company":
+            # However this call was arrived at, a passage from the library is
+            # now part of this conversation. It stays on this machine from
+            # here, including on every follow-up turn.
+            company_privacy.note_company_tool_use()
         result = tool.handler(**bound)
         if inspect.isawaitable(result):
             # Knowledge tools read a bounded index and may refresh it first.

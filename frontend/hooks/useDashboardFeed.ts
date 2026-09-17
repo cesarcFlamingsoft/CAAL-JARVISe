@@ -1,119 +1,105 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { type FeedState, createRefreshGate, reduceFeed } from '@/lib/dashboard/refresh';
 import { SCHEDULED_EVENT_NAME } from '@/lib/dashboard/scheduled-events';
 
-export type FeedState<T> =
-  | { status: 'loading' }
-  | { status: 'ready'; data: T }
-  /** Identity is configured and this browser is not a signed-in user. */
-  | { status: 'unauthorized'; code: string }
-  /** A single-user deployment: there are no per-user accounts to read. */
-  | { status: 'unconfigured' }
-  | { status: 'error'; code: string };
-
+export type { FeedState } from '@/lib/dashboard/refresh';
 export type FeedController<T> = FeedState<T> & { reload: () => void };
-
 export type FeedPath =
   | '/api/dashboard/calendar'
   | '/api/dashboard/inbox'
   | '/api/dashboard/reminders';
-
-/** How often a visible dashboard re-reads a feed on its own. */
 const REFRESH_INTERVAL_MS = 60_000;
 
-/**
- * One dashboard feed from the BFF, reduced by `parse`, re-read on a timer
- * while the page is visible, whenever settings or connected accounts change,
- * and on demand. Nothing here reads the voice session: a call is docked
- * inside the dashboard, never a condition for showing someone their mail.
- */
+// Only in-flight responses are shared; no personal data is cached between mounts.
+const requests = new Map<string, Promise<Response>>();
+function request(path: string) {
+  let pending = requests.get(path);
+  if (!pending) {
+    pending = fetch(path, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(45_000),
+    });
+    requests.set(path, pending);
+    void pending
+      .finally(() => {
+        if (requests.get(path) === pending) requests.delete(path);
+      })
+      .catch(() => {});
+  }
+  return pending.then((response) => response.clone());
+}
+
+/** Stable timers, one in-flight request, bounded focus refresh, and no hidden-tab polling. */
 export function useDashboardFeed<T>(
   path: FeedPath,
   parse: (data: unknown) => T | null
 ): FeedController<T> {
   const [state, setState] = useState<FeedState<T>>({ status: 'loading' });
-  const [attempt, setAttempt] = useState(0);
-
-  const reload = useCallback(() => setAttempt((n) => n + 1), []);
-
+  const refreshRef = useRef<() => void>(() => {});
+  const reload = useCallback(() => refreshRef.current(), []);
   useEffect(() => {
     let cancelled = false;
+    let generation = 0;
     const load = async () => {
+      const version = generation;
+      setState((current) =>
+        current.status === 'ready' ? { ...current, refreshing: true } : current
+      );
+      let next: FeedState<T>;
       try {
-        const response = await fetch(path, { cache: 'no-store', credentials: 'same-origin' });
-        let body: unknown = null;
-        try {
-          body = await response.json();
-        } catch {
-          body = null;
+        const response = await request(path);
+        const body = await response.json().catch(() => null);
+        const code = typeof body?.error === 'string' ? body.error : 'http_' + response.status;
+        if (response.status === 401 || response.status === 403)
+          next = { status: 'unauthorized', code };
+        else if (response.status === 503 && code === 'identity_not_configured')
+          next = { status: 'unconfigured' };
+        else if (!response.ok) next = { status: 'error', code };
+        else {
+          const data = parse(body);
+          next = data
+            ? { status: 'ready', data, updatedAt: Date.now() }
+            : { status: 'error', code: 'malformed' };
         }
-        if (cancelled) return;
-        const code = (body as { error?: unknown } | null)?.error;
-        const errorCode = typeof code === 'string' ? code : 'http_' + response.status;
-        if (response.status === 401 || response.status === 403) {
-          setState({ status: 'unauthorized', code: errorCode });
-          return;
-        }
-        if (response.status === 503 && errorCode === 'identity_not_configured') {
-          setState({ status: 'unconfigured' });
-          return;
-        }
-        if (!response.ok) {
-          setState({ status: 'error', code: errorCode });
-          return;
-        }
-        const data = parse(body);
-        setState(data ? { status: 'ready', data } : { status: 'error', code: 'malformed' });
       } catch {
-        if (!cancelled) setState({ status: 'error', code: 'network' });
+        next = { status: 'error', code: 'network' };
       }
+      if (!cancelled && version === generation) setState((current) => reduceFeed(current, next));
     };
-    void load();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') reload();
-    }, REFRESH_INTERVAL_MS);
+    const visible = () => document.visibilityState === 'visible';
+    let gate = createRefreshGate(load, visible);
+    const refresh = () => {
+      void gate.refresh();
+    };
+    // Changed account scope must immediately discard old summaries and old responses.
+    const invalidate = () => {
+      generation++;
+      requests.delete(path);
+      setState({ status: 'loading' });
+      gate = createRefreshGate(load, visible);
+      refresh();
+    };
+    refreshRef.current = refresh;
+    refresh();
+    const timer = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('settings-updated', invalidate);
+    window.addEventListener('connections-updated', invalidate);
+    if (path === '/api/dashboard/reminders') window.addEventListener(SCHEDULED_EVENT_NAME, refresh);
     return () => {
       cancelled = true;
+      refreshRef.current = () => {};
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('settings-updated', invalidate);
+      window.removeEventListener('connections-updated', invalidate);
+      window.removeEventListener(SCHEDULED_EVENT_NAME, refresh);
     };
-  }, [attempt, path, parse, reload]);
-
-  // Refresh immediately when the user comes back, rather than waiting for the
-  // next minute tick after a laptop wake, tab switch, or mobile app resume.
-  useEffect(() => {
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') reload();
-    };
-    document.addEventListener('visibilitychange', refreshWhenVisible);
-    window.addEventListener('focus', refreshWhenVisible);
-    return () => {
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
-      window.removeEventListener('focus', refreshWhenVisible);
-    };
-  }, [reload]);
-
-  // Settings saves and account connects or disconnects announce themselves.
-  useEffect(() => {
-    window.addEventListener('settings-updated', reload);
-    window.addEventListener('connections-updated', reload);
-    return () => {
-      window.removeEventListener('settings-updated', reload);
-      window.removeEventListener('connections-updated', reload);
-    };
-  }, [reload]);
-
-  // A reminder or alarm JARVIS just set announces itself on this browser own
-  // room; useScheduledUpdates validates that packet and raises this event. Only
-  // the scheduled feed reacts to it: an email or a calendar did not change
-  // because a reminder did, and re-reading a provider feed costs a round trip
-  // to somebody else service. The polling and visibility refreshes above stay
-  // as the fallback for a browser with no call running.
-  useEffect(() => {
-    if (path !== '/api/dashboard/reminders') return;
-    window.addEventListener(SCHEDULED_EVENT_NAME, reload);
-    return () => window.removeEventListener(SCHEDULED_EVENT_NAME, reload);
-  }, [path, reload]);
-
+  }, [path, parse]);
   return { ...state, reload };
 }

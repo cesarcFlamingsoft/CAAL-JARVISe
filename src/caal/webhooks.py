@@ -52,10 +52,12 @@ from livekit.protocol.room import SendDataRequest
 from pydantic import BaseModel
 
 from . import (
+    company_api,
     connections_api,
     dashboard_api,
     device_registry,
     ha_api,
+    language_api,
     local_model_api,
     local_ollama,
     satellite_api,
@@ -100,10 +102,18 @@ app.include_router(weather_api.router)
 # read by any signed-in user and changed by an administrator only.
 app.include_router(local_model_api.router)
 app.include_router(tts_api.router)
+# Which language JARVIS answers a user in (auto/English/Spanish). Personal to
+# the signed-in user, like the voice above; never a deployment-wide setting.
+app.include_router(language_api.router)
 
 app.include_router(ha_api.router)
 
 app.include_router(satellite_api.router)
+# The owner's company document library. Administrator-only management routes;
+# the model reads the same library through the separate loopback MCP service,
+# never through these. Absent configuration they answer 503 and nothing else
+# in the backend changes.
+app.include_router(company_api.router)
 app.add_middleware(satellite_api.SatelliteBodyLimit)
 
 

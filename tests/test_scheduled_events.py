@@ -187,19 +187,79 @@ def _agent_source() -> str:
     return (Path(__file__).resolve().parents[1] / "voice_agent.py").read_text()
 
 
-def test_the_agent_publishes_the_constant_on_its_own_topic():
-    source = _agent_source()
+def _publisher_ast():
+    """The publisher function itself, as a node: not a slice of the file.
 
-    assert "scheduled_events.PAYLOAD.encode" in source
-    assert "topic=scheduled_events.TOPIC" in source
-    assert "on_scheduled_change=_publish_scheduled_change" in source
-    # The tool-status packet carries model arguments; nothing of it is reused.
-    # The code of the publisher, past its own docstring: the tool-status packet
-    # carries model arguments, and none of it is reused here.
-    body = source.split("async def _publish_scheduled_change")[1].split('"""')[2]
-    body = body.split("async def")[0]
-    for forbidden in ("tool_params", "tool_names", "title", "label", "user_id", "json.dumps"):
-        assert forbidden not in body
+    This used to be `source.split("async def _publish_scheduled_change")[1]`
+    cut at the next `async def`, which is not the function -- it ran on past
+    the end of the publisher and through the startup code that follows it, so
+    an unrelated keyword argument added to a *neighbouring* call failed a test
+    about what this packet contains. The function's own boundaries are the
+    thing being asserted about, so they are taken from the parse.
+    """
+    import ast
+
+    tree = ast.parse(_agent_source())
+    return next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_publish_scheduled_change"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_agent_publishes_the_constant_on_its_own_topic():
+    """Compile the publisher alone and watch what it actually puts on the wire."""
+    import ast
+
+    node = _publisher_ast()
+    published: list[dict] = []
+
+    async def publish_data(data, **kwargs):
+        published.append({"data": data, "kwargs": kwargs})
+
+    namespace = {
+        "logger": logging.getLogger("test-publisher"),
+        "ctx": SimpleNamespace(
+            room=SimpleNamespace(local_participant=SimpleNamespace(publish_data=publish_data))
+        ),
+        "scheduled_events": scheduled_events,
+    }
+    exec(  # noqa: S102 - the production function's own AST, nothing else
+        compile(
+            ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+            "voice_agent._publish_scheduled_change",
+            "exec",
+        ),
+        namespace,
+    )
+    await namespace["_publish_scheduled_change"]()
+
+    assert len(published) == 1, "one notice per change, and only one"
+    packet = published[0]
+    # The whole packet, by value: a version and a kind. Nothing that belongs to
+    # anybody -- no title, time, id, owner, argument, model output or label --
+    # can be in it, because there is nothing in it but this.
+    assert packet["data"] == scheduled_events.PAYLOAD.encode("utf-8")
+    assert json.loads(packet["data"].decode("utf-8")) == {"v": 1, "kind": "scheduled_changed"}
+    assert packet["kwargs"] == {"reliable": True, "topic": scheduled_events.TOPIC}
+    assert scheduled_events.TOPIC == "scheduled_changed"
+
+
+def test_the_publisher_reads_nothing_private_to_build_that_packet():
+    """The names the publisher's own body mentions, bounded to its own body."""
+    import ast
+
+    node = _publisher_ast()
+    mentioned = {
+        child.id for child in ast.walk(node) if isinstance(child, ast.Name)
+    } | {child.attr for child in ast.walk(node) if isinstance(child, ast.Attribute)}
+    for forbidden in ("tool_params", "tool_names", "title", "label", "user_id", "dumps"):
+        assert forbidden not in mentioned
+
+
+def test_the_agent_is_wired_to_that_publisher():
+    assert "on_scheduled_change=_publish_scheduled_change" in _agent_source()
 
 
 def test_the_voice_assistant_accepts_the_publisher_and_keeps_it_private():

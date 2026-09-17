@@ -1,6 +1,6 @@
 {
   "domain": "jarvis_satellite",
-  "name": "Jarvis Voice Satellites",
+  "name": "FRIDAY Voice Satellites",
   "version": "0.2.0",
   "config_flow": true,
   "documentation": "https://github.com/CoreWorxLab/caal",

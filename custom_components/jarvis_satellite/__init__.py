@@ -1,4 +1,4 @@
-"""Restricted, independently enrolled Jarvis voice satellites."""
+"""Restricted, independently enrolled FRIDAY voice satellites."""
 
 from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryNotReady

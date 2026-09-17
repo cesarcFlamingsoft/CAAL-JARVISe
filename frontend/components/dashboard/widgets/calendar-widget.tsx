@@ -2,7 +2,7 @@
 
 /**
  * Upcoming events from the signed-in user's connected accounts, grouped by
- * day, followed by the operator-level calendar sources JARVIS can read by
+ * day, followed by the operator-level calendar sources FRIDAY can read by
  * voice. Every event shown came from the backend feed as a bounded summary;
  * each account that could not answer is named with its state; nothing is
  * invented. Nothing here reads the voice session.
@@ -98,7 +98,7 @@ function Upcoming({ feed, passwordLogin, today, onOpenSettings }: UpcomingProps)
     return (
       <WidgetEmpty
         title="Connected accounts need multi-user identity"
-        detail="This JARVIS server runs in single-user mode, so there are no per-user calendars to read."
+        detail="This FRIDAY server runs in single-user mode, so there are no per-user calendars to read."
       />
     );
   }
@@ -164,6 +164,19 @@ function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
   const days = groupEventsByDay(group.events);
   return (
     <AccountSection
+      preview={
+        group.events.length > 0 ? (
+          <ol>
+            {group.events.slice(0, 2).map((event) => (
+              <li key={event.id}>
+                <EventRow event={event} />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-muted-foreground text-sm">Nothing scheduled.</p>
+        )
+      }
       account={group.account}
       count={eventCount(group.events.length)}
       emptyLabel="Nothing scheduled."
@@ -253,7 +266,7 @@ function VoiceSources({ capabilities }: { capabilities: CapabilitiesState }) {
       <WidgetBlocked
         className="mt-2"
         title="Events from these sources"
-        detail="JARVIS reads them by voice; they are not shown on the dashboard yet."
+        detail="FRIDAY reads them by voice; they are not shown on the dashboard yet."
         endpoint={calendar.eventsEndpoint}
       />
     </div>

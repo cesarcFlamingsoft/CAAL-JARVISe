@@ -55,7 +55,7 @@ const MAX_ALARMS = 200;
 const MAX_LABEL = 120;
 const REMINDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** How each channel reads on the dashboard, as the words JARVIS uses out loud. */
+/** How each channel reads on the dashboard, as the words FRIDAY uses out loud. */
 export const CHANNEL_LABELS: Record<DeliveryChannel, string> = {
   speak: 'Spoken here',
   telegram: 'Telegram',
@@ -115,7 +115,7 @@ export interface RemindersFeed {
 export interface DeliveryDefaults {
   delivery: DeliveryChannel[];
   available: DeliveryChannel[];
-  /** Whether they have ever chosen; false means JARVIS still asks out loud. */
+  /** Whether they have ever chosen; false means FRIDAY still asks out loud. */
   saved: boolean;
 }
 

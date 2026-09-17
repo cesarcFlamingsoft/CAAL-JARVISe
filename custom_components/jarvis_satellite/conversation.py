@@ -1,4 +1,4 @@
-"""HA ChatLog streaming to the enrolled non-person Jarvis conversation scope."""
+"""HA ChatLog streaming to the enrolled non-person FRIDAY conversation scope."""
 
 import asyncio
 import time
@@ -18,7 +18,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class JarvisConversation(ConversationEntity):
-    _attr_name = "Jarvis Bedroom Pilot"
+    _attr_name = "FRIDAY Bedroom Pilot"
     _attr_supports_streaming = True
 
     def __init__(self, entry):

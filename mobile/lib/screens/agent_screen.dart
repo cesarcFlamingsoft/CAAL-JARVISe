@@ -343,7 +343,7 @@ class _AgentListeningPlaceholder extends StatelessWidget {
           // Server-side wake word detection is active
           if (wakeWordState == WakeWordState.listening) {
             icon = Icons.hearing;
-            statusText = 'Say "Hey Jarvis"';
+            statusText = 'FRIDAY: say "Hey Jarvis" during migration';
             subtitle = 'Waiting for wake word...';
             iconColor = colorScheme.outline;
           } else {

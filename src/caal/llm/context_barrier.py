@@ -66,10 +66,13 @@ REDACTED_ANSWER = (
 TOOL_DATA_HEADER = "Recent tool response data for reference:"
 
 _KNOWLEDGE_CATEGORY = "knowledge"
-# The namespaces of the connected-account tools. Kept as a rule as well as a
-# lookup so a catalog that cannot be built, or a tool added later under the same
-# namespace, is still treated as private rather than quietly passed along.
-_PRIVATE_PREFIXES = ("inbox.", "schedule.")
+# The namespaces of the private tools: the connected accounts, and the company
+# document library, whose passages are the owner's own uploaded policies, HR
+# documents and contracts and must not leave this runtime either. Kept as a rule
+# as well as a lookup so a catalog that cannot be built, or a tool added later
+# under the same namespace, is still treated as private rather than quietly
+# passed along.
+_PRIVATE_PREFIXES = ("inbox.", "schedule.", "network.", "company.", "weather.")
 
 _names: frozenset[str] | None = None
 

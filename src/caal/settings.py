@@ -33,7 +33,7 @@ DEFAULT_SETTINGS = {
     # First-launch flag
     "first_launch_completed": False,
     # Agent identity
-    "agent_name": "JARVIS",
+    "agent_name": "FRIDAY",
     "prompt": "default",  # "default" | "custom"
     "wake_greetings": [
         "Hey, what's up?",
@@ -46,7 +46,7 @@ DEFAULT_SETTINGS = {
     ],
     # Provider settings (UI sets both together, but stored separately for power users)
     "stt_provider": "speaches",  # "speaches" | "groq"
-    # "routed" is the default: the local Ollama model is JARVIS' main model and
+    # "routed" is the default: the local Ollama model is FRIDAY' main model and
     # Hermes is the escalation for work that needs an agent harness. "ollama",
     # "hermes" and "groq" pin a single backend.
     "llm_provider": "routed",  # "routed" | "hermes" | "ollama" | "groq"
@@ -505,17 +505,15 @@ def load_prompt_with_context(
     Returns:
         Prompt with {{CURRENT_DATE_CONTEXT}} and {{TIMEZONE}} replaced
     """
-    from caal.utils.formatting import (
-        format_date_speech_friendly,
-        format_time_speech_friendly,
-    )
+    from caal.utils.formatting import format_date_speech_friendly
 
     template = load_prompt_content()
 
     now = datetime.now(ZoneInfo(timezone_id))
     date_context = (
-        f"Today is {format_date_speech_friendly(now)}. "
-        f"The current time is {format_time_speech_friendly(now)} {timezone_display}."
+        f"This voice session opened on {format_date_speech_friendly(now)} in {timezone_display}. "
+        "For the current date or time, always call the native time.current tool during this turn; "
+        "never answer from this session-start context."
     )
 
     prompt = template.replace("{{CURRENT_DATE_CONTEXT}}", date_context)

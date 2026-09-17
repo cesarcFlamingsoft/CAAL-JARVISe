@@ -54,6 +54,7 @@ export interface VoiceStatusInput {
   isConnected: boolean;
   connecting: boolean;
   agentState?: string;
+  connectionState?: string;
 }
 
 export interface VoiceStatus {
@@ -66,24 +67,29 @@ export function voiceStatus({
   isConnected,
   connecting,
   agentState,
+  connectionState,
 }: VoiceStatusInput): VoiceStatus {
+  if (connectionState === 'reconnecting' || connectionState === 'signalReconnecting') {
+    return { label: 'Reconnecting voice…', tone: 'busy' };
+  }
+  if (connectionState === 'disconnected') isConnected = false;
   if (!isConnected) {
     return connecting
-      ? { label: 'Connecting to JARVIS…', tone: 'busy' }
+      ? { label: 'Connecting to FRIDAY…', tone: 'busy' }
       : { label: 'Voice is idle', tone: 'idle' };
   }
   switch (agentState) {
     case 'listening':
-      return { label: 'JARVIS is listening', tone: 'live' };
+      return { label: 'FRIDAY is listening', tone: 'live' };
     case 'thinking':
-      return { label: 'JARVIS is thinking', tone: 'busy' };
+      return { label: 'FRIDAY is thinking', tone: 'busy' };
     case 'speaking':
-      return { label: 'JARVIS is speaking', tone: 'live' };
+      return { label: 'FRIDAY is speaking', tone: 'live' };
     case 'idle':
-      return { label: 'JARVIS is on the call', tone: 'live' };
+      return { label: 'FRIDAY is on the call', tone: 'live' };
     case 'failed':
-      return { label: 'JARVIS did not join the call', tone: 'error' };
+      return { label: 'FRIDAY did not join the call', tone: 'error' };
     default:
-      return { label: 'Waiting for JARVIS to join…', tone: 'busy' };
+      return { label: 'Waiting for FRIDAY to join…', tone: 'busy' };
   }
 }

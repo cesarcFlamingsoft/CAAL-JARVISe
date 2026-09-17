@@ -36,7 +36,7 @@ async def test_piper_selection_is_preserved():
 
 
 @pytest.mark.asyncio
-async def test_explicit_qwen_uses_private_service_with_kokoro_fallback(monkeypatch):
+async def test_explicit_qwen_uses_private_service_without_a_second_voice_fallback(monkeypatch):
     from caal.qwen_tts import QwenTTS
 
     monkeypatch.setenv("CAAL_QWEN_TRIAL_TOKEN", "a" * 32)
@@ -50,7 +50,7 @@ async def test_explicit_qwen_uses_private_service_with_kokoro_fallback(monkeypat
         assert provider.capabilities.streaming
         assert isinstance(provider._wrapped_tts, QwenTTS)
         assert provider._wrapped_tts.endpoint == "http://host.docker.internal:18003"
-        assert provider._wrapped_tts.fallback._opts.voice == "am_adam"
+        assert provider._wrapped_tts.fallback is None
     finally:
         await provider.aclose()
 

@@ -19,7 +19,7 @@ interface NoticeProps {
 export function WidgetLoading({ label = 'Loading…' }: { label?: string }) {
   return (
     <div role="status" aria-live="polite" className="space-y-2 py-1">
-      <span className="sr-only">{label}</span>
+      <span className="text-muted-foreground text-xs">{label}</span>
       <div aria-hidden className="bg-muted h-3 w-2/3 animate-pulse rounded" />
       <div aria-hidden className="bg-muted h-3 w-1/2 animate-pulse rounded" />
       <div aria-hidden className="bg-muted h-3 w-3/5 animate-pulse rounded" />
@@ -44,7 +44,7 @@ interface BlockedProps extends NoticeProps {
 }
 
 /** Configured on the backend, but no HTTP endpoint exists yet to read it. */
-export function WidgetBlocked({ title, detail, endpoint, className }: BlockedProps) {
+export function WidgetBlocked({ title, detail, className }: BlockedProps) {
   return (
     <div
       className={cn(
@@ -57,9 +57,6 @@ export function WidgetBlocked({ title, detail, endpoint, className }: BlockedPro
         {title}
       </p>
       {detail && <p className="mt-1 text-sm">{detail}</p>}
-      <p className="mt-1.5 text-xs">
-        Needs backend <code className="text-foreground/80 font-mono">{endpoint}</code>
-      </p>
     </div>
   );
 }

@@ -11,6 +11,8 @@ const IDENTITY_HEADERS = [
 const nextConfig: NextConfig = {
   // Enable standalone output for Docker deployment
   output: 'standalone',
+  // Isolate verification artifacts from the running frontend build.
+  distDir: process.env.JARVIS_BUILD_DIR || '.next',
   async headers() {
     return [
       { source: '/admin', headers: IDENTITY_HEADERS },

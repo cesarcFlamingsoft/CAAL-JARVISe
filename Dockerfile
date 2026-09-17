@@ -46,6 +46,13 @@ RUN uv pip install --no-cache torch --index-url https://download.pytorch.org/whl
 # Also install setuptools for webrtcvad's pkg_resources dependency
 RUN uv pip install --no-cache setuptools resemblyzer>=0.1.3
 
+# PDF text extraction for the company document library (the `company` extra in
+# pyproject.toml). Installed in the image rather than by hand in a running
+# container: a `pip install` inside a container is lost the next time the
+# container is recreated, which would silently turn every indexed PDF into
+# "needs OCR". Same version range the project declares.
+RUN uv pip install --no-cache "pypdf>=5.1.0,<7"
+
 # ============================================================================
 # Production image
 # ============================================================================

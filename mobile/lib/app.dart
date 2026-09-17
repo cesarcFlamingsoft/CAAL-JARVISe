@@ -213,7 +213,7 @@ class _JarvisAppState extends State<JarvisApp> {
       return ChangeNotifierProvider.value(
         value: widget.configService,
         child: MaterialApp(
-          title: 'JARVIS',
+          title: 'FRIDAY',
           theme: buildTheme(isLight: true),
           darkTheme: buildTheme(isLight: false),
           themeMode: ThemeMode.dark,
@@ -254,7 +254,7 @@ class _JarvisAppState extends State<JarvisApp> {
               child: components.SessionContext(
                 session: appCtrl.session,
                 child: MaterialApp(
-                  title: 'JARVIS',
+                  title: 'FRIDAY',
                   theme: buildTheme(isLight: true),
                   darkTheme: buildTheme(isLight: false),
                   themeMode: ThemeMode.dark,

@@ -63,6 +63,15 @@ noise-suppression = [
 speaker-recognition = [
     "resemblyzer>=0.1.3",  # Speaker embeddings for voice biometrics
 ]
+company = [
+    # PDF text extraction for the company document library. Required whenever
+    # CAAL_COMPANY_LIBRARY_KEYS is set and the owner uploads a PDF: without it
+    # caal.company.extraction reports every PDF as needing OCR, and the status
+    # route says so rather than pretending. The floor is the version whose page
+    # tree and `extract_text` behaviour this code was written against; the
+    # ceiling is the next major, because this library parses untrusted files.
+    "pypdf>=5.1.0,<7",
+]
 
 [project.urls]
 Homepage = "https://github.com/CoreWorxLab/caal"

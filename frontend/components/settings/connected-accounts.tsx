@@ -9,7 +9,7 @@
  * account" -- is offered only when the operator has configured that provider
  * and the backend says it can finish the exchange. Disconnect applies to one
  * account and asks for an explicit confirmation before anything is sent.
- * Each account can also be given the names its owner will ask JARVIS for it
+ * Each account can also be given the names its owner will ask FRIDAY for it
  * by ("work", "university", "wife"); those names are the user's own and never
  * replace the account identity the provider reported.
  * What the panel says about the token exchange comes from the backend, not
@@ -134,7 +134,7 @@ export function ConnectedAccounts() {
         ? {
             provider: row.provider,
             tone: 'info',
-            text: `${row.label}${connection.accountLabel ? ` (${connection.accountLabel})` : ''} was disconnected. JARVIS no longer holds any access for it.`,
+            text: `${row.label}${connection.accountLabel ? ` (${connection.accountLabel})` : ''} was disconnected. FRIDAY no longer holds any access for it.`,
           }
         : { provider: row.provider, tone: 'error', text: describeError(result.error, result.details) }
     );
@@ -188,7 +188,7 @@ export function ConnectedAccounts() {
     setNotice({
       provider: row.provider,
       tone: 'info',
-      text: 'Saved. JARVIS will use these names for this account.',
+      text: 'Saved. FRIDAY will use these names for this account.',
     });
     await load();
   }
@@ -201,7 +201,7 @@ export function ConnectedAccounts() {
         <span className="font-semibold">Connected accounts</span>
         <p className="text-muted-foreground text-xs">
           Your own Google, Microsoft / Outlook and Zoho accounts, linked by approving access at the
-          provider. You can link more than one account from the same provider. JARVIS never asks
+          provider. You can link more than one account from the same provider. FRIDAY never asks
           you for your sign-in details here.
         </p>
       </div>
@@ -211,7 +211,7 @@ export function ConnectedAccounts() {
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
             <p className="text-sm font-medium text-amber-200">Connecting is not available</p>
             <p className="text-muted-foreground mt-1 text-xs">
-              The JARVIS backend reports that it cannot complete the token exchange with any
+              The FRIDAY backend reports that it cannot complete the token exchange with any
               provider right now, usually because no provider has been configured by the operator.
               Nothing can be connected until that changes.
             </p>
@@ -319,7 +319,7 @@ export function ConnectedAccounts() {
 
                     {(connection.userLabel || connection.aliases.length > 0) && !isNaming && (
                       <p className="text-muted-foreground text-xs">
-                        JARVIS knows this account as:{' '}
+                        FRIDAY knows this account as:{' '}
                         <span className="text-foreground">
                           {[connection.userLabel, ...connection.aliases]
                             .filter(Boolean)
@@ -331,7 +331,7 @@ export function ConnectedAccounts() {
                     {isNaming && (
                       <div id={nameId} className="space-y-2 rounded-lg border p-3">
                         <p className="text-muted-foreground text-xs">
-                          These names are used by JARVIS to choose this account when you ask for
+                          These names are used by FRIDAY to choose this account when you ask for
                           it, for example “my work inbox” or “my university calendar”. The
                           provider account identity remains unchanged.
                         </p>
@@ -409,7 +409,7 @@ export function ConnectedAccounts() {
                       >
                         <p className="text-sm">
                           Disconnect {row.label}
-                          {connection.accountLabel ? ` (${connection.accountLabel})` : ''}? JARVIS
+                          {connection.accountLabel ? ` (${connection.accountLabel})` : ''}? FRIDAY
                           will delete the access it holds for this account. Your other accounts
                           stay connected. You can connect it again later.
                         </p>

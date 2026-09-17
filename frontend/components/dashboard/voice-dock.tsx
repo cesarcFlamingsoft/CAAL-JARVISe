@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Voice as a docked capability. The dock is always present at the bottom of
+ * Voice as a docked capability. The core is always present in
  * the workspace: idle it offers to start a call, live it carries the existing
  * agent control bar, and the dashboard behind it never goes away when the
  * call ends.
@@ -13,7 +13,6 @@ import {
   useSessionMessages,
   useVoiceAssistant,
 } from '@livekit/components-react';
-import { Waveform } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
 import { ChatTranscript } from '@/components/app/chat-transcript';
 import { PreConnectMessage } from '@/components/app/preconnect-message';
@@ -25,7 +24,7 @@ import { Button } from '@/components/livekit/button';
 import { ScrollArea } from '@/components/livekit/scroll-area/scroll-area';
 import { type VoiceTone, voiceStatus } from '@/lib/dashboard/activity';
 import { cn } from '@/lib/utils';
-import { AgentTile } from './agent-tile';
+import { VoiceReactor } from './voice-reactor';
 
 const TONE_DOT: Record<VoiceTone, string> = {
   idle: 'bg-muted-foreground/50',
@@ -46,8 +45,16 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  const connecting = session.connectionState === ConnectionState.Connecting;
-  const status = voiceStatus({ isConnected: session.isConnected, connecting, agentState });
+  const connecting =
+    session.connectionState === ConnectionState.Connecting ||
+    session.connectionState === ConnectionState.Reconnecting ||
+    session.connectionState === ConnectionState.SignalReconnecting;
+  const status = voiceStatus({
+    isConnected: session.isConnected,
+    connectionState: session.connectionState,
+    connecting,
+    agentState,
+  });
 
   const controls: ControlBarControls = {
     leave: true,
@@ -63,8 +70,8 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
       await session.start();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown connection error';
-      console.error('[JARVIS voice connection]', error);
-      setConnectionError(`Unable to start JARVIS: ${message}`);
+      console.error('[FRIDAY voice connection]', error);
+      setConnectionError(`Unable to start FRIDAY: ${message}`);
     }
   }, [session]);
 
@@ -103,27 +110,21 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
         </section>
       )}
 
-      <aside
-        id="voice-dock"
-        aria-label="Voice assistant"
-        className="fixed inset-x-3 bottom-3 z-40 md:inset-x-0 md:bottom-6 md:mx-auto md:max-w-2xl"
-      >
+      <aside id="voice-dock" aria-label="Voice assistant" className="voice-command" tabIndex={-1}>
         {session.isConnected && appConfig.isPreConnectBufferEnabled && (
           <PreConnectMessage messages={messages} className="pb-3" />
         )}
 
-        <div className="bg-background/95 border-border rounded-[31px] border p-3 shadow-lg backdrop-blur">
-          <div className="flex items-center gap-3 px-1 pb-2">
-            {session.isConnected ? (
-              <AgentTile />
-            ) : (
-              <span
-                aria-hidden
-                className="bg-muted text-muted-foreground inline-flex size-14 shrink-0 items-center justify-center rounded-xl"
-              >
-                <Waveform className="size-6" weight="bold" />
-              </span>
-            )}
+        <div className="voice-command-body">
+          <div className="surface-heading">
+            <span>02 / VOICE CORE</span>
+            <span>FRIDAY</span>
+          </div>
+          <VoiceReactor
+            status={connectionError ? { label: connectionError, tone: 'error' } : status}
+            transport={session.connectionState}
+          />
+          <div className="voice-command-status">
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 text-sm font-medium">
                 <span
@@ -136,8 +137,8 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
               </p>
               <p className="text-muted-foreground truncate text-xs">
                 {session.isConnected
-                  ? 'The dashboard stays put when the call ends.'
-                  : 'Voice is docked here. Start a call whenever you need JARVIS.'}
+                  ? 'Your voice session is connected.'
+                  : 'Calendar, mail and reminders remain available.'}
               </p>
             </div>
             {!session.isConnected && (
@@ -146,9 +147,9 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
                 size="lg"
                 onClick={startCall}
                 disabled={connecting}
-                className="shrink-0 font-mono"
+                className="reactor-connect shrink-0 font-mono"
               >
-                {connecting ? 'Connecting…' : appConfig.startButtonText}
+                {connecting ? 'Connecting…' : 'Connect voice'}
               </Button>
             )}
           </div>

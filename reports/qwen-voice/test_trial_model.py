@@ -1,6 +1,7 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
-from types import SimpleNamespace
 import trial_model
 
 
@@ -34,6 +35,33 @@ def test_warm_model_is_reused_and_decoder_reset_on_close():
     assert options[0]["streaming_interval"] == 0.24
     assert options[0]["instruct"] == trial_model.STYLE
     assert "ref_audio" not in options[0]
+
+
+def test_spanish_is_routed_to_the_fixed_female_friday_clone_prompt():
+    loaded = []
+    options = []
+
+    class Fake:
+        speech_tokenizer = SimpleNamespace(
+            decoder=SimpleNamespace(reset_streaming_state=lambda: None)
+        )
+
+        def generate(self, text, **kwargs):
+            options.append(kwargs)
+            yield SimpleNamespace(audio=np.array([0.5], dtype=np.float32), sample_rate=24000)
+
+    model = trial_model.QwenModel(
+        load=lambda path: loaded.append(path) or Fake(), seed=lambda value: None
+    )
+    gen = model.generate("Buenas noches.", language="es")
+    assert next(gen) == np.array([16383], dtype="<i2").tobytes()
+    gen.close()
+
+    assert loaded == [trial_model.SPANISH_MODEL_PATH]
+    assert options[0]["lang_code"] == "Spanish"
+    assert options[0]["ref_audio"] == str(trial_model.SPANISH_REFERENCE_AUDIO)
+    assert options[0]["ref_text"] == trial_model.SPANISH_REFERENCE_TEXT
+    assert "instruct" not in options[0]
 
 
 @pytest.mark.parametrize(

@@ -75,12 +75,18 @@ export async function POST(req: Request) {
     } else if (auth.kind === 'user') {
       roomName = newSessionRoomName();
       participantIdentity = participantIdentityFor(auth.user.userId);
+      // Whether this is a company-private session is decided here, once, and
+      // signed into the room-bound principal. The page may ask; nothing in the
+      // browser can forge the claim, and the voice worker still refuses it for
+      // anyone who is not the provisioned owner of the company library. There
+      // is no way to change it inside the session: leaving means a new one.
+      const companyPrivate = body?.company_private === true;
       const principal = await mintPrincipal({
         secret: auth.config.internalAuthSecret,
         subject: auth.user.userId,
         audience: AUDIENCE_AGENT,
         ttlSeconds: AGENT_PRINCIPAL_TTL_SECONDS,
-        claims: { room: roomName },
+        claims: companyPrivate ? { room: roomName, company_private: true } : { room: roomName },
       });
       agentMetadata = JSON.stringify({ caal_principal: principal });
     } else if (auth.kind === 'denied' || auth.kind === 'invalid') {

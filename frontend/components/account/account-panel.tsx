@@ -80,8 +80,8 @@ export function AccountPanel() {
           <dt className="text-muted-foreground">Callback number</dt>
           <dd>
             {user.hasCallbackNumber
-              ? 'An approved number is on file. JARVIS will only ever call that number.'
-              : 'None on file. Ask an administrator to approve one before asking JARVIS to call you.'}
+              ? 'An approved number is on file. FRIDAY will only ever call that number.'
+              : 'None on file. Ask an administrator to approve one before asking FRIDAY to call you.'}
           </dd>
         </dl>
       </section>

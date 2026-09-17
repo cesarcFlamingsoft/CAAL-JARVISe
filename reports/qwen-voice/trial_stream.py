@@ -25,14 +25,18 @@ class Engine:
         self.chunk_timeout = chunk_timeout
         self.total_timeout = total_timeout
 
-    async def stream(self, text):
+    async def stream(self, text, language=None):
+        """Synthesize one request. The language travels with the call: the engine
+        holds none of its own, so a Spanish turn cannot leak into the next
+        session's English one, and an older caller that passes nothing keeps
+        exactly the English behaviour it has today."""
         if self.busy:
             raise BusyError("Synthesis worker is busy")
         self.busy = True
         self.last_used = time.monotonic()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.total_timeout
-        iterator = self.generate(text)
+        iterator = self.generate(text) if language is None else self.generate(text, language)
         pending = None
         emitted = False
         try:

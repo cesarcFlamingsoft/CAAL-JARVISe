@@ -1,4 +1,4 @@
-"""HA administrator setup using a separately issued Jarvis service credential."""
+"""HA administrator setup using a separately issued FRIDAY service credential."""
 
 import aiohttp
 import voluptuous as vol
@@ -23,7 +23,7 @@ class JarvisSatelliteConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(identity["satellite_id"])
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title="Jarvis "
+                    title="FRIDAY "
                     + (satellite.name or satellite.original_name or identity["satellite_id"]),
                     data=user_input,
                 )

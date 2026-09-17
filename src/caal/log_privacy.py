@@ -31,7 +31,31 @@ from __future__ import annotations
 import logging
 import threading
 
-__all__ = ["PII_PREFIXES", "PIIRedactionFilter", "install_pii_redaction", "redact_pii_fields"]
+__all__ = [
+    "PII_PREFIXES",
+    "SENSITIVE_HEADERS",
+    "PIIRedactionFilter",
+    "install_pii_redaction",
+    "redact_headers",
+    "redact_pii_fields",
+]
+
+# Request headers whose *value* is confidential and must never be written to a
+# log, an error page, a trace or an evidence artefact.
+#
+# The company upload metadata envelope is here because it carries a document
+# title, a filename and employee subject ids. It is in a header rather than the
+# query string for exactly this reason: uvicorn's access log records the
+# request line -- method, path **and query string** -- but no header, and the
+# same is true of the Next.js request log and of an ordinary reverse-proxy
+# combined-format log. A query parameter is recorded by default everywhere; a
+# header is recorded only where something chose to record it, and nothing in
+# CAAL does.
+SENSITIVE_HEADERS = frozenset({
+    "authorization",
+    "cookie",
+    "x-caal-company-metadata",
+})
 
 # Every private field the framework emits is namespaced. Matching the prefix
 # rather than a list of names means a new field in a future version is redacted
@@ -52,6 +76,23 @@ def redact_pii_fields(record: logging.LogRecord) -> logging.LogRecord:
     for name in private:
         del record.__dict__[name]
     return record
+
+
+def redact_headers(headers: object) -> dict[str, str]:
+    """A loggable view of request headers: sensitive values replaced, never dropped.
+
+    Used by anything that wants to record *that* a header was present without
+    recording what it said. Unknown headers pass through unchanged, so this is
+    a redactor, not a sanitiser -- callers still choose what to log.
+    """
+    items = getattr(headers, "items", None)
+    if not callable(items):
+        return {}
+    safe: dict[str, str] = {}
+    for name, value in items():
+        text = str(name)
+        safe[text] = "<redacted>" if text.lower() in SENSITIVE_HEADERS else str(value)
+    return safe
 
 
 class PIIRedactionFilter(logging.Filter):

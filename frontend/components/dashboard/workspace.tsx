@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * The persistent, signed-in workspace: the Monitor dashboard with voice docked
- * beneath it. Nothing here is gated on a LiveKit call; starting or ending one
+ * The persistent, signed-in workspace: the cinematic dashboard with a voice core
+ * beside it. Nothing here is gated on a LiveKit call; starting or ending one
  * only changes the dock.
  */
 import { useRef, useState } from 'react';
@@ -26,6 +26,8 @@ import { type WidgetId, layoutScopeFor } from '@/lib/dashboard/layout';
 import { browserCalendarFeed, browserInboxFeed } from '@/lib/dashboard/provider-data';
 import { browserReminders } from '@/lib/dashboard/reminders';
 import type { HandSurfaceController } from '@/lib/hands/surface';
+import './cinematic.css';
+import { FeedFreshness } from './feed-freshness';
 import { HandsDock } from './hands-dock';
 import { MonitorDashboard } from './monitor-dashboard';
 import { VoiceDock } from './voice-dock';
@@ -64,7 +66,7 @@ export function Workspace({ appConfig }: WorkspaceProps) {
   const calendar = useDashboardFeed('/api/dashboard/calendar', browserCalendarFeed);
   const inbox = useDashboardFeed('/api/dashboard/inbox', browserInboxFeed);
   const reminders = useDashboardFeed('/api/dashboard/reminders', browserReminders);
-  // A reminder or alarm JARVIS just set reaches this page at once, instead of
+  // A reminder or alarm FRIDAY just set reaches this page at once, instead of
   // waiting out the polling interval. Only the scheduled feed reloads.
   useScheduledUpdates();
   const weather = useWeather();
@@ -110,13 +112,16 @@ export function Workspace({ appConfig }: WorkspaceProps) {
               ? countLabel(calendar.data.accounts.length, 'account')
               : undefined,
           body: (
-            <CalendarWidget
-              capabilities={capabilities}
-              feed={calendar}
-              passwordLogin={passwordLogin}
-              today={now}
-              onOpenSettings={openSettings}
-            />
+            <>
+              <FeedFreshness feed={calendar} now={now} />
+              <CalendarWidget
+                capabilities={capabilities}
+                feed={calendar}
+                passwordLogin={passwordLogin}
+                today={now}
+                onOpenSettings={openSettings}
+              />
+            </>
           ),
         };
       case 'inbox':
@@ -127,12 +132,15 @@ export function Workspace({ appConfig }: WorkspaceProps) {
               ? countLabel(inbox.data.unreadCount, 'unread', 'unread')
               : undefined,
           body: (
-            <InboxWidget
-              feed={inbox}
-              passwordLogin={passwordLogin}
-              now={now}
-              onOpenSettings={openSettings}
-            />
+            <>
+              <FeedFreshness feed={inbox} now={now} />
+              <InboxWidget
+                feed={inbox}
+                passwordLogin={passwordLogin}
+                now={now}
+                onOpenSettings={openSettings}
+              />
+            </>
           ),
         };
       case 'reminders':
@@ -142,12 +150,17 @@ export function Workspace({ appConfig }: WorkspaceProps) {
             reminders.status === 'ready'
               ? countLabel(reminders.data.reminders.length + reminders.data.alarms.length, 'item')
               : undefined,
-          body: <RemindersWidget feed={reminders} passwordLogin={passwordLogin} now={now} />,
+          body: (
+            <>
+              <FeedFreshness feed={reminders} now={now} />
+              <RemindersWidget feed={reminders} passwordLogin={passwordLogin} now={now} />
+            </>
+          ),
         };
       case 'work':
         return {
           icon: <Pulse className="size-4" weight="bold" />,
-          meta: 'Live',
+          meta: 'Session activity',
           body: <WorkWidget capabilities={capabilities} passwordLogin={passwordLogin} now={now} />,
         };
     }
@@ -155,7 +168,7 @@ export function Workspace({ appConfig }: WorkspaceProps) {
 
   return (
     <>
-      <main className="mx-auto w-full max-w-7xl px-4 pt-16 pb-48 md:px-8 md:pt-24 md:pb-56">
+      <main className="cinematic-workspace">
         <WorkspaceHeader
           now={now}
           displayName={displayName}
@@ -185,22 +198,33 @@ export function Workspace({ appConfig }: WorkspaceProps) {
           <HandsDock controller={handController} onClose={() => setHandsEnabled(false)} />
         )}
 
-        {layout.ready ? (
-          <MonitorDashboard
-            layout={layout.layout}
-            onPreview={layout.preview}
-            onCommit={layout.commit}
-            renderWidget={renderWidget}
-            handController={handController}
-          />
-        ) : (
-          <p role="status" className="text-muted-foreground text-sm">
-            Loading your workspace…
-          </p>
-        )}
+        <div className="operating-surface">
+          <VoiceDock appConfig={appConfig} />
+          <div className="workspace-data">
+            <div className="surface-heading">
+              <span>01 / PERSONAL WORKSPACE</span>
+              <span>ACCOUNT-SCOPED FEEDS</span>
+            </div>
+            {layout.ready ? (
+              <MonitorDashboard
+                layout={layout.layout}
+                onPreview={layout.preview}
+                onCommit={layout.commit}
+                renderWidget={renderWidget}
+                handController={handController}
+              />
+            ) : (
+              <p role="status" className="text-muted-foreground text-sm">
+                Loading your workspace…
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="workspace-footnote">
+          <span>FRIDAY / PERSONAL OPERATING SURFACE</span>
+          <span>Workspace available independently of voice</span>
+        </div>
       </main>
-
-      <VoiceDock appConfig={appConfig} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );

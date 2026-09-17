@@ -46,7 +46,7 @@ export default async function LoginPage({ searchParams }: PageProps) {
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-20">
       <header className="mb-8">
-        <h1 className="text-2xl font-semibold">Sign in to JARVIS</h1>
+        <h1 className="text-2xl font-semibold">Sign in to FRIDAY</h1>
         <p className="text-muted-foreground mt-1 text-sm">
           Use the email and password your administrator gave you.
         </p>

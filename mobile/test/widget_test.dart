@@ -5,7 +5,7 @@ import 'package:caal_mobile/app.dart';
 import 'package:caal_mobile/services/config_service.dart';
 
 void main() {
-  testWidgets('unconfigured JARVIS opens the setup screen', (tester) async {
+  testWidgets('unconfigured FRIDAY opens the setup screen', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final configService = ConfigService();
     await configService.init();

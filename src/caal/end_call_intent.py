@@ -59,7 +59,7 @@ _CONTRACTIONS = (
 
 _BLOCKER_CUES = (
     # Questions by form, when the transcript lost its question mark.
-    r"^(?:jarvis[ ,]+)?(?:okay |ok |so |and )?"
+    r"^(?:(?:friday|jarvis)[ ,]+)?(?:okay |ok |so |and )?"
     r"(?:can|could|would|will|should|shall|do|does|did|is|are|was|were) "
     r"(?:you|we|i|that|it|this)\b",
     # Explanations and capability questions.

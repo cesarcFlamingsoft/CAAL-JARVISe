@@ -538,7 +538,7 @@ class _SettingsModalState extends State<SettingsModal> {
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Text(
-                                    'JARVIS Graphics',
+                                    'FRIDAY Graphics',
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       color: _visualizationType == 'jarvis'

@@ -4,10 +4,10 @@
  * A compact, per-account dashboard summary. Opening it presents that account's
  * own data in a focused inspection card above the persistent workspace.
  */
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUpRight, X } from '@phosphor-icons/react/dist/ssr';
 import { AnimatePresence, motion } from 'motion/react';
+import { ArrowUpRight, X } from '@phosphor-icons/react/dist/ssr';
 import type { FeedAccount } from '@/lib/dashboard/provider-data';
 import { AccountIssues, PROVIDER_LABEL, accountName } from './account-issues';
 
@@ -19,10 +19,11 @@ interface AccountSectionProps {
   emptyLabel: string;
   onOpenSettings: () => void;
   children?: ReactNode;
+  preview?: ReactNode;
 }
 
 export function AccountSection(props: AccountSectionProps) {
-  const { account, count, emptyLabel, onOpenSettings, children } = props;
+  const { account, count, emptyLabel, onOpenSettings, children, preview } = props;
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -99,14 +100,18 @@ export function AccountSection(props: AccountSectionProps) {
               <button
                 type="button"
                 onClick={close}
-                className="hover:bg-muted focus-visible:ring-ring grid size-10 place-items-center rounded-full outline-none transition-colors focus-visible:ring-2"
+                className="hover:bg-muted focus-visible:ring-ring grid size-10 place-items-center rounded-full transition-colors outline-none focus-visible:ring-2"
                 aria-label="Close account details"
               >
                 <X className="size-4" weight="bold" />
               </button>
             </header>
             <div className="overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
-              {answered ? children ?? empty : <AccountIssues issues={[account]} onOpenSettings={onOpenSettings} />}
+              {answered ? (
+                (children ?? empty)
+              ) : (
+                <AccountIssues issues={[account]} onOpenSettings={onOpenSettings} />
+              )}
             </div>
           </motion.div>
         </motion.div>
@@ -126,7 +131,7 @@ export function AccountSection(props: AccountSectionProps) {
         aria-haspopup="dialog"
         aria-controls={titleId}
         onClick={() => setOpen(true)}
-        className="group flex min-h-14 w-full items-center gap-3 px-3 text-left outline-none transition-colors duration-200 hover:bg-muted/55 focus-visible:bg-muted/65 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className="group hover:bg-muted/55 focus-visible:bg-muted/65 focus-visible:ring-ring flex min-h-14 w-full items-center gap-3 px-3 text-left transition-colors duration-200 outline-none focus-visible:ring-2 focus-visible:ring-inset"
       >
         <span className="bg-primary/10 text-primary grid size-8 shrink-0 place-items-center rounded-lg font-mono text-[10px] font-bold tracking-wider">
           {provider.slice(0, 2).toUpperCase()}
@@ -142,10 +147,11 @@ export function AccountSection(props: AccountSectionProps) {
         </span>
         <ArrowUpRight
           aria-hidden
-          className="text-muted-foreground size-4 shrink-0 transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
+          className="text-muted-foreground size-4 shrink-0 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
           weight="bold"
         />
       </button>
+      {answered && preview && <div className="account-preview">{preview}</div>}
       {typeof document !== 'undefined' ? createPortal(overlay, document.body) : null}
     </section>
   );

@@ -1367,7 +1367,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text('Alarms and Timers', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                                Text('Let JARVIS schedule audible alarms',
+                                Text('Let FRIDAY schedule audible alarms',
                                     style: TextStyle(color: Colors.white38, fontSize: 11)),
                               ],
                             ),

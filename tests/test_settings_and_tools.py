@@ -72,12 +72,12 @@ def test_save_settings_preserves_existing_secret_when_redacted_placeholder_is_su
     assert saved["friday_token"] == "friday_secret"
 
 
-def test_native_assistant_defaults_disable_legacy_n8n_and_enable_core_capabilities():
+def test_native_assistant_defaults_identify_friday_and_enable_core_capabilities():
     from caal import settings as settings_module
 
     defaults = settings_module.DEFAULT_SETTINGS
 
-    assert defaults["agent_name"] == "JARVIS"
+    assert defaults["agent_name"] == "FRIDAY"
     assert defaults["n8n_enabled"] is False
     assert defaults["native_tools_enabled"] is True
     assert defaults["email_accounts"] == []
@@ -119,7 +119,7 @@ def test_safe_settings_recursively_redacts_email_and_calendar_secrets(monkeypatc
                     {
                         "id": "work",
                         "provider": "zoho_caldav",
-                        "password": "calendar_secret",
+                        "password": "fixture_password_not_a_secret",
                         "access_token": "calendar_token",
                     }
                 ],
@@ -154,7 +154,7 @@ def test_save_settings_preserves_nested_secrets_when_placeholders_are_submitted(
                     {
                         "id": "work",
                         "provider": "zoho_caldav",
-                        "password": "calendar_secret",
+                        "password": "fixture_password_not_a_secret",
                     }
                 ],
             }
@@ -187,7 +187,7 @@ def test_save_settings_preserves_nested_secrets_when_placeholders_are_submitted(
     assert saved["email_accounts"][0]["smtp_password"] == "smtp_secret"
     assert saved["email_accounts"][0]["imap_password"] == "imap_secret"
     assert saved["email_accounts"][0]["display_name"] == "Personal Mail"
-    assert saved["calendar_sources"][0]["password"] == "calendar_secret"
+    assert saved["calendar_sources"][0]["password"] == "fixture_password_not_a_secret"
     assert saved["calendar_sources"][0]["display_name"] == "Work Calendar"
 
 

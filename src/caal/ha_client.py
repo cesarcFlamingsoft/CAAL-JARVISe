@@ -67,8 +67,10 @@ class HAClient:
             async with client.stream(
                 method, url, headers=headers, json=body, data=form
             ) as response:
-                if response.status_code in (401, 403):
+                if response.status_code == 401:
                     raise PermissionError("ha_reconnect_required")
+                if response.status_code == 403:
+                    raise PermissionError("ha_permission_denied")
                 if response.status_code != 200:
                     raise ValueError("ha_unavailable")
                 data = bytearray()

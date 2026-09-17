@@ -36,3 +36,25 @@ async def test_bounded_client_uses_only_token_not_impersonated_context():
     await c.request("GET", "/api/states", token="member-token")
     assert seen[0].headers["authorization"] == "Bearer member-token"
     assert not seen[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,reason", [(401, "ha_reconnect_required"), (403, "ha_permission_denied")]
+)
+async def test_native_light_distinguishes_bad_credentials_from_provider_permission(status, reason):
+    from caal.ha_client import HAClient
+
+    client = HAClient(
+        "http://127.0.0.1:8123",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, text="private upstream response")
+        ),
+    )
+    with pytest.raises(PermissionError, match="^" + reason + "$"):
+        await client.request(
+            "POST",
+            "/api/services/light/turn_off",
+            token="fixture",
+            body={"entity_id": ["light.fixture"]},
+        )

@@ -70,7 +70,7 @@ export default function SatellitePage() {
     [];
   return (
     <main className="mx-auto max-w-3xl space-y-6 p-6">
-      <h1 className="text-2xl font-semibold">Jarvis voice satellites</h1>
+      <h1 className="text-2xl font-semibold">FRIDAY voice satellites</h1>
       <p>
         Manage your Home Assistant voice devices. Each speaker has its own credential and home
         permissions. Personal email, calendar, memory, scheduling and administrator tools are
@@ -100,7 +100,7 @@ export default function SatellitePage() {
           ))}
         </select>
         <p className="text-sm">
-          Home requests use this account’s real Home Assistant identity. Jarvis limits each speaker
+          Home requests use this account’s real Home Assistant identity. FRIDAY limits each speaker
           to the permissions below; these limits do not reduce the HA account’s own privileges. No
           default service credential is used.
         </p>
@@ -116,7 +116,7 @@ export default function SatellitePage() {
           </p>
         )}
         {status?.connections.length === 0 && (
-          <p>Connect Home Assistant from your Jarvis account settings, then return here.</p>
+          <p>Connect Home Assistant from your FRIDAY account settings, then return here.</p>
         )}
         <button
           className="rounded border px-4 py-2"
@@ -164,7 +164,7 @@ export default function SatellitePage() {
               </label>
               <p className="text-sm">
                 Reads cover lights, switches, fans, climate and environmental sensors. Locks,
-                alarms, garage controls and generic services are unavailable. Install Jarvis Voice
+                alarms, garage controls and generic services are unavailable. Install FRIDAY Voice
                 Satellites 0.2.0 in HA before enabling home controls.
               </p>
               <button
@@ -209,8 +209,8 @@ export default function SatellitePage() {
         <section className="space-y-3 rounded border p-4">
           <h2 className="font-semibold">Finish setup in Home Assistant</h2>
           <p className="break-all">
-            Credential for {issued.satellite_id}. Copy it into the Jarvis Voice Satellites
-            integration with your private Jarvis backend address. It is shown once and is not saved
+            Credential for {issued.satellite_id}. Copy it into the FRIDAY Voice Satellites
+            integration with your private FRIDAY backend address. It is shown once and is not saved
             in this browser.
           </p>
           <input
@@ -240,7 +240,7 @@ export default function SatellitePage() {
         Audio uses Home Assistant’s native random bearer URLs with provider file caching disabled.
       </p>
       {message && <p role="status">{message}</p>}
-      <Link href="/">Return to Jarvis</Link>
+      <Link href="/">Return to FRIDAY</Link>
     </main>
   );
 }

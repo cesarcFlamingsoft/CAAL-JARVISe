@@ -50,6 +50,7 @@ from .background_tasks import (
     long_running_work_inferred,
     redact_secrets,
 )
+from .language_policy import LanguageReading, read_semantic
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ __all__ = [
     "RouteSource",
     "SemanticWorkRouter",
     "deterministic_route",
+    "parse_language_reading",
     "parse_route_label",
     "provider_classifier",
 ]
@@ -106,10 +108,19 @@ class RouteSource(str, Enum):
 
 @dataclass(frozen=True)
 class RouteDecision:
-    """One routing decision. Deliberately holds no request text."""
+    """One routing decision. Deliberately holds no request text.
+
+    ``language`` is what the same model reply said about the reply language, if
+    anything. It rides the decision rather than a context variable because the
+    reading is made inside a separate task on the speech path (see
+    ``voice_agent.LocalTurnHandler._handle_speech_commands``), and a context
+    variable set there is not visible to the caller that needs it.
+    """
 
     route: Route
     source: RouteSource
+    #: ``None`` for every offline decision: the net consults no model.
+    language: LanguageReading | None = None
 
     @property
     def is_work(self) -> bool:
@@ -159,8 +170,23 @@ WORK_ROUTER_SYSTEM_PROMPT = (
     'or decisions needing careful thought, even if the answer is short. '
     'A short logic question is conversation with reasoning true. '
     'A short story is conversation with reasoning false. '
-    'Judge meaning, not keywords. Reply only with JSON: '
-    '{"route": "work" or "conversation", "reasoning": true or false}'
+    'Judge meaning, not keywords.\n'
+    "\n"
+    'Also read the language. "reply_language" is the language the assistant '
+    'should answer this turn in: "en" or "es". Judge the language the user is '
+    "*speaking*, not the language of a name, a place, a dish or an email "
+    "address inside it: an English sentence mentioning José or a piñata is "
+    '"en". A very short reply ("yes", "sí", "okay") is not evidence of a '
+    "change; answer with the language the rest of the conversation is in. If "
+    'you genuinely cannot tell, answer "unknown".\n'
+    'Also choose a boolean "language_switch": true only when the user is '
+    "asking the assistant to change the language it answers in from now on, "
+    "however they phrase it; false when they are merely speaking a language, "
+    "and false when they say they do *not* speak one.\n"
+    "\n"
+    "Reply only with JSON: "
+    '{"route": "work" or "conversation", "reasoning": true or false, '
+    '"reply_language": "en" or "es" or "unknown", "language_switch": true or false}'
 )
 
 # Turns that are conversational whatever else is going on: replies, greetings,
@@ -171,7 +197,7 @@ WORK_ROUTER_SYSTEM_PROMPT = (
 _PARTICLES = frozenset(
     """
     a ah aha alright anyway awesome bye cheers cool correct exactly excellent
-    fine good goodbye got great hello hey hi hmm huh it jarvis later lovely
+    fine good goodbye got great hello hey hi hmm huh it friday jarvis later lovely
     maybe mhm mm morning nah never nevermind news nice night no nope not nothing
     now oh ok okay perfect please really right shot sorry still sure thank
     thanks that there understood uh um wait well what whatever wow yeah yep yes
@@ -264,6 +290,33 @@ def parse_route_label(raw: object) -> Route | None:
     return None
 
 
+def parse_language_reading(raw: object) -> LanguageReading | None:
+    """Read the reply language out of the same model reply, or ``None``.
+
+    Independent of the route: a reply whose route is unusable may still carry a
+    usable language, and a bare ``conversation`` label carries none. Validation
+    is :func:`caal.language_policy.read_semantic`, so ``unknown``, a language
+    name, another language or a missing field all mean *no reading* rather than
+    a default -- the caller then falls back to the speech server's evidence.
+    """
+    if not isinstance(raw, str):
+        return None
+    reply = raw.strip()[:MAX_ROUTER_REPLY_CHARS]
+    if not reply:
+        return None
+    for candidate in _JSON_OBJECT.findall(reply):
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict) or "reply_language" not in parsed:
+            continue
+        reading = read_semantic(parsed.get("reply_language"), switch=parsed.get("language_switch"))
+        if reading is not None:
+            return reading
+    return None
+
+
 class SemanticWorkRouter:
     """Deterministic controls first, then the model, then a safe fallback.
 
@@ -301,13 +354,14 @@ class SemanticWorkRouter:
             return decision
         if not self._enabled:
             return decision
-        result = await self._ask_model(text)
-        if result is None:
-            return RouteDecision(Route.CONVERSATION, RouteSource.FALLBACK)
-        route, reasoning = result
+        route, reasoning, language = await self._ask_model(text)
         request_reasoning.set(reasoning)
+        if route is None:
+            # No usable route, but the same reply may still have read the
+            # language usefully; the two are judged separately.
+            return RouteDecision(Route.CONVERSATION, RouteSource.FALLBACK, language)
         logger.debug("work router decided %s semantically", route.value)
-        return RouteDecision(route, RouteSource.SEMANTIC)
+        return RouteDecision(route, RouteSource.SEMANTIC, language)
 
     def build_messages(self, text: object) -> list[dict[str, str]]:
         """The two-message prompt for one turn: redacted and bounded first.
@@ -322,8 +376,16 @@ class SemanticWorkRouter:
             {"role": "user", "content": request},
         ]
 
-    async def _ask_model(self, text: object) -> tuple[Route, bool | None] | None:
-        """One bounded classification call. ``None`` means undecided."""
+    async def _ask_model(
+        self, text: object
+    ) -> tuple[Route | None, bool | None, LanguageReading | None]:
+        """One bounded classification call: route, reasoning, reply language.
+
+        Three readings of one reply, so the language costs no second request.
+        Each is undecided independently -- a ``None`` route does not discard a
+        usable language, and a model that never mentions the language does not
+        disturb the route.
+        """
         assert self._classify is not None
         try:
             reply = await asyncio.wait_for(
@@ -335,7 +397,7 @@ class SemanticWorkRouter:
             logger.warning(
                 "work router timed out after %.1fs; using the offline net", self._timeout
             )
-            return None
+            return None, None, None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -343,12 +405,12 @@ class SemanticWorkRouter:
             logger.warning(
                 "work router call failed (%s); using the offline net", type(exc).__name__
             )
-            return None
+            return None, None, None
+        language = parse_language_reading(reply)
         route = parse_route_label(reply)
         if route is None:
             logger.warning("work router gave no usable route; using the offline net")
-        if route is None:
-            return None
+            return None, None, language
         reasoning = None
         try:
             value = json.loads(reply).get("reasoning")
@@ -356,19 +418,39 @@ class SemanticWorkRouter:
                 reasoning = value
         except (ValueError, AttributeError, TypeError):
             pass
-        return route, reasoning
+        return route, reasoning, language
 
 
-def provider_classifier(provider: Any) -> Classify:
+def provider_classifier(provider: Any, *, max_tokens: int | None = None) -> Classify:
     """Adapt any object exposing ``chat(messages)`` into a ``Classify``.
 
     Tools are deliberately not offered: the router asks for a label, and a
     provider that ran its tool loop for one would turn a sub-second decision
     into the long turn this whole module exists to avoid.
+
+    ``max_tokens`` adds a cap on the tokens the model may *generate*, asked of
+    the API rather than only of the clock, for callers that want one. It is
+    sent only if the provider **declares** it reads ``num_predict``
+    (:func:`caal.company.query_expansion.supported_chat_options`); every
+    provider's ``chat`` ends in ``**kwargs``, so an undeclared option would be
+    accepted and silently dropped -- a bound in the code and none at the API.
+    Omitted, this is exactly the call it has always made.
     """
+    options: dict[str, Any] = {"think": False}
+    if max_tokens is not None:
+        from caal.company.query_expansion import supported_chat_options
+
+        if "num_predict" in supported_chat_options(provider):
+            options["num_predict"] = int(max_tokens)
+        else:
+            logger.warning(
+                "the classifier provider (%s) does not read num_predict; the call is "
+                "bounded by its timeout only",
+                type(provider).__name__,
+            )
 
     async def _classify(messages: list[dict[str, str]]) -> str:
-        response = await provider.chat(messages, tools=None, think=False)
+        response = await provider.chat(messages, tools=None, **options)
         content = getattr(response, "content", None)
         return content if isinstance(content, str) else ""
 

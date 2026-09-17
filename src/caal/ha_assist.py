@@ -15,7 +15,7 @@ from .ha_client import HAClient
 from .llm.context_barrier import record_private_answer
 
 DENIED = (
-    "Home Assistant access is not granted to this signed-in account. Ask a Jarvis administrator."
+    "Home Assistant access is not granted to this signed-in account. Ask a FRIDAY administrator."
 )
 SCHEMA = {
     "type": "function",
@@ -68,7 +68,7 @@ def create_tools(*, scope, identity, provider, settings_getter, client_factory=H
                 access = store.access(scope)
                 config = settings_getter()
                 if not config.get("hass_enabled"):
-                    return "Home Assistant is disabled in Jarvis settings."
+                    return "Home Assistant is disabled in FRIDAY settings."
                 endpoint = HAClient(config.get("hass_host", "")).endpoint
                 # The existing service credential remains administrator-only. An explicit
                 # disabled grant overrides this compatibility behavior. Never used by members.

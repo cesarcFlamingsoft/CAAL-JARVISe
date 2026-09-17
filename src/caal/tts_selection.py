@@ -14,6 +14,23 @@ def trial_config():
     return {"endpoint": "http://host.docker.internal:18003", "token": token}
 
 
+def set_language(provider, language):
+    """Tell a TTS provider which language to synthesize the next turn in.
+
+    Providers are routinely wrapped (the sentence adapter, and LiveKit's own
+    stream adapters), so this walks the wrapper chain. A provider that has no
+    language of its own is left alone rather than raising: language is an
+    enhancement to speech, never a precondition for it.
+    """
+    seen = set()
+    while provider is not None and id(provider) not in seen:
+        seen.add(id(provider))
+        if hasattr(provider, "language"):
+            provider.language = language
+            return
+        provider = getattr(provider, "_wrapped_tts", None) or getattr(provider, "_tts", None)
+
+
 def create_tts(runtime, *, kokoro_url, speaches_url, kokoro_model):
     if runtime["tts_provider"] == "piper":
         return openai.TTS(
@@ -22,15 +39,17 @@ def create_tts(runtime, *, kokoro_url, speaches_url, kokoro_model):
             model=runtime["tts_voice_piper"],
             voice="default",
         )
+    config = trial_config()
+    if runtime["tts_provider"] == "qwen-trial" and config:
+        # FRIDAY must never silently change speaker. A Qwen failure is surfaced
+        # to the session rather than replayed through a differently voiced TTS.
+        return sentence_adapter(QwenTTS(**config))
     kokoro = openai.TTS(
         base_url=f"{kokoro_url}/v1",
         api_key="not-needed",
         model=kokoro_model,
         voice=runtime["tts_voice_kokoro"],
     )
-    config = trial_config()
-    if runtime["tts_provider"] == "qwen-trial" and config:
-        return sentence_adapter(QwenTTS(**config, fallback=kokoro))
     return kokoro
 
 

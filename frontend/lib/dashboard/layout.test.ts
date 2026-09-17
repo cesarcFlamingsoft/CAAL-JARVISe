@@ -92,19 +92,26 @@ describe('moving a widget', () => {
   it('can be nudged one cell at a time from the keyboard', () => {
     const before = find(DEFAULT_LAYOUT, 'reminders');
 
-    const next = nudgeWidget(DEFAULT_LAYOUT, 'reminders', -1, 0);
+    const next = nudgeWidget(DEFAULT_LAYOUT, 'reminders', 1, 0);
 
     assertWellFormed(next);
-    assert.equal(find(next, 'reminders').x, before.x - 1);
+    assert.equal(find(next, 'reminders').x, before.x + 1);
   });
 
   it('swaps with the neighbour below when nudged down, instead of floating back up', () => {
-    // Weather sits directly above Running work in the default layout.
-    const weather = find(DEFAULT_LAYOUT, 'weather');
-    const work = find(DEFAULT_LAYOUT, 'work');
+    // A fixed gesture fixture keeps this regression independent of visual defaults.
+    const fixture: Layout = [
+      { id: 'weather', x: 0, y: 0, w: 3, h: 3 },
+      { id: 'calendar', x: 3, y: 0, w: 5, h: 5 },
+      { id: 'reminders', x: 8, y: 0, w: 4, h: 5 },
+      { id: 'work', x: 0, y: 3, w: 3, h: 4 },
+      { id: 'inbox', x: 3, y: 5, w: 9, h: 5 },
+    ];
+    const weather = find(fixture, 'weather');
+    const work = find(fixture, 'work');
     assert.equal(work.y, weather.y + weather.h);
 
-    const next = nudgeWidget(DEFAULT_LAYOUT, 'weather', 0, 1);
+    const next = nudgeWidget(fixture, 'weather', 0, 1);
 
     assertWellFormed(next);
     assert.equal(find(next, 'work').y, 0, 'work takes the top slot');
@@ -112,7 +119,7 @@ describe('moving a widget', () => {
 
     // And back up again restores the original order.
     const restored = nudgeWidget(next, 'weather', 0, -1);
-    assert.deepEqual(restored, DEFAULT_LAYOUT);
+    assert.deepEqual(restored, fixture);
 
     // With nothing beneath it, a downward nudge is a no-op.
     assert.deepEqual(nudgeWidget(next, 'weather', 0, 1), next);

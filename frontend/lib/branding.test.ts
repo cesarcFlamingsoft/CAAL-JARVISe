@@ -64,6 +64,11 @@ const RETIRED_BRAND_PATTERNS: Array<[string, RegExp]> = [
 ];
 
 describe('frontend branding', () => {
+  it('uses FRIDAY throughout visible runtime copy while retaining technical identifiers', () => {
+    assert.deepEqual(findMatches(/\b(?:JARVIS|Jarvis)\b/), []);
+    assert.match(readSource('hooks/useVisualizationType.ts'), /'jarvis'/);
+    assert.match(readSource('app-config.ts'), /agentName: 'caal'/);
+  });
   for (const [label, pattern] of RETIRED_BRAND_PATTERNS) {
     it(`has no ${label} in production sources`, () => {
       assert.deepEqual(findMatches(pattern), []);
@@ -110,11 +115,11 @@ describe('frontend branding', () => {
     assert.match(layout, /alt=/, 'logo images should carry alt text');
   });
 
-  it('keeps JARVIS as the user-facing product name', () => {
+  it('ships FRIDAY as the user-facing product name', () => {
     const config = readSource('app-config.ts');
-    assert.match(config, /companyName: 'JARVIS'/);
-    assert.match(config, /pageTitle: 'JARVIS Voice Assistant'/);
-    assert.match(config, /startButtonText: 'Talk to JARVIS'/);
+    assert.match(config, /companyName: 'FRIDAY'/);
+    assert.match(config, /pageTitle: 'FRIDAY Voice Assistant'/);
+    assert.match(config, /startButtonText: 'Talk to FRIDAY'/);
   });
 
   it('generates the Open Graph image without LiveKit or CoreWorx asset assumptions', () => {

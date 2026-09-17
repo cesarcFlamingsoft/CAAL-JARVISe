@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>JARVIS</string>
+	<string>FRIDAY</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>JARVIS</string>
+	<string>FRIDAY</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,11 +29,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>JARVIS uses your camera for video calls</string>
+	<string>FRIDAY uses your camera for video calls</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>JARVIS needs microphone access for voice conversations</string>
+	<string>FRIDAY needs microphone access for voice conversations</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>JARVIS connects to your local CAAL server on this network.</string>
+	<string>FRIDAY connects to your local CAAL server on this network.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

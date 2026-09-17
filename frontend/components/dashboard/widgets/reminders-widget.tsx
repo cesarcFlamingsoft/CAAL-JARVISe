@@ -219,7 +219,7 @@ export function RemindersWidget({ feed, passwordLogin, now }: RemindersWidgetPro
       {reminders.length === 0 && alarms.length === 0 ? (
         <WidgetEmpty
           title="Nothing scheduled yet"
-          detail="Ask JARVIS to remind you about something, or to set an alarm, and it will appear here."
+          detail="Ask FRIDAY to remind you about something, or to set an alarm, and it will appear here."
         />
       ) : (
         <ul className="space-y-2">

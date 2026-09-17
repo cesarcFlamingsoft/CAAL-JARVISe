@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * What JARVIS is doing right now. Everything live here comes from the LiveKit
+ * What FRIDAY is doing right now. Everything live here comes from the LiveKit
  * room: the agent's state and the tool calls it reports. Background tasks
  * exist on the backend but have no endpoint yet, and the widget says so.
  */
@@ -59,6 +59,7 @@ export function WorkWidget({ capabilities, passwordLogin, now }: WorkWidgetProps
 
   const status = voiceStatus({
     isConnected: session.isConnected,
+    connectionState: session.connectionState,
     connecting: session.connectionState === ConnectionState.Connecting,
     agentState,
   });
@@ -83,7 +84,7 @@ export function WorkWidget({ capabilities, passwordLogin, now }: WorkWidgetProps
         </p>
         {activity.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            No tools have run yet. They appear here as JARVIS uses them.
+            No tools have run yet. They appear here as FRIDAY uses them.
           </p>
         ) : (
           <ol className="space-y-1.5">
@@ -112,7 +113,7 @@ export function WorkWidget({ capabilities, passwordLogin, now }: WorkWidgetProps
         ) : (
           <WidgetBlocked
             title="Background tasks"
-            detail="Long-running work JARVIS queues for you is tracked on the backend but not exposed to the dashboard yet."
+            detail="Background task progress is not available here yet. Voice tool activity appears above."
             endpoint={
               capabilities.status === 'ready' ? capabilities.data.work.tasksEndpoint : 'GET /tasks'
             }

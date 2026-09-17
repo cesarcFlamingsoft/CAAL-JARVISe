@@ -32,6 +32,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+from caal.company_privacy import LOCAL_ONLY_NO_ANSWER, is_local_only
 from caal.llm.context_barrier import sanitize_for_escalation
 from caal.model_routing import Destination, classify_request
 from caal.work_router import request_reasoning
@@ -114,12 +115,20 @@ class RoutedProvider(LLMProvider):
         return ""
 
     def _escalates(self, messages: list[dict[str, Any]]) -> bool:
-        if self._escalation is None:
+        if self._escalation is None or is_local_only():
             return False
         return classify_request(self._last_user_text(messages)).destination is not Destination.LOCAL
 
     def _order(self, messages: list[dict[str, Any]]) -> tuple[LLMProvider, LLMProvider | None]:
-        """The provider to try first, and the single fallback, if any."""
+        """The provider to try first, and the single fallback, if any.
+
+        A company-private session has no second provider at all. The bounded
+        fallback is exactly how a sensitive turn reaches the other runtime when
+        the local model has a bad minute, and "the local model was down" is not
+        a reason to send an employee's contract somewhere else.
+        """
+        if is_local_only():
+            return self._primary, None
         if self._escalates(messages):
             assert self._escalation is not None
             return self._escalation, self._primary
@@ -184,6 +193,11 @@ class RoutedProvider(LLMProvider):
         **kwargs: Any,
     ) -> LLMResponse | None:
         """One bounded attempt. ``None`` means unreachable or unusable."""
+        if provider is not self._primary and is_local_only():
+            # Unreachable by construction above; enforced again here so a
+            # future caller cannot route around the decision by accident.
+            logger.error("Refused to escalate a company-private turn")
+            return None
         try:
             response = await provider.chat(
                 self._messages_for(provider, messages),
@@ -215,6 +229,8 @@ class RoutedProvider(LLMProvider):
             if response is not None:
                 return response
         logger.error("No model could answer the turn")
+        if is_local_only():
+            return LLMResponse(content=LOCAL_ONLY_NO_ANSWER, tool_calls=[])
         return LLMResponse(content=NO_MODEL_AVAILABLE_REPLY, tool_calls=[])
 
     async def chat_stream(
@@ -253,7 +269,7 @@ class RoutedProvider(LLMProvider):
                 logger.warning("%s stream failed (%s)", second.provider_name, type(exc).__name__)
         if not spoken:
             logger.error("No model could stream the turn")
-            yield NO_MODEL_AVAILABLE_REPLY
+            yield LOCAL_ONLY_NO_ANSWER if is_local_only() else NO_MODEL_AVAILABLE_REPLY
 
     # --- tool plumbing --------------------------------------------------------
     #
