@@ -1,14 +1,6 @@
 'use client';
 
-/**
- * Hand control, docked into the workspace: the camera state in one line, the
- * camera to use, a small local preview, the recognition runtime and the
- * pipeline itself. Mounting the dock asks for the camera and loads the hand
- * model into this browser; the status line says which of the two it is still
- * waiting on. The preview is the stream drawn straight onto a video element;
- * nothing is read back from it, recorded, or sent anywhere. Unmounting stops
- * every track and closes the model.
- */
+/** Gesture inference consumes the workspace camera; its runtime is local to this dock. */
 import { type RefObject, useEffect, useRef, useState } from 'react';
 import { LockSimple, VideoCameraSlash, X } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
@@ -19,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/livekit/select';
-import { useCamera } from '@/hooks/useCamera';
+import { type CameraController } from '@/hooks/useCamera';
 import { useHandRuntime } from '@/hooks/useHandRuntime';
 import type { CameraStatus } from '@/lib/hands/camera-session';
 import { type HandTone, handStatus } from '@/lib/hands/status';
@@ -30,7 +22,7 @@ import { type HandActivity, HandLayer } from './hand-layer';
 const TONE_DOT: Record<HandTone, string> = {
   idle: 'bg-muted-foreground/50',
   busy: 'bg-amber-500 animate-pulse motion-reduce:animate-none',
-  live: 'bg-green-500',
+  live: 'bg-cyan-500',
   error: 'bg-destructive',
 };
 
@@ -41,20 +33,17 @@ const HOW_TO =
 
 interface HandsDockProps {
   controller: RefObject<HandSurfaceController | null>;
+  camera: CameraController;
+  visionOpen: boolean;
   onClose: () => void;
 }
 
-export function HandsDock({ controller, onClose }: HandsDockProps) {
-  const camera = useCamera();
+export function HandsDock({ controller, camera, visionOpen, onClose }: HandsDockProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const runtime = useHandRuntime();
   const [activity, setActivity] = useState<HandActivity>({ phase: 'idle', target: null });
 
-  // Switching hand control on is the request: ask for the camera at once.
   const { start } = camera;
-  useEffect(() => {
-    void start();
-  }, [start]);
 
   // The preview is the live stream itself, mirrored like a mirror.
   const { stream } = camera;
@@ -127,7 +116,7 @@ export function HandsDock({ controller, onClose }: HandsDockProps) {
       <div className="flex flex-wrap items-center gap-2">
         <span
           className="text-muted-foreground inline-flex items-center gap-1 font-mono text-[10px] tracking-wider uppercase"
-          title="Camera frames stay in this browser. Nothing is uploaded, stored or logged."
+          title="Gesture frames and landmarks stay in this browser and are not stored or logged."
         >
           <LockSimple aria-hidden className="size-3" weight="bold" />
           Local only
@@ -135,7 +124,7 @@ export function HandsDock({ controller, onClose }: HandsDockProps) {
         <Select
           value={camera.selectedDeviceId ?? ''}
           onValueChange={(deviceId) => void camera.selectDevice(deviceId)}
-          disabled={camera.devices.length === 0 || camera.status === 'requesting'}
+          disabled={visionOpen || camera.devices.length === 0 || camera.status === 'requesting'}
         >
           <SelectTrigger size="sm" aria-label="Camera" className="max-w-56">
             <SelectValue placeholder="Camera" />

@@ -44,6 +44,7 @@ from .internal_auth import MIN_SECRET_LENGTH
 from .local_auth import SessionPolicy
 from .password_hash import is_password_hash
 from .profile_crypto import KeyRing, KeyRingError
+from .webauthn_auth import WebAuthnConfig
 
 __all__ = [
     "ENV_ACCESS_AUD",
@@ -53,6 +54,7 @@ __all__ = [
     "ENV_DATA_DIR",
     "ENV_INTERNAL_AUTH_SECRET",
     "ENV_PASSWORD_LOGIN",
+    "ENV_PUBLIC_ORIGIN",
     "ENV_PROFILE_ENCRYPTION_KEYS",
     "ENV_SESSION_ABSOLUTE_HOURS",
     "ENV_SESSION_IDLE_MINUTES",
@@ -70,6 +72,7 @@ ENV_PROFILE_ENCRYPTION_KEYS = "CAAL_PROFILE_ENCRYPTION_KEYS"
 ENV_BOOTSTRAP_ADMIN_EMAIL = "CAAL_BOOTSTRAP_ADMIN_EMAIL"
 ENV_BOOTSTRAP_ADMIN_PASSWORD_HASH = "CAAL_BOOTSTRAP_ADMIN_PASSWORD_HASH"
 ENV_PASSWORD_LOGIN = "CAAL_PASSWORD_LOGIN"
+ENV_PUBLIC_ORIGIN = "CAAL_PUBLIC_ORIGIN"
 ENV_SESSION_IDLE_MINUTES = "CAAL_SESSION_IDLE_MINUTES"
 ENV_SESSION_ABSOLUTE_HOURS = "CAAL_SESSION_ABSOLUTE_HOURS"
 ENV_ACCESS_TEAM_DOMAIN = "CF_ACCESS_TEAM_DOMAIN"
@@ -84,6 +87,7 @@ REQUIRED_ENV: tuple[str, ...] = (
 OPTIONAL_ENV: tuple[str, ...] = (
     ENV_BOOTSTRAP_ADMIN_PASSWORD_HASH,
     ENV_PASSWORD_LOGIN,
+    ENV_PUBLIC_ORIGIN,
     ENV_SESSION_IDLE_MINUTES,
     ENV_SESSION_ABSOLUTE_HOURS,
     ENV_ACCESS_TEAM_DOMAIN,
@@ -118,6 +122,7 @@ class MultiUserConfig:
     password_login: bool = True
     bootstrap_admin_password_hash: str | None = field(default=None, repr=False)
     session_policy: SessionPolicy = field(default_factory=SessionPolicy)
+    public_origin: str | None = None
 
     @property
     def access_enabled(self) -> bool:
@@ -275,6 +280,15 @@ def load_multi_user_config(env: Mapping[str, str] | None = None) -> MultiUserSta
         else:
             bootstrap_hash = bootstrap_hash.strip()
 
+    public_origin: str | None = None
+    raw_public_origin = _present(source, ENV_PUBLIC_ORIGIN)
+    if raw_public_origin is not None:
+        attempted = True
+        try:
+            public_origin = WebAuthnConfig.from_public_origin(raw_public_origin).origin
+        except ValueError:
+            invalid(ENV_PUBLIC_ORIGIN, "expected a canonical HTTPS origin with no path")
+
     idle_seconds = _DEFAULT_IDLE_MINUTES * 60
     raw_idle = _present(source, ENV_SESSION_IDLE_MINUTES)
     if raw_idle is not None:
@@ -330,6 +344,7 @@ def load_multi_user_config(env: Mapping[str, str] | None = None) -> MultiUserSta
             password_login=password_login,
             bootstrap_admin_password_hash=bootstrap_hash,
             session_policy=session_policy,
+            public_origin=public_origin,
         ),
         problems=(),
         attempted=True,

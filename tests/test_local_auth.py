@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from caal.local_auth import (
+    AccountLockedError,
     InvalidCredentialsError,
     LocalAuth,
     SessionPolicy,
@@ -206,6 +207,71 @@ def test_locking_one_account_does_not_lock_another(h) -> None:
         h.auth.authenticate(MEMBER_EMAIL, OTHER_PASSWORD)
 
     assert h.auth.authenticate(ADMIN_EMAIL, GOOD_PASSWORD).ok
+
+
+def test_current_password_reauthentication_is_user_bound_and_issues_no_session(h) -> None:
+    profile = h.make_user(MEMBER_EMAIL)
+    other = h.make_user(ADMIN_EMAIL, role=ADMIN, password=OTHER_PASSWORD)
+
+    with pytest.raises(InvalidCredentialsError):
+        h.auth.verify_current_password(
+            profile.user_id, OTHER_PASSWORD, action="auth.passkey.add"
+        )
+    h.auth.verify_current_password(
+        other.user_id, OTHER_PASSWORD, action="auth.passkey.revoke"
+    )
+
+    with h.store.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0] == 0
+        events = connection.execute(
+            "SELECT action, target_id, outcome, detail FROM audit_events "
+            "WHERE action LIKE 'auth.passkey.%reauth' ORDER BY occurred_at, rowid"
+        ).fetchall()
+    assert [(row["action"], row["target_id"], row["outcome"]) for row in events] == [
+        ("auth.passkey.add.reauth", profile.user_id, "invalid"),
+        ("auth.passkey.revoke.reauth", other.user_id, "ok"),
+    ]
+    assert all(row["detail"] == "{}" for row in events)
+
+
+def test_current_password_reauthentication_respects_lock_status_and_forced_change(h) -> None:
+    profile = h.make_user(MEMBER_EMAIL)
+    for _ in range(SessionPolicy().max_failed_attempts):
+        with pytest.raises(InvalidCredentialsError):
+            h.auth.verify_current_password(
+                profile.user_id, OTHER_PASSWORD, action="auth.passkey.add"
+            )
+    with pytest.raises(AccountLockedError):
+        h.auth.verify_current_password(
+            profile.user_id, GOOD_PASSWORD, action="auth.passkey.add"
+        )
+
+    h.advance(SessionPolicy().base_lockout_seconds + 1)
+    h.auth.set_password(
+        profile.user_id, GOOD_PASSWORD, actor=Actor.system(), must_change=True
+    )
+    with pytest.raises(InvalidCredentialsError):
+        h.auth.verify_current_password(
+            profile.user_id, GOOD_PASSWORD, action="auth.passkey.add"
+        )
+    h.auth.set_password(profile.user_id, GOOD_PASSWORD, actor=Actor.system())
+    h.store.admin_update(profile.user_id, status=SUSPENDED, actor=Actor.system())
+    with pytest.raises(InvalidCredentialsError):
+        h.auth.verify_current_password(
+            profile.user_id, GOOD_PASSWORD, action="auth.passkey.revoke"
+        )
+
+
+def test_password_authentication_keeps_issuing_sessions_after_reauthentication_is_added(h) -> None:
+    profile = h.make_user(MEMBER_EMAIL)
+
+    h.auth.verify_current_password(
+        profile.user_id, GOOD_PASSWORD, action="auth.passkey.add"
+    )
+    result = h.auth.authenticate(MEMBER_EMAIL, GOOD_PASSWORD)
+
+    assert result.ok and result.token
+    assert h.auth.verify_session(result.token).user.user_id == profile.user_id
 
 
 # --- sessions --------------------------------------------------------------------

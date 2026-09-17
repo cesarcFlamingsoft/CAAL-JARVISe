@@ -526,6 +526,52 @@ _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ALTER TABLE provider_connections ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'",
         ),
     ),
+    (
+        8,
+        (
+            # WebAuthn stores public credential material only. The credential
+            # id is encoded as base64url text so SQLite never needs to expose
+            # opaque binary values through JSON APIs.
+            """
+            CREATE TABLE IF NOT EXISTS webauthn_credentials (
+                credential_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                public_key BLOB NOT NULL,
+                sign_count INTEGER NOT NULL,
+                transports TEXT NOT NULL DEFAULT '[]',
+                label TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS webauthn_credentials_user "
+            "ON webauthn_credentials (user_id)",
+            # Only a digest of the challenge is retained. Ceremony ids are
+            # high-entropy opaque handles and each row is atomically consumed.
+            """
+            CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
+                ceremony_id TEXT PRIMARY KEY,
+                purpose TEXT NOT NULL CHECK (purpose IN ('register', 'authenticate')),
+                user_id TEXT,
+                challenge_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                consumed_at INTEGER
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS webauthn_ceremonies_expiry "
+            "ON webauthn_ceremonies (expires_at)",
+        ),
+    ),
+    (
+        9,
+        (
+            # Registration reauthentication is bound to the browser's current
+            # authenticated context. Only a digest of the BFF-signed opaque
+            # binding is retained with the short-lived ceremony.
+            "ALTER TABLE webauthn_ceremonies ADD COLUMN session_binding_hash TEXT",
+        ),
+    ),
 )
 
 

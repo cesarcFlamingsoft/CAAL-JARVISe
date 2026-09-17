@@ -18,6 +18,7 @@ from caal.security_config import (
     ENV_BOOTSTRAP_ADMIN_EMAIL,
     ENV_INTERNAL_AUTH_SECRET,
     ENV_PROFILE_ENCRYPTION_KEYS,
+    ENV_PUBLIC_ORIGIN,
     REQUIRED_ENV,
     load_multi_user_config,
     log_startup_status,
@@ -60,6 +61,17 @@ def test_complete_configuration_enables_multi_user() -> None:
         assert SECRET not in rendered
         assert KEYS.split(":", 1)[1] not in rendered
         assert "mexcantech" not in rendered
+
+
+def test_public_origin_enables_passkeys_and_rejects_noncanonical_values() -> None:
+    enabled = load_multi_user_config(_env(**{ENV_PUBLIC_ORIGIN: "https://friday.example.com"}))
+    assert enabled.enabled
+    assert enabled.config.public_origin == "https://friday.example.com"
+
+    for invalid in ("http://friday.example.com", "https://friday.example.com/path"):
+        refused = load_multi_user_config(_env(**{ENV_PUBLIC_ORIGIN: invalid}))
+        assert not refused.enabled
+        assert [problem.name for problem in refused.problems] == [ENV_PUBLIC_ORIGIN]
 
 
 def test_no_configuration_at_all_is_reported_as_legacy_single_user() -> None:

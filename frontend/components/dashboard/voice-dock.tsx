@@ -7,8 +7,9 @@
  * call ends.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ConnectionState } from 'livekit-client';
+import { ConnectionState, type RemoteParticipant, RoomEvent } from 'livekit-client';
 import {
+  useRoomContext,
   useSessionContext,
   useSessionMessages,
   useVoiceAssistant,
@@ -24,22 +25,115 @@ import { Button } from '@/components/livekit/button';
 import { ScrollArea } from '@/components/livekit/scroll-area/scroll-area';
 import { type VoiceTone, voiceStatus } from '@/lib/dashboard/activity';
 import { cn } from '@/lib/utils';
+import { type VisionAnalysis, VisionCommandHandler } from '@/lib/visual/bridge';
 import { VoiceReactor } from './voice-reactor';
 
 const TONE_DOT: Record<VoiceTone, string> = {
   idle: 'bg-muted-foreground/50',
   busy: 'bg-amber-500 animate-pulse',
-  live: 'bg-green-500',
+  live: 'bg-cyan-500',
   error: 'bg-destructive',
 };
 
 interface VoiceDockProps {
   appConfig: AppConfig;
+  visionAnalysis: React.RefObject<VisionAnalysis | null>;
+  userId: string | null;
+  companyPrivate: boolean;
+  visionOpen: boolean;
+  cameraLive: boolean;
+  stream: unknown;
 }
 
-export function VoiceDock({ appConfig }: VoiceDockProps) {
+export function VoiceDock({
+  appConfig,
+  visionAnalysis,
+  userId,
+  companyPrivate,
+  visionOpen,
+  cameraLive,
+  stream,
+}: VoiceDockProps) {
   const session = useSessionContext();
-  const { state: agentState } = useVoiceAssistant();
+  const { state: agentState, agent } = useVoiceAssistant();
+  const room = useRoomContext();
+  useEffect(() => {
+    if (!session.isConnected || !room || !agent || !userId || companyPrivate) return;
+    const epoch = crypto.randomUUID().replaceAll('-', '');
+    const binding = {
+      user: userId,
+      room: room.name,
+      participant: room.localParticipant.identity,
+      agent: agent.identity,
+      epoch,
+    };
+    const send = async (packet: Record<string, unknown>) => {
+      if (room.state !== ConnectionState.Connected) return;
+      await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(packet)), {
+        reliable: true,
+        topic: 'vision',
+        destinationIdentities: [agent.identity],
+      });
+    };
+    const ready = { action: 'vision.ready', user: userId, room: room.name, epoch };
+    const handler = new VisionCommandHandler(
+      binding,
+      visionOpen && cameraLive
+        ? async (signal) => {
+            const analyze = visionAnalysis.current;
+            if (!analyze) throw new Error('camera_not_ready');
+            return analyze(signal);
+          }
+        : null,
+      send
+    );
+    const receive = (
+      payload: Uint8Array,
+      participant?: RemoteParticipant,
+      _kind?: unknown,
+      topic?: string
+    ) => {
+      if (topic !== 'vision' || participant?.identity !== agent.identity || payload.length > 2048)
+        return;
+      try {
+        const packet: unknown = JSON.parse(new TextDecoder().decode(payload));
+        if (
+          packet &&
+          typeof packet === 'object' &&
+          'action' in packet &&
+          packet.action === 'vision.hello'
+        ) {
+          void send(ready).catch(() => undefined);
+        } else {
+          void handler.receive(packet, participant.identity).catch(() => undefined);
+        }
+      } catch {
+        /* Invalid commands do nothing. */
+      }
+    };
+    room.on(RoomEvent.DataReceived, receive);
+    const disconnect = () => handler.close();
+    room.on(RoomEvent.Disconnected, disconnect);
+    room.on(RoomEvent.Reconnecting, disconnect);
+    void send(ready).catch(() => undefined);
+    return () => {
+      handler.close();
+      room.off(RoomEvent.DataReceived, receive);
+      room.off(RoomEvent.Disconnected, disconnect);
+      room.off(RoomEvent.Reconnecting, disconnect);
+      void send({ ...ready, action: 'vision.close' }).catch(() => undefined);
+    };
+  }, [
+    session.isConnected,
+    room,
+    agent,
+    userId,
+    companyPrivate,
+    visionOpen,
+    cameraLive,
+    stream,
+    visionAnalysis,
+  ]);
   const { messages } = useSessionMessages(session);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -138,7 +232,7 @@ export function VoiceDock({ appConfig }: VoiceDockProps) {
               <p className="text-muted-foreground truncate text-xs">
                 {session.isConnected
                   ? 'Your voice session is connected.'
-                  : 'Calendar, mail and reminders remain available.'}
+                  : 'Browser standby is off by default. Once a matching local keyword model is configured, arm it with the wake control.'}
               </p>
             </div>
             {!session.isConnected && (

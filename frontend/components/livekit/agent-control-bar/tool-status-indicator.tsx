@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 
 /**
  * Visual indicator showing whether the last agent response used a tool.
- * - Green wrench + tool name: Tool was called (grounded response)
+ * - Cyan wrench + tool name: Tool was called (grounded response)
  * - Red wrench: No tool called (generated from model weights)
  * - Gray wrench: No status yet
  *
@@ -66,7 +66,7 @@ export function ToolStatusIndicator() {
           className={cn(
             'flex h-10 w-10 items-center justify-center rounded-full',
             'bg-secondary/50 transition-colors duration-200',
-            hasStatus && toolUsed && 'cursor-pointer bg-green-500/10 hover:bg-green-500/20',
+            hasStatus && toolUsed && 'cursor-pointer bg-cyan-500/10 hover:bg-cyan-500/20',
             !hasStatus && 'cursor-default'
           )}
           aria-label={
@@ -82,7 +82,7 @@ export function ToolStatusIndicator() {
             className={cn(
               'h-5 w-5 transition-colors duration-200',
               'text-muted-foreground/50',
-              hasStatus && toolUsed && 'text-green-500'
+              hasStatus && toolUsed && 'text-cyan-300'
             )}
           />
         </button>
@@ -90,7 +90,7 @@ export function ToolStatusIndicator() {
 
       {/* Tool name label - only shown when a tool was actually used */}
       {hasStatus && toolUsed && displayName && (
-        <span className="max-w-48 truncate text-xs font-medium text-green-500/80">
+        <span className="max-w-48 truncate text-xs font-medium text-cyan-300/80">
           {displayName}
         </span>
       )}

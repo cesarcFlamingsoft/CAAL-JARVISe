@@ -63,6 +63,7 @@ from . import (
     satellite_api,
     tts_api,
     user_api,
+    visual_api,
     weather_api,
 )
 from . import settings as settings_module
@@ -101,6 +102,7 @@ app.include_router(weather_api.router)
 # Which local Ollama JARVIS runs on, and which model: an operator setting,
 # read by any signed-in user and changed by an administrator only.
 app.include_router(local_model_api.router)
+app.include_router(visual_api.router)
 app.include_router(tts_api.router)
 # Which language JARVIS answers a user in (auto/English/Spanish). Personal to
 # the signed-in user, like the voice above; never a deployment-wide setting.

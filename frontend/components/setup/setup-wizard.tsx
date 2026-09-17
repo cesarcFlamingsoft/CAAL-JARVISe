@@ -173,7 +173,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-background border-input dark:border-muted flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border shadow-xl">
+      <div className="friday-panel bg-background border-input dark:border-muted flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border shadow-xl">
         {/* Header */}
         <div className="border-input dark:border-muted shrink-0 border-b p-4">
           <h2 className="text-lg font-semibold">Welcome to CAAL</h2>

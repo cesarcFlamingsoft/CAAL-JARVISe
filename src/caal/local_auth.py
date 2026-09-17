@@ -498,6 +498,129 @@ class LocalAuth:
             now=now,
         )
 
+    def verify_current_password(
+        self,
+        user_id: object,
+        password: object,
+        *,
+        action: str,
+        now: int | None = None,
+    ) -> None:
+        """Reauthenticate one already-known user without creating a session.
+
+        This deliberately accepts an opaque user id, never an email. It shares
+        password verification, hash upgrades, failure counting, and lockout
+        semantics with sign-in, but its only success value is ``None`` and it
+        cannot issue or rotate a session.
+        """
+        if action not in ("auth.passkey.add", "auth.passkey.revoke"):
+            raise ValueError("Unsupported reauthentication action")
+        audit_action = f"{action}.reauth"
+        moment = self._now(now)
+        valid_id = is_valid_user_id(user_id)
+        profile = self._store.get_user(user_id) if valid_id else None
+        with closing(self._connect()) as connection:
+            row = (
+                connection.execute(
+                    "SELECT * FROM user_credentials WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                if valid_id
+                else None
+            )
+
+        if row is None or profile is None:
+            dummy_verify(password, params=self._params)
+            self._audit_reauthentication(audit_action, None, "invalid", moment)
+            raise InvalidCredentialsError("Current password is not correct")
+
+        verified = verify_password(password, row["password_hash"], params=self._params)
+        locked_until = row["locked_until"]
+        if locked_until is not None and int(locked_until) > moment:
+            self._audit_reauthentication(audit_action, profile.user_id, "locked", moment)
+            if not verified.ok:
+                raise InvalidCredentialsError("Current password is not correct")
+            raise AccountLockedError(int(locked_until) - moment)
+
+        if not verified.ok:
+            self._record_failure(profile.user_id, now=moment)
+            self._audit_reauthentication(audit_action, profile.user_id, "invalid", moment)
+            raise InvalidCredentialsError("Current password is not correct")
+
+        if profile.status != ACTIVE or bool(row["must_change"]):
+            self._audit_reauthentication(audit_action, profile.user_id, "denied", moment)
+            raise InvalidCredentialsError("Current password is not correct")
+
+        if verified.needs_rehash:
+            try:
+                with closing(self._connect()) as connection:
+                    connection.execute(
+                        "UPDATE user_credentials SET password_hash = ? WHERE user_id = ?",
+                        (hash_password(password, params=self._params), profile.user_id),
+                    )
+            except Exception:
+                logger.warning("Could not upgrade a stored password hash")
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE user_credentials SET failed_count = 0, locked_until = NULL "
+                "WHERE user_id = ?",
+                (profile.user_id,),
+            )
+        self._audit_reauthentication(audit_action, profile.user_id, "ok", moment)
+
+    def _audit_reauthentication(
+        self, action: str, user_id: str | None, outcome: str, now: int
+    ) -> None:
+        self._store.record_audit(
+            action,
+            actor=Actor.system(),
+            target_id=user_id,
+            detail={},
+            outcome=outcome,
+            now=now,
+        )
+
+    def issue_passkey_session(self, user_id: object, *, now: int | None = None) -> LoginResult:
+        """Issue a normal CAAL session after an independently verified assertion.
+
+        The account must still have its password fallback and must not be in a
+        forced-password-change state. Status is re-read immediately before the
+        session row is created.
+        """
+        moment = self._now(now)
+        if not is_valid_user_id(user_id):
+            return LoginResult(ok=False, reason=REASON_INVALID)
+        profile = self._store.get_user(user_id)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT must_change FROM user_credentials WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if profile is None or profile.status != ACTIVE or row is None or bool(row["must_change"]):
+            self._store.record_audit(
+                "auth.passkey.login",
+                actor=Actor.system(),
+                target_id=str(user_id) if is_valid_user_id(user_id) else None,
+                detail={},
+                outcome="denied",
+                now=moment,
+            )
+            return LoginResult(ok=False, reason=REASON_INVALID)
+        token, expires_at = self._create_session(profile.user_id, must_change=False, now=moment)
+        self._store.record_audit(
+            "auth.passkey.login",
+            actor=Actor.system(),
+            target_id=profile.user_id,
+            detail={},
+            outcome="ok",
+            now=moment,
+        )
+        return LoginResult(
+            ok=True,
+            token=token,
+            user=profile,
+            must_change_password=False,
+            expires_at=expires_at,
+        )
+
     # --- sessions -----------------------------------------------------------------
 
     def _create_session(self, user_id: str, *, must_change: bool, now: int) -> tuple[str, int]:

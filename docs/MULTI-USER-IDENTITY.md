@@ -90,7 +90,7 @@ sessions carry no user until it is fixed.
 | `CAAL_PROFILE_ENCRYPTION_KEYS` | agent | **yes** | `v1:<base64url 32 bytes>[,v2:…]`, e.g. `python3 -c "from caal.profile_crypto import generate_key_material as g; print(g(version=1))"` |
 | `CAAL_BOOTSTRAP_ADMIN_EMAIL` | agent | no | The Access login email of the first administrator |
 | `CAAL_IDENTITY_API_URL` | frontend | no | Backend base URL, `http://agent:8889` in Docker (compose sets it) |
-| `CAAL_PUBLIC_ORIGIN` | frontend | no | Public origin of the portal, e.g. `https://jarvis.example.com`; used for origin checks |
+| `CAAL_PUBLIC_ORIGIN` | frontend + backend | no | Canonical HTTPS portal origin, e.g. `https://jarvis.example.com`; used for origin checks and to enable platform passkeys with an exact WebAuthn RP ID |
 | `CAAL_REQUIRE_IDENTITY_FOR_SESSIONS` | frontend | no | `true` to refuse voice sessions without a verified identity (default `false`) |
 
 The agent reads them from `.env` (compose passes the whole file); the frontend

@@ -118,7 +118,10 @@ function stopAll(stream: MediaStreamLike | null): void {
   }
 }
 
+export type CameraConsumer = 'hands' | 'vision';
+
 export class CameraSession {
+  private readonly consumers = new Set<CameraConsumer>();
   private readonly media: MediaDevicesLike | null;
   private readonly onChange?: (snapshot: CameraSnapshot) => void;
   private state: CameraSnapshot;
@@ -147,9 +150,23 @@ export class CameraSession {
     return this.state;
   }
 
+  acquire(consumer: CameraConsumer): Promise<void> {
+    this.consumers.add(consumer);
+    return this.start();
+  }
+
+  release(consumer: CameraConsumer): void {
+    this.consumers.delete(consumer);
+    if (this.consumers.size === 0) this.stop();
+  }
+
   /** Ask for the camera (a particular one, the last chosen, or any). */
   start(deviceId?: string | null): Promise<void> {
     if (!this.media) return Promise.resolve();
+    if (this.state.status === 'requesting') return this.inFlight ?? Promise.resolve();
+    if (this.state.stream && (deviceId === undefined || this.consumers.size > 1)) {
+      return Promise.resolve();
+    }
     if (!this.listening) {
       this.media.addEventListener('devicechange', this.onDeviceChange);
       this.listening = true;
@@ -165,6 +182,7 @@ export class CameraSession {
 
   /** Stop every track now. Anything still being requested is dropped on arrival. */
   stop(): void {
+    if (this.consumers.size > 0) return;
     this.generation += 1;
     this.detach();
     this.update({ status: this.media ? 'idle' : 'unsupported', stream: null, detail: null });
@@ -172,6 +190,7 @@ export class CameraSession {
 
   /** Stop and stop listening: for unmount. */
   dispose(): void {
+    this.consumers.clear();
     this.stop();
     if (this.media && this.listening) {
       this.media.removeEventListener('devicechange', this.onDeviceChange);
@@ -243,6 +262,7 @@ export class CameraSession {
     this.endedListener = ended;
     for (const track of stream.getTracks()) track.addEventListener('ended', ended);
 
+    this.state = { ...this.state, stream };
     const devices = await this.listCameras();
     if (generation !== this.generation) return;
     const settings = stream
@@ -271,7 +291,7 @@ export class CameraSession {
     const devices = await this.listCameras();
     const selected = this.state.selectedDeviceId;
     const stillThere = !selected || devices.some((device) => device.deviceId === selected);
-    if (this.state.status === 'live' && !stillThere) {
+    if (this.state.status === 'live' && !stillThere && this.consumers.size === 0) {
       // The camera in use was unplugged: move to whatever is left.
       await this.open(null, false);
       return;

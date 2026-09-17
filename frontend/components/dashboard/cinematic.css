@@ -240,6 +240,103 @@
 .workspace-data {
   min-width: 0;
 }
+.signed-out-access {
+  width: min(760px, 100%);
+  margin: clamp(54px, 10vh, 110px) auto 0;
+  padding: clamp(34px, 6vw, 72px);
+  text-align: center;
+  border: 1px solid #2f6076a6;
+  border-radius: 6px;
+  background:
+    linear-gradient(135deg, #1231488c, #071522f2 58%, #0b2233d9),
+    repeating-linear-gradient(90deg, transparent 0 42px, #65d9ef0a 42px 43px);
+  box-shadow:
+    inset 0 1px #c5f5ff12,
+    0 28px 90px #0007,
+    0 0 70px #1bafd00d;
+}
+.signed-out-access-mark {
+  display: grid;
+  grid-template-columns: minmax(32px, 110px) 58px minmax(32px, 110px);
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  color: #86e9f6;
+  margin-bottom: 24px;
+}
+.signed-out-access-mark span {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #60d5e7a8);
+}
+.signed-out-access-mark span:last-child {
+  transform: rotate(180deg);
+}
+.signed-out-access-mark svg {
+  width: 58px;
+  height: 58px;
+  padding: 13px;
+  border: 1px solid #4eaec480;
+  border-radius: 50%;
+  filter: drop-shadow(0 0 16px #4dcce45c);
+}
+.signed-out-access-kicker {
+  color: #78d9e8;
+  font:
+    10px/1.5 var(--font-commit-mono),
+    monospace;
+  letter-spacing: 0.24em;
+}
+.signed-out-access h2 {
+  margin-top: 12px;
+  color: #d9f8ff;
+  font-size: clamp(30px, 5vw, 52px);
+  font-weight: 300;
+  letter-spacing: -0.025em;
+}
+.signed-out-access-copy {
+  max-width: 520px;
+  margin: 18px auto 0;
+  color: #9dbccc;
+  font-size: clamp(14px, 2vw, 17px);
+  line-height: 1.75;
+}
+.signed-out-access-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 180px;
+  margin-top: 30px;
+  padding: 13px 22px;
+  border: 1px solid #65d7ec99;
+  border-radius: 4px;
+  color: #d7faff;
+  background: linear-gradient(120deg, #17445a, #0c2c40);
+  box-shadow: 0 0 26px #1daed21c;
+  font:
+    12px/1.4 var(--font-commit-mono),
+    monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+.signed-out-access-action:hover {
+  border-color: #9aefff;
+  background: #1b5068;
+  transform: translateY(-1px);
+}
+.signed-out-access-action svg {
+  width: 16px;
+  height: 16px;
+}
+.signed-out-access-note {
+  margin-top: 28px;
+  color: #86a9bb;
+  font-size: 13px;
+}
 .cinematic-workspace [data-widget] {
   background: linear-gradient(140deg, #10283b99, #06121eee);
   border: 1px solid #2a5067a6;

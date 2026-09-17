@@ -6,6 +6,7 @@
  * and the number itself is never shown, only whether one is on file.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { PasskeyPanel } from '@/components/account/passkey-panel';
 import { HomeAssistantAccess } from '@/components/home-assistant/access';
 import { Button } from '@/components/livekit/button';
 import { apiRequest, explain } from './api-client';
@@ -61,14 +62,12 @@ export function AccountPanel() {
   };
 
   if (!user) {
-    return (
-      <p className="text-muted-foreground text-sm">{error ?? 'Loading your profile…'}</p>
-    );
+    return <p className="text-muted-foreground text-sm">{error ?? 'Loading your profile…'}</p>;
   }
 
   return (
     <div className="space-y-6">
-      <section className="space-y-3">
+      <section className="friday-panel space-y-3">
         <h2 className="text-sm font-semibold tracking-wider uppercase">Profile</h2>
         <dl className="grid grid-cols-[8rem_1fr] gap-y-2 text-sm">
           <dt className="text-muted-foreground">Signed in as</dt>
@@ -88,7 +87,9 @@ export function AccountPanel() {
 
       <HomeAssistantAccess />
 
-      <section className="space-y-2">
+      <PasskeyPanel />
+
+      <section className="friday-panel space-y-2">
         <label className="text-sm font-medium" htmlFor="display-name">
           Display name
         </label>

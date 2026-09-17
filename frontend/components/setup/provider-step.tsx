@@ -98,7 +98,7 @@ export function ProviderStep({ data, updateData }: ProviderStepProps) {
       case 'testing':
         return <CircleNotch className="h-4 w-4 animate-spin text-blue-500" />;
       case 'success':
-        return <Check className="h-4 w-4 text-green-500" weight="bold" />;
+        return <Check className="h-4 w-4 text-cyan-300" weight="bold" />;
       case 'error':
         return <X className="h-4 w-4 text-red-500" weight="bold" />;
       default:
@@ -161,7 +161,7 @@ export function ProviderStep({ data, updateData }: ProviderStepProps) {
             </div>
             {testError && <p className="text-xs text-red-500">{testError}</p>}
             {testStatus === 'success' && (
-              <p className="text-xs text-green-500">
+              <p className="text-xs text-cyan-300">
                 Connected - {ollamaModels.length} models available
               </p>
             )}
@@ -215,7 +215,7 @@ export function ProviderStep({ data, updateData }: ProviderStepProps) {
             </div>
             {testError && <p className="text-xs text-red-500">{testError}</p>}
             {testStatus === 'success' && (
-              <p className="text-xs text-green-500">
+              <p className="text-xs text-cyan-300">
                 Connected - {groqModels.length} models available
               </p>
             )}

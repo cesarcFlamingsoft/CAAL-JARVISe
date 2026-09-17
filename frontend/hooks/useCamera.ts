@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  type CameraConsumer,
   CameraSession,
   type CameraSnapshot,
   type MediaDevicesLike,
@@ -14,7 +15,8 @@ import {
 
 export interface CameraController extends CameraSnapshot {
   start: () => Promise<void>;
-  stop: () => void;
+  acquire: (consumer: CameraConsumer) => Promise<void>;
+  release: (consumer: CameraConsumer) => void;
   selectDevice: (deviceId: string) => Promise<void>;
 }
 
@@ -51,11 +53,18 @@ export function useCamera(): CameraController {
   }, []);
 
   const start = useCallback(() => sessionRef.current?.start() ?? Promise.resolve(), []);
-  const stop = useCallback(() => sessionRef.current?.stop(), []);
+  const acquire = useCallback(
+    (consumer: CameraConsumer) => sessionRef.current?.acquire(consumer) ?? Promise.resolve(),
+    []
+  );
+  const release = useCallback(
+    (consumer: CameraConsumer) => sessionRef.current?.release(consumer),
+    []
+  );
   const selectDevice = useCallback(
     (deviceId: string) => sessionRef.current?.selectDevice(deviceId) ?? Promise.resolve(),
     []
   );
 
-  return { ...snapshot, start, stop, selectDevice };
+  return { ...snapshot, start, acquire, release, selectDevice };
 }

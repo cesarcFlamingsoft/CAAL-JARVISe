@@ -52,6 +52,7 @@ from .local_auth import (
     AccountLockedError,
     InvalidCredentialsError,
     LocalAuth,
+    LocalAuthError,
 )
 from .password_hash import MAX_PASSWORD_LENGTH, PasswordPolicyError
 from .security_config import MultiUserConfig, load_multi_user_config, log_startup_status
@@ -71,6 +72,7 @@ from .user_store import (
     is_valid_user_id,
     normalize_e164,
 )
+from .webauthn_auth import CeremonyError, WebAuthnConfig, WebAuthnService
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,7 @@ class IdentityRuntime:
         resolve_limiter: RateLimiter | None = None,
         mutation_limiter: RateLimiter | None = None,
         login_limiter: RateLimiter | None = None,
+        webauthn: WebAuthnService | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
@@ -148,13 +151,23 @@ class IdentityRuntime:
         self.login_limiter = login_limiter or RateLimiter(
             limit=LOGIN_LIMIT_PER_MINUTE, window_seconds=60
         )
+        self.webauthn = webauthn
 
     @classmethod
     def from_config(cls, config: MultiUserConfig) -> IdentityRuntime:
         store = UserStore(config.store_path, keyring=config.keyring)
+        local_auth = LocalAuth(store, policy=config.session_policy)
         runtime = cls(
             config,
             store=store,
+            local_auth=local_auth,
+            webauthn=(
+                WebAuthnService(
+                    store, local_auth, WebAuthnConfig.from_public_origin(config.public_origin)
+                )
+                if config.public_origin and config.password_login
+                else None
+            ),
             # Cloudflare Access is optional: no configuration, no verifier, and
             # the route that would use one refuses outright.
             access_verifier=AccessVerifier(config.access) if config.access else None,
@@ -349,6 +362,7 @@ class IdentityResponseHeadersMiddleware:
 @dataclass(frozen=True)
 class CurrentUser:
     profile: UserProfile
+    session_binding: str | None = field(default=None, repr=False)
 
     @property
     def actor(self) -> Actor:
@@ -436,7 +450,15 @@ def require_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_UNAUTHORIZED)
     if profile.status != ACTIVE:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="suspended")
-    return CurrentUser(profile=profile)
+    binding = principal.claims.get("session_binding")
+    session_binding = (
+        binding
+        if isinstance(binding, str)
+        and len(binding) == 64
+        and all(character in "0123456789abcdef" for character in binding)
+        else None
+    )
+    return CurrentUser(profile=profile, session_binding=session_binding)
 
 
 def require_admin(user: CurrentUser = Depends(require_user)) -> CurrentUser:
@@ -596,6 +618,55 @@ class AuditListResponse(_Strict):
     events: list[AuditEventResponse]
 
 
+class WebAuthnCredentialResponse(_Strict):
+    client_data_json: str = Field(alias="clientDataJSON", min_length=1, max_length=131072)
+    attestation_object: str | None = Field(
+        default=None, alias="attestationObject", min_length=1, max_length=131072
+    )
+    authenticator_data: str | None = Field(
+        default=None, alias="authenticatorData", min_length=1, max_length=131072
+    )
+    signature: str | None = Field(default=None, min_length=1, max_length=131072)
+    user_handle: str | None = Field(
+        default=None, alias="userHandle", min_length=1, max_length=2048
+    )
+    transports: list[str] = Field(default_factory=list, max_length=8)
+
+
+class WebAuthnCredential(_Strict):
+    id: str = Field(min_length=1, max_length=2048)
+    raw_id: str = Field(alias="rawId", min_length=1, max_length=2048)
+    type: Literal["public-key"]
+    authenticator_attachment: Literal["platform", "cross-platform"] | None = Field(
+        default=None, alias="authenticatorAttachment"
+    )
+    response: WebAuthnCredentialResponse
+
+
+class PasskeyAuthenticationFinish(_Strict):
+    ceremony_id: str = Field(alias="ceremonyId", min_length=32, max_length=128)
+    credential: WebAuthnCredential
+
+
+class PasskeyRegistrationStart(_Strict):
+    label: str = Field(min_length=1, max_length=64)
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class PasskeyRegistrationFinish(_Strict):
+    label: str = Field(min_length=1, max_length=64)
+    ceremony_id: str = Field(alias="ceremonyId", min_length=32, max_length=128)
+    credential: WebAuthnCredential
+
+
+class PasskeyRename(_Strict):
+    label: str = Field(min_length=1, max_length=64)
+
+
+class PasskeyRevoke(_Strict):
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
 # --- helpers ---------------------------------------------------------------------------------
 
 
@@ -660,6 +731,34 @@ def _require_password_login(runtime: IdentityRuntime) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
 
+def _require_webauthn(runtime: IdentityRuntime) -> WebAuthnService:
+    if runtime.webauthn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return runtime.webauthn
+
+
+def _credential_payload(credential: WebAuthnCredential) -> dict[str, Any]:
+    return credential.model_dump(by_alias=True, exclude_none=True)
+
+
+def _passkey_session_binding(user: CurrentUser) -> str:
+    if user.session_binding is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_UNAUTHORIZED)
+    return user.session_binding
+
+
+def _raise_reauthentication(exc: LocalAuthError) -> None:
+    if isinstance(exc, AccountLockedError):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=REASON_LOCKED,
+            headers={"Retry-After": str(max(1, exc.retry_after))},
+        ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS
+    ) from exc
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(
     body: LoginRequest, request: Request, runtime: IdentityRuntime = Depends(require_runtime)
@@ -696,6 +795,44 @@ async def login(
         status=result.user.status,
         display_name=result.user.display_name,
         must_change_password=result.must_change_password,
+        session_token=result.token,
+        expires_at=int(result.expires_at or 0),
+    )
+
+
+@router.post("/auth/passkey/options")
+async def passkey_authentication_options(
+    request: Request, runtime: IdentityRuntime = Depends(require_runtime)
+) -> dict[str, Any]:
+    principal = _identity_principal(request, runtime)
+    _throttle(runtime.login_limiter, _caller_key(principal, request), runtime.clock())
+    return _require_webauthn(runtime).begin_authentication()
+
+
+@router.post("/auth/passkey/verify", response_model=LoginResponse)
+async def passkey_authentication_verify(
+    body: PasskeyAuthenticationFinish,
+    request: Request,
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> LoginResponse:
+    principal = _identity_principal(request, runtime)
+    _throttle(runtime.login_limiter, _caller_key(principal, request), runtime.clock())
+    try:
+        result = _require_webauthn(runtime).finish_authentication(
+            body.ceremony_id, _credential_payload(body.credential)
+        )
+    except CeremonyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS
+        ) from exc
+    if not result.ok or result.user is None or result.token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
+    return LoginResponse(
+        user_id=result.user.user_id,
+        role=result.user.role,
+        status=result.user.status,
+        display_name=result.user.display_name,
+        must_change_password=False,
         session_token=result.token,
         expires_at=int(result.expires_at or 0),
     )
@@ -866,6 +1003,88 @@ async def update_own_profile(
         )
     )
     return ProfileResponse(**profile.public_view())
+
+
+@router.get("/users/me/passkeys")
+async def list_own_passkeys(
+    user: CurrentUser = Depends(require_user),
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> dict[str, Any]:
+    return {"passkeys": _require_webauthn(runtime).list_credentials(user.profile.user_id)}
+
+
+@router.post("/users/me/passkeys/options")
+async def begin_own_passkey_registration(
+    body: PasskeyRegistrationStart,
+    user: CurrentUser = Depends(throttle_mutation),
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> dict[str, Any]:
+    try:
+        return _require_webauthn(runtime).begin_registration(
+            user.profile.user_id,
+            body.label,
+            body.current_password,
+            _passkey_session_binding(user),
+        )
+    except LocalAuthError as exc:
+        _raise_reauthentication(exc)
+    except CeremonyError as exc:
+        raise HTTPException(status_code=422, detail="invalid") from exc
+
+
+@router.post("/users/me/passkeys/verify")
+async def finish_own_passkey_registration(
+    body: PasskeyRegistrationFinish,
+    user: CurrentUser = Depends(throttle_mutation),
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> dict[str, Any]:
+    try:
+        passkey = _require_webauthn(runtime).finish_registration(
+            user.profile.user_id,
+            body.ceremony_id,
+            body.label,
+            _credential_payload(body.credential),
+            _passkey_session_binding(user),
+        )
+    except CeremonyError as exc:
+        raise HTTPException(status_code=422, detail="invalid") from exc
+    return {"passkey": passkey}
+
+
+@router.patch("/users/me/passkeys/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def rename_own_passkey(
+    credential_id: str,
+    body: PasskeyRename,
+    user: CurrentUser = Depends(throttle_mutation),
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> Response:
+    try:
+        changed = _require_webauthn(runtime).rename_credential(
+            user.profile.user_id, credential_id, body.label
+        )
+    except CeremonyError as exc:
+        raise HTTPException(status_code=422, detail="invalid") from exc
+    if not changed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/users/me/passkeys/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_own_passkey(
+    credential_id: str,
+    body: PasskeyRevoke,
+    user: CurrentUser = Depends(throttle_mutation),
+    runtime: IdentityRuntime = Depends(require_runtime),
+) -> Response:
+    try:
+        changed = _require_webauthn(runtime).revoke_credential(
+            user.profile.user_id, credential_id, body.current_password
+        )
+    except LocalAuthError as exc:
+        _raise_reauthentication(exc)
+    if not changed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/admin/users", response_model=UsersListResponse)

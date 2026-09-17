@@ -155,6 +155,14 @@ describe('connected accounts panel', () => {
     assert.match(panel, /\/api\/connections\/start\//);
   });
 
+  it('offers an account-specific reconnect that preserves its owner naming and starts consent', () => {
+    const panel = read(PANEL);
+    assert.match(panel, /async function reconnect\(row: ConnectionRow, connection: BrowserConnection\)/);
+    assert.match(panel, /Reconnect/);
+    assert.match(panel, /aria-label=\{`Reconnect \$\{connection\.accountLabel/);
+    assert.match(panel, /Reconnect this account to let FRIDAY mark opened messages read/);
+  });
+
   it('lets the owner name each account, and says what the names are for', () => {
     const panel = read(PANEL);
     // One PATCH, on the caller's own connection, with the checked names only.

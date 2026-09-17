@@ -25,7 +25,7 @@ export default async function ChangePasswordPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-20">
+    <main className="friday-page mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-20">
       <header className="mb-8">
         <h1 className="text-2xl font-semibold">
           {auth.mustChangePassword ? 'Choose a new password' : 'Change your password'}

@@ -3,10 +3,11 @@
 /**
  * Recent mail from the signed-in user's connected accounts. Every message
  * shown came from the backend feed as a bounded, plain-text summary (sender,
- * subject, a short preview, when it arrived) with the provider's own link to
- * open it. Each account that could not answer is named with its state, and
+ * subject, a short preview, when it arrived) that opens a live text-only reader.
+ * Each account that could not answer is named with its state, and
  * nothing is invented. Nothing here reads the voice session.
  */
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/livekit/button';
 import type { FeedController } from '@/hooks/useDashboardFeed';
 import {
@@ -19,6 +20,7 @@ import {
 } from '@/lib/dashboard/provider-data';
 import { cn } from '@/lib/utils';
 import { AccountSection } from '../account-section';
+import { MessageReader } from '../message-reader';
 import { WidgetEmpty, WidgetError, WidgetLoading, WidgetSignIn } from '../widget-notice';
 
 const UNKNOWN_SENDER = 'Unknown sender';
@@ -32,6 +34,17 @@ interface InboxWidgetProps {
 }
 
 export function InboxWidget({ feed, passwordLogin, now, onOpenSettings }: InboxWidgetProps) {
+  const [selected, setSelected] = useState<InboxMessageItem | null>(null);
+  const [readState, setReadState] = useState<{
+    source: InboxFeed;
+    states: Record<string, boolean>;
+  } | null>(null);
+  useEffect(() => {
+    if (feed.status !== 'ready') {
+      setSelected(null);
+      setReadState(null);
+    }
+  }, [feed.status]);
   if (feed.status === 'loading') {
     return <WidgetLoading label="Reading your inbox…" />;
   }
@@ -73,11 +86,38 @@ export function InboxWidget({ feed, passwordLogin, now, onOpenSettings }: InboxW
 
   const issues = accountIssues(accounts);
   const clock = now ?? new Date(feed.data.generatedAt * 1000);
-  const groups = groupMessagesByAccount(feed.data);
+  // Only override the snapshot that was open. A new live feed is authoritative.
+  const visibleFeed =
+    readState?.source === feed.data
+      ? {
+          ...feed.data,
+          messages: messages.map((message) => ({
+            ...message,
+            unread: readState.states[message.connectionId + ':' + message.id] ?? message.unread,
+          })),
+        }
+      : feed.data;
+  const groups = groupMessagesByAccount(visibleFeed);
   const quiet = issues.length === accounts.length;
 
   return (
     <div className="space-y-2.5">
+      {selected && (
+        <MessageReader
+          key={selected.connectionId + selected.id}
+          message={selected}
+          onClose={() => setSelected(null)}
+          onOpened={(detail) =>
+            setReadState((current) => ({
+              source: feed.data,
+              states: {
+                ...(current?.source === feed.data ? current.states : {}),
+                [detail.connectionId + ':' + detail.id]: detail.unread,
+              },
+            }))
+          }
+        />
+      )}
       {messages.length === 0 && !quiet && (
         <p className="text-muted-foreground text-sm">No recent messages.</p>
       )}
@@ -85,6 +125,7 @@ export function InboxWidget({ feed, passwordLogin, now, onOpenSettings }: InboxW
         <AccountGroup
           key={group.account.connectionId}
           group={group}
+          onRead={setSelected}
           now={clock}
           onOpenSettings={onOpenSettings}
         />
@@ -100,13 +141,14 @@ function messageCount(group: AccountInboxGroup): string {
 }
 
 interface AccountGroupProps {
+  onRead: (message: InboxMessageItem) => void;
   group: AccountInboxGroup;
   now: Date;
   onOpenSettings: () => void;
 }
 
 /** One connected account's own recent mail, with its own unread count. */
-function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
+function AccountGroup({ group, now, onOpenSettings, onRead }: AccountGroupProps) {
   return (
     <AccountSection
       preview={
@@ -114,7 +156,7 @@ function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
           <ol>
             {group.messages.slice(0, 2).map((message) => (
               <li key={message.id}>
-                <MessageRow message={message} now={now} />
+                <MessageRow message={message} now={now} onRead={onRead} />
               </li>
             ))}
           </ol>
@@ -131,7 +173,7 @@ function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
         <ol aria-label="Recent messages" className="divide-border/60 divide-y">
           {group.messages.map((message) => (
             <li key={message.connectionId + ':' + message.id} className="py-2 first:pt-0 last:pb-0">
-              <MessageRow message={message} now={now} />
+              <MessageRow message={message} now={now} onRead={onRead} />
             </li>
           ))}
         </ol>
@@ -140,7 +182,15 @@ function AccountGroup({ group, now, onOpenSettings }: AccountGroupProps) {
   );
 }
 
-function MessageRow({ message, now }: { message: InboxMessageItem; now: Date }) {
+function MessageRow({
+  message,
+  now,
+  onRead,
+}: {
+  message: InboxMessageItem;
+  now: Date;
+  onRead: (message: InboxMessageItem) => void;
+}) {
   const body = (
     <>
       <div className="flex items-baseline justify-between gap-3">
@@ -172,15 +222,14 @@ function MessageRow({ message, now }: { message: InboxMessageItem; now: Date }) 
       {message.unread && <span className="sr-only">Unread</span>}
     </>
   );
-  if (!message.link) return <div className="-mx-2 px-2 py-1">{body}</div>;
   return (
-    <a
-      href={message.link}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="hover:bg-muted/60 -mx-2 block rounded-md px-2 py-1"
+    <button
+      type="button"
+      onClick={() => onRead(message)}
+      aria-haspopup="dialog"
+      className="hover:bg-muted/60 -mx-2 block w-full rounded-md px-2 py-1 text-left"
     >
       {body}
-    </a>
+    </button>
   );
 }

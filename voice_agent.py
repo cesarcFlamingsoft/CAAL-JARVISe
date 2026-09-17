@@ -127,6 +127,7 @@ from caal.tools import reminders_tools
 from caal.tools.delivery_semantics import SemanticDeliveryReader
 from caal.tools.schedule_semantics import SemanticScheduleReader
 from caal.user_scope import UserScope
+from caal.visual_bridge import OPEN_VISION, UNAVAILABLE, VisualBridge
 from caal.waiting_audio import (
     WAITING_AUDIO_START,
     WAITING_CUE,
@@ -859,7 +860,9 @@ class LocalTurnHandler:
         knowledge: KnowledgeTurnHandler | None = None,
         delivery: DeliveryAnswerHandler | None = None,
         schedule: ScheduledChangeHandler | None = None,
+        visual: VisualBridge | None = None,
     ) -> None:
+        self._visual = visual
         self._phone_handoff = phone_handoff
         self._background = background
         # The answer to the delivery question CAAL itself just asked. It is
@@ -914,6 +917,8 @@ class LocalTurnHandler:
 
     def on_speech_transcript_started(self) -> None:
         """Mark that the active turn is speech whose final STT is still due."""
+        if self._visual is not None:
+            self._visual.cancel()
         self._awaiting_final_stt = True
         self._final_stt_ready.clear()
 
@@ -1009,6 +1014,11 @@ class LocalTurnHandler:
             # language lives on the agent. Published from session state only,
             # never from the words of the turn.
             reply_localization.begin_turn(self._agent)
+        if self._visual is not None:
+            from caal import company_privacy
+
+            if await self._visual.handle(text, company=company_privacy.session_is_private()):
+                return True
         if self._company_gate is not None:
             try:
                 if await self._company_gate.handle(text, self._session):
@@ -2841,6 +2851,30 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         else "disabled (no signed-in user or no local model)",
     )
 
+    from caal.visual_speech import speak_visual, speech_target
+
+    async def _visual_send(packet, participant):
+        if participant not in ctx.room.remote_participants:
+            return
+        await ctx.room.local_participant.publish_data(
+            json.dumps(packet).encode(), reliable=True, topic="vision",
+            destination_identities=[participant],
+        )
+
+    async def _visual_speak(description):
+        if description in (OPEN_VISION, UNAVAILABLE):
+            await session.say(description, add_to_chat_ctx=False)
+            return
+        try:
+            await speak_visual(session, description, **speech_target(tts_instance))
+        except Exception:
+            await session.say(UNAVAILABLE, add_to_chat_ctx=False)
+
+    visual_bridge = VisualBridge(
+        user=user_scope.user_id if ctx.room.name.startswith("caal-web-")
+        and not company_session_requested else None,
+        room=ctx.room.name, send=_visual_send, speak=_visual_speak,
+    )
     local_turn_handler = LocalTurnHandler(
         phone_handoff=phone_handoff,
         session=session,
@@ -2850,6 +2884,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         knowledge=knowledge_route,
         delivery=delivery_route,
         schedule=schedule_route,
+        visual=visual_bridge,
     )
 
     @session.on("user_input_transcribed")
@@ -3070,6 +3105,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     @session.on("close")
     def on_session_close(ev) -> None:
         logger.info(f"Session closed: {ev.reason}")
+        visual_bridge.close()
         close_event.set()
 
     # ==========================================================================
@@ -3126,9 +3162,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except Exception as e:
             logger.error(f"Failed to process webhook command: {e}")
 
+    @ctx.room.on("participant_disconnected")
+    def on_visual_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
+        visual_bridge.disconnect(participant.identity)
+
     @ctx.room.on("data_received")
     def on_data_received(data: rtc.DataPacket) -> None:
         """Sync wrapper for async webhook command handler."""
+        if data.topic == "vision":
+            if not company_session_requested and data.participant is not None:
+                visual_bridge.receive(data.data, data.participant.identity)
+            return
         asyncio.create_task(_handle_webhook_command(data))
 
     async def _alarm_delivery_loop() -> None:
@@ -3200,6 +3244,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             room=ctx.room,
             agent=assistant,
         )
+        if user_scope.user_id and not company_session_requested:
+            await ctx.room.local_participant.publish_data(
+                b'{"action":"vision.hello"}', reliable=True, topic="vision",
+                destination_identities=list(ctx.room.remote_participants),
+            )
         liveness_task = asyncio.create_task(_ledger_liveness_loop())
 
         # Outbound rooms are dispatched before the SIP participant is created so
@@ -3246,6 +3295,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # The session's own cross-language binding, and the questions it
         # cached, go with the session: the expander is closed, so a task that
         # inherited the handle cannot translate with it afterwards either.
+        visual_bridge.close()
         company_expansion.release(assistant)
         await _cancel(liveness_task)
         await _cancel(alarm_delivery_task)

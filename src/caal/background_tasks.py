@@ -388,8 +388,9 @@ def list_tasks(
     statuses: Iterable[str] | None = None,
     limit: int = MAX_LIST,
     user_id: object = UNSCOPED,
+    newest_first: bool = False,
 ) -> list[BackgroundTask]:
-    """Oldest first. Bounded by ``MAX_LIST`` regardless of the requested limit.
+    """Oldest first unless requested otherwise. Bounded by ``MAX_LIST``.
 
     ``user_id`` restricts the listing to one user's work (``None`` for
     unscoped legacy work); the default lists every owner.
@@ -411,9 +412,10 @@ def list_tasks(
         params.extend(scope_params)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, min(int(limit), MAX_LIST)))
+    order = "created_at DESC, rowid DESC" if newest_first else "created_at, rowid"
     with _connect() as connection:
         rows = connection.execute(
-            f"SELECT * FROM background_tasks {where} ORDER BY created_at, rowid LIMIT ?",
+            f"SELECT * FROM background_tasks {where} ORDER BY {order} LIMIT ?",
             params,
         ).fetchall()
     return [_from_row(row) for row in rows]

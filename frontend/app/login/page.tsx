@@ -53,7 +53,10 @@ export default async function LoginPage({ searchParams }: PageProps) {
       </header>
 
       {auth.config.passwordLogin ? (
-        <LoginForm next={next} />
+        <LoginForm
+          next={next}
+          passkeys={Boolean(auth.config.publicOrigin?.startsWith('https://'))}
+        />
       ) : (
         <p className="text-muted-foreground text-sm">
           Password sign-in is disabled on this deployment; sign in through your identity provider.

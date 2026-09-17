@@ -201,12 +201,12 @@ def test_unknown_provider_names_are_refused_everywhere() -> None:
 # --- production defaults: read-only scopes, provider delimiters, identity ---------------
 
 
-READ_ONLY_DEFAULTS = {
+READ_STATE_DEFAULTS = {
     "google": {
-        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar.readonly",
     },
-    "microsoft": {"Mail.Read", "Calendars.Read", "offline_access"},
+    "microsoft": {"Mail.ReadWrite", "Calendars.Read", "offline_access"},
     "zoho": {
         "ZohoMail.accounts.READ",
         "ZohoMail.messages.READ",
@@ -215,13 +215,11 @@ READ_ONLY_DEFAULTS = {
     },
 }
 WRITE_MARKERS = (
-    "gmail.modify",
     "gmail.send",
     "gmail.compose",
     "/auth/gmail\b",
     "/auth/calendar\b",
     "calendar.events\b",
-    "Mail.ReadWrite",
     "Mail.Send",
     "Calendars.ReadWrite",
     ".ALL",
@@ -232,10 +230,10 @@ WRITE_MARKERS = (
 )
 
 
-def test_default_scopes_are_read_only_mail_and_calendar_plus_identity() -> None:
+def test_default_scopes_allow_opened_mail_to_be_marked_read() -> None:
     import re
 
-    for name, required in READ_ONLY_DEFAULTS.items():
+    for name, required in READ_STATE_DEFAULTS.items():
         spec = oauth_providers.spec_for(name)
         assert required <= set(spec.default_scopes), name
         assert set(spec.identity_scopes) <= set(spec.default_scopes), name

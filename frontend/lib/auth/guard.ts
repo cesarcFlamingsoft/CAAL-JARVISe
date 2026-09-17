@@ -87,6 +87,7 @@ export type Authorized =
       user: SessionUser;
       mustChangePassword: boolean;
       sessionToken: string | null;
+      sessionBinding: string;
     }
   | { ok: false; response: NextResponse };
 
@@ -133,12 +134,24 @@ export async function requireUser(
   if (auth.mustChangePassword && !allowPasswordChange) {
     return { ok: false, response: apiError(403, 'password_change_required') };
   }
+  const authenticatedContext = auth.sessionToken ?? req.headers.get('cf-access-jwt-assertion');
+  if (!authenticatedContext) {
+    return { ok: false, response: apiError(401, 'unauthorized') };
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${auth.via}:${authenticatedContext}`)
+  );
+  const sessionBinding = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
   return {
     ok: true,
     config: auth.config,
     user: auth.user,
     mustChangePassword: auth.mustChangePassword,
     sessionToken: auth.sessionToken,
+    sessionBinding,
   };
 }
 

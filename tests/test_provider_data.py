@@ -1175,3 +1175,363 @@ def test_windows_limits_and_client_bounds_are_validated(h) -> None:
     with pytest.raises(ValueError):
         ProviderDataError(provider_code="Bad Code")
     assert h.provider.requests == []
+
+
+def full_gmail(body="Private body", **overrides):
+    import base64
+
+    return dict(
+        id="abc123",
+        internalDate=str(NOW * 1000),
+        labelIds=["UNREAD"],
+        payload=dict(
+            mimeType="text/plain",
+            headers=[
+                dict(name="Subject", value="Private subject"),
+                dict(name="To", value="Ana <ana@example.com>"),
+            ],
+            body=dict(data=base64.urlsafe_b64encode(body.encode()).decode()),
+        ),
+        **overrides,
+    )
+
+
+def test_live_gmail_detail_and_no_private_logs(tmp_path, caplog):
+    h = Harness(tmp_path)
+    connection = h.connect(h.ana)
+    h.provider.add("GET", GMAIL_MESSAGES + "/abc123", httpx.Response(200, json=full_gmail()))
+    detail = run(h.client().inbox_message(h.ana, connection, "abc123"))
+    assert detail["body"] == "Private body"
+    assert detail["recipients"] == ["Ana <ana@example.com>"]
+    assert detail["unread"] is True
+    assert h.provider.requests[0].url.params["format"] == "full"
+    assert set(detail) == {
+        "id",
+        "connection_id",
+        "provider",
+        "subject",
+        "sender",
+        "recipients",
+        "received_at",
+        "unread",
+        "body",
+        "link",
+    }
+    for secret in (*SECRETS, "Private body", "Private subject", "ana@example.com"):
+        assert secret not in caplog.text
+
+
+def test_gmail_mime_preference_html_and_attachments():
+    import base64
+
+    from caal.provider_data import MAX_BODY_LENGTH, _gmail_body
+
+    def part(mime, text, **kw):
+        return dict(
+            mimeType=mime, body=dict(data=base64.urlsafe_b64encode(text.encode()).decode()), **kw
+        )
+
+    html = part(
+        "text/html",
+        '<style>hidden</style><p>Hello &amp; welcome</p><script>secret</script><img src="https://tracker">',
+    )
+    assert _gmail_body(html) == "Hello & welcome"
+    assert (
+        _gmail_body(
+            dict(
+                mimeType="multipart/mixed",
+                parts=[
+                    html,
+                    part("text/plain", "attachment", filename="file.txt"),
+                    dict(
+                        mimeType="multipart/alternative",
+                        parts=[part("text/plain", "Preferred\nbody")],
+                    ),
+                ],
+            )
+        )
+        == "Preferred\nbody"
+    )
+    assert len(_gmail_body(part("text/plain", "x" * 100000))) == MAX_BODY_LENGTH
+    with pytest.raises(ProviderDataError):
+        _gmail_body(dict(mimeType="text/plain", body=dict(attachmentId="never-fetch")))
+    with pytest.raises(ProviderDataError):
+        _gmail_body(dict(mimeType="text/plain", body=dict(data="!!!!")))
+
+
+def test_graph_detail_text_preference_and_recipients(tmp_path):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana, "microsoft")
+    h.provider.add(
+        "GET",
+        "https://graph.microsoft.com/v1.0/me/messages/",
+        httpx.Response(
+            200,
+            json=dict(
+                id="A+/=",
+                subject="Subject",
+                receivedDateTime="2023-11-14T22:13:20Z",
+                isRead=False,
+                body=dict(contentType="html", content="<p>Safe</p><script>bad</script>"),
+                toRecipients=[dict(emailAddress=dict(address="to@example.com"))] * 60,
+                webLink="javascript:alert(1)",
+                access_token=ACCESS,
+            ),
+        ),
+    )
+    result = run(h.client().inbox_message(h.ana, c, "A+/="))
+    assert result["body"] == "Safe"
+    assert len(result["recipients"]) == 50
+    assert result["link"] is None
+    request = h.provider.requests[0]
+    assert request.headers["Prefer"] == 'outlook.body-content-type="text"'
+    assert "toRecipients" in request.url.params["$select"]
+    assert b"A%2B%2F%3D" in request.url.raw_path
+
+
+@pytest.mark.parametrize(
+    "mode,reason",
+    [
+        ("scope", "insufficient_scope"),
+        ("owner", "reconnect_required"),
+        ("oversize", "malformed_response"),
+        ("mismatch", "malformed_response"),
+        ("timeout", "transport"),
+        ("403", "insufficient_scope"),
+        ("404", "provider_refused"),
+    ],
+)
+def test_detail_failures_are_bounded(tmp_path, mode, reason):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana, scopes=("openid",) if mode == "scope" else GOOGLE_SCOPES)
+    answer = httpx.Response(200, json=full_gmail())
+    if mode == "oversize":
+        answer = httpx.Response(200, content=b"x" * 300000)
+    if mode == "mismatch":
+        data = full_gmail()
+        data["id"] = "other"
+        answer = httpx.Response(200, json=data)
+    if mode == "timeout":
+        answer = httpx.ReadTimeout("private error")
+    if mode in ("403", "404"):
+        answer = httpx.Response(int(mode), json={"private": ACCESS})
+    h.provider.add("GET", GMAIL_MESSAGES, answer)
+    with pytest.raises(ProviderDataError) as err:
+        run(h.client().inbox_message(h.bo if mode == "owner" else h.ana, c, "abc123"))
+    assert err.value.reason == reason
+    if mode in ("scope", "owner"):
+        assert not h.provider.requests
+
+
+def test_detail_renews_once(tmp_path):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana)
+
+    def answer(request):
+        return (
+            httpx.Response(200, json=full_gmail())
+            if request.headers["authorization"] == "Bearer renewed"
+            else httpx.Response(401)
+        )
+
+    h.provider.add("GET", GMAIL_MESSAGES, answer)
+    h.provider.add(
+        "POST",
+        GOOGLE_TOKEN,
+        httpx.Response(200, json=dict(access_token="renewed", expires_in=3600)),
+    )
+    assert run(h.client().inbox_message(h.ana, c, "abc123"))["body"] == "Private body"
+    assert len(h.provider.sent("POST", GOOGLE_TOKEN)) == 1
+
+
+@pytest.mark.parametrize("folder", ["456", None, "../unsafe"])
+def test_zoho_live_content_requires_verified_folder(tmp_path, folder):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana, "zoho")
+    h.provider.add(
+        "GET",
+        ZOHO_MAIL_ACCOUNTS + "/123/messages/search",
+        httpx.Response(
+            200,
+            json=dict(
+                data=[
+                    dict(
+                        messageId=789,
+                        folderId=folder,
+                        receivedTime=str(NOW * 1000),
+                        subject="Zoho",
+                        status="unread",
+                    )
+                ]
+            ),
+        ),
+    )
+    h.provider.add(
+        "GET",
+        ZOHO_MAIL_ACCOUNTS + "/123/folders/456/messages/789/content",
+        httpx.Response(
+            200, json=dict(data=dict(messageId=789, content="<div>Hello<br>Zoho</div>"))
+        ),
+    )
+    h.provider.add(
+        "GET", ZOHO_MAIL_ACCOUNTS, httpx.Response(200, json=dict(data=[dict(accountId="123")]))
+    )
+    if folder == "456":
+        detail = run(h.client().inbox_message(h.ana, c, "789"))
+        assert detail["body"] == "Hello\nZoho"
+        assert detail["unread"] is True
+        assert all(r.method == "GET" for r in h.provider.requests)
+        assert h.provider.requests[-1].headers["authorization"].startswith("Zoho-oauthtoken ")
+    else:
+        with pytest.raises(ProviderDataError):
+            run(h.client().inbox_message(h.ana, c, "789"))
+        assert not any("/content" in str(r.url) for r in h.provider.requests)
+
+
+def test_reader_wall_clock_budget(tmp_path):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana)
+
+    async def slow(request):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json=full_gmail())
+
+    client = h.client(transport=httpx.MockTransport(slow), fetch_budget_seconds=0.01)
+    with pytest.raises(ProviderDataError) as err:
+        run(client.inbox_message(h.ana, c, "abc123"))
+    assert err.value.reason == "transport"
+
+
+def test_zoho_reader_does_not_guess_account(tmp_path):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana, "zoho")
+    h.provider.add(
+        "GET",
+        ZOHO_MAIL_ACCOUNTS,
+        httpx.Response(200, json=dict(data=[dict(accountId=123), dict(accountId=456)])),
+    )
+    with pytest.raises(ProviderDataError):
+        run(h.client().inbox_message(h.ana, c, "789"))
+    assert len(h.provider.requests) == 1
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_open_marks_owned_valid_message_read_at_provider(tmp_path, provider):
+    h = Harness(tmp_path)
+    scope = (
+        "https://www.googleapis.com/auth/gmail.modify" if provider == "google" else "Mail.ReadWrite"
+    )
+    c = h.connect(h.ana, provider, scopes=(scope,))
+    url = (
+        GMAIL_MESSAGES + "/abc123"
+        if provider == "google"
+        else "https://graph.microsoft.com/v1.0/me/messages/abc123"
+    )
+    data = (
+        full_gmail()
+        if provider == "google"
+        else dict(
+            id="abc123",
+            receivedDateTime="2023-11-14T22:13:20Z",
+            isRead=False,
+            body=dict(contentType="text", content="Private body"),
+        )
+    )
+    method = "POST" if provider == "google" else "PATCH"
+    target = url + "/modify" if provider == "google" else url
+    h.provider.add("GET", url, httpx.Response(200, json=data))
+    h.provider.add(
+        method, target, httpx.Response(200, json=dict(id="abc123", labelIds=[], isRead=True))
+    )
+    result = run(h.client().inbox_message(h.ana, c, "abc123"))
+    assert result["unread"] is False
+    assert [r.method for r in h.provider.requests] == ["GET", method]
+    assert str(h.provider.requests[-1].url) == target
+    assert json.loads(h.provider.requests[-1].content) == (
+        {"removeLabelIds": ["UNREAD"]} if provider == "google" else {"isRead": True}
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["owner", "malformed", "fetch_error", "already_read", "write_error"]
+)
+def test_open_read_mutation_boundaries(tmp_path, mode):
+    h = Harness(tmp_path)
+    c = h.connect(h.ana, scopes=("https://www.googleapis.com/auth/gmail.modify",))
+    data = full_gmail()
+    if mode == "malformed":
+        data["id"] = "other"
+    if mode == "already_read":
+        data["labelIds"] = []
+    h.provider.add(
+        "GET", GMAIL_MESSAGES, httpx.Response(404 if mode == "fetch_error" else 200, json=data)
+    )
+    h.provider.add("POST", GMAIL_MESSAGES, httpx.Response(403, json={"private": ACCESS}))
+    if mode == "already_read":
+        assert run(h.client().inbox_message(h.ana, c, "abc123"))["unread"] is False
+    else:
+        with pytest.raises(ProviderDataError):
+            run(h.client().inbox_message(h.bo if mode == "owner" else h.ana, c, "abc123"))
+    assert len(h.provider.sent("POST", GMAIL_MESSAGES)) == (1 if mode == "write_error" else 0)
+    if mode == "owner":
+        assert not h.provider.requests
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+@pytest.mark.parametrize("mode", ["refresh", "unconfirmed", "malformed", "timeout", "read_only"])
+def test_provider_open_write_response_is_authoritative(tmp_path, provider, mode, caplog):
+    h = Harness(tmp_path)
+    scope = (
+        "https://www.googleapis.com/auth/gmail.modify" if provider == "google" else "Mail.ReadWrite"
+    )
+    c = h.connect(h.ana, provider, **({} if mode == "read_only" else {"scopes": (scope,)}))
+    url = (
+        GMAIL_MESSAGES + "/abc123"
+        if provider == "google"
+        else "https://graph.microsoft.com/v1.0/me/messages/abc123"
+    )
+    data = (
+        full_gmail()
+        if provider == "google"
+        else dict(
+            id="abc123",
+            isRead=False,
+            receivedDateTime="2023-11-14T22:13:20Z",
+            body=dict(contentType="text", content="Private body"),
+        )
+    )
+    h.provider.add("GET", url, httpx.Response(200, json=data))
+    method = "POST" if provider == "google" else "PATCH"
+    answer = dict(
+        id="abc123",
+        labelIds=["UNREAD"] if mode == "unconfirmed" else [],
+        isRead=mode != "unconfirmed",
+    )
+    if mode == "malformed":
+        answer["id"] = "other"
+
+    def update(request):
+        if mode == "timeout":
+            raise httpx.ReadTimeout("private body and token " + ACCESS)
+        if mode == "refresh" and request.headers["authorization"] != "Bearer renewed":
+            return httpx.Response(401)
+        return httpx.Response(200, json=answer)
+
+    h.provider.add(method, url, update)
+    token_url = GOOGLE_TOKEN if provider == "google" else MICROSOFT_TOKEN
+    h.provider.add(
+        "POST", token_url, httpx.Response(200, json=dict(access_token="renewed", expires_in=3600))
+    )
+    if mode in ("malformed", "timeout"):
+        with pytest.raises(ProviderDataError):
+            run(h.client().inbox_message(h.ana, c, "abc123"))
+    else:
+        result = run(h.client().inbox_message(h.ana, c, "abc123"))
+        assert result["unread"] is (mode in ("unconfirmed", "read_only"))
+    if mode == "read_only":
+        assert [r.method for r in h.provider.requests] == ["GET"]
+    if mode == "refresh":
+        assert len(h.provider.sent("POST", token_url)) == 1
+        assert len(h.provider.sent(method, url)) == 2
+    assert ACCESS not in caplog.text
+    assert "Private body" not in caplog.text

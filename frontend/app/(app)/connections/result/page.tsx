@@ -17,14 +17,18 @@ const UNKNOWN = {
  * browser here with two codes and nothing else; anything that is not a known
  * code renders as "nothing to show".
  */
-export default async function ConnectionResultPage({ searchParams }: { searchParams: SearchParams }) {
+export default async function ConnectionResultPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
   const params = await searchParams;
   const outcome = isOutcome(params.outcome) ? params.outcome : null;
   const provider: Provider | null = isProvider(params.provider) ? params.provider : null;
   const view = outcome ? describeOutcome(outcome, provider) : UNKNOWN;
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-20">
+    <main className="friday-page mx-auto max-w-2xl px-6 py-20">
       <header className="mb-8 flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Connected accounts</h1>
         <Link
@@ -37,7 +41,7 @@ export default async function ConnectionResultPage({ searchParams }: { searchPar
       <section
         aria-live="polite"
         className={`rounded-xl border p-4 ${
-          view.connected ? 'border-green-500/30 bg-green-500/10' : 'border-input'
+          view.connected ? 'border-cyan-500/30 bg-cyan-500/10' : 'border-input'
         }`}
       >
         <h2 className="text-base font-semibold">{view.title}</h2>

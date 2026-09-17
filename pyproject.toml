@@ -41,6 +41,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
     "requests>=2.31.0",  # For model preloading
+    # Safe bounded decoding of the untrusted one-shot camera JPEG.
+    "Pillow>=11.0.0,<13",
     # Webhook server
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
@@ -49,6 +51,7 @@ dependencies = [
     # Wake word detection
     "openwakeword>=0.6.0",
     "livekit-plugins-openai==1.7.1",
+    "webauthn>=3.0.0,<4",
 ]
 
 [project.optional-dependencies]

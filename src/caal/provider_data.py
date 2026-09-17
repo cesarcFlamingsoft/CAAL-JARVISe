@@ -25,7 +25,7 @@ is retried once after such a renewal. Without a refresh token, or when the
 provider refuses the renewal, the account is ``reconnect_required``: the user
 re-approves it under Settings, and nothing here guesses around that.
 
-What comes back is reduced to bounded plain text -- a title, a place, a
+Feed data is reduced to bounded plain text -- a title, a place, a
 sender, a subject, a short preview, times in UTC, the provider's own https
 link to the item -- and nothing else: no bodies, no attendees, no address
 lists, no HTML, no raw payload. Only ``https`` endpoints are contacted,
@@ -33,12 +33,19 @@ redirects are never followed, every response is read within a byte budget,
 every socket operation has a timeout, and each account's read has a
 wall-clock budget on top.
 
-Nothing here logs a token, a secret, a title, a subject, or an address.
+The explicit ``inbox_message`` read additionally returns a bounded text body
+and recipients, live only and never indexed. Gmail uses format=full; Graph
+requests text; Zoho resolves a folder from live search results before its
+content endpoint. HTML is converted to text without retaining attributes.
+
+Nothing here logs a token, a secret, a title, a subject, a body, or an address.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import html
 import json
 import logging
@@ -48,9 +55,11 @@ import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from email.utils import parseaddr
+from email.message import Message
+from email.utils import getaddresses, parseaddr
+from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -713,7 +722,8 @@ def _zoho_message(item: object) -> InboxMessage | None:
     """One Zoho mail summary: sender, subject, Zoho's own preview. Never a body."""
     if not isinstance(item, dict):
         return None
-    message_id = _id_like(item.get("messageId"))
+    raw_id = item.get("messageId")
+    message_id = _id_like(str(raw_id) if type(raw_id) is int and raw_id > 0 else raw_id)
     stamp = item.get("receivedTime")
     if stamp is None:
         stamp = item.get("receivedtime")
@@ -734,6 +744,116 @@ def _zoho_message(item: object) -> InboxMessage | None:
         # can open, so no link is offered rather than a misleading one.
         link=None,
     )
+
+
+# Full bodies are ephemeral: never written to the knowledge index.
+MAX_BODY_LENGTH = 64 * 1024
+MAX_RECIPIENTS = 50
+_MESSAGE_ID = re.compile(r"^[A-Za-z0-9_+=/~-]{1,512}$")
+
+
+def valid_message_id(value: object) -> bool:
+    return isinstance(value, str) and _MESSAGE_ID.fullmatch(value) is not None
+
+
+class _MailText(HTMLParser):
+    """Extract text only; never load links/images or retain attributes."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "head", "template", "iframe", "object"):
+            self.hidden.append(tag)
+        if not self.hidden and tag in ("br", "p", "div", "li", "tr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if self.hidden and tag == self.hidden[-1]:
+            self.hidden.pop()
+        if not self.hidden and tag in ("p", "div", "li", "tr"):
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def _body_text(value: object, *, markup: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ProviderDataError(reason="malformed_response")
+    value = value[:MAX_RESPONSE_BYTES]
+    if markup:
+        parser = _MailText()
+        parser.feed(value)
+        value = "".join(parser.parts)
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(c for c in value if c in "\n\t" or unicodedata.category(c)[0] != "C")[
+        :MAX_BODY_LENGTH
+    ].strip()
+
+
+def _recipients(values: list[str]) -> list[str]:
+    return [
+        text
+        for name, address in getaddresses([v[:8192] for v in values[:50]])
+        if (text := _text(f"{name} <{address}>" if name else address, 254))
+    ][:MAX_RECIPIENTS]
+
+
+def _gmail_body(payload: object) -> str:
+    plain, markup = [], []
+    pending = [(payload, 0)]
+    visited = 0
+    while pending:
+        part, depth = pending.pop()
+        visited += 1
+        if visited > 100 or depth > 20 or not isinstance(part, dict):
+            raise ProviderDataError(reason="malformed_response")
+        headers = part.get("headers", [])
+        if not isinstance(headers, list):
+            raise ProviderDataError(reason="malformed_response")
+        if part.get("filename") or any(
+            isinstance(h, dict)
+            and str(h.get("name", "")).lower() == "content-disposition"
+            and str(h.get("value", "")).lower().startswith("attachment")
+            for h in headers
+        ):
+            continue
+        mime = part.get("mimeType")
+        if mime in ("text/plain", "text/html"):
+            body = part.get("body", {})
+            encoded = body.get("data") if isinstance(body, dict) else None
+            if encoded is None:
+                continue  # Never fetch attachments, including externally stored body parts.
+            try:
+                raw = base64.b64decode(
+                    encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+                )
+                content_type = next(
+                    (
+                        h.get("value")
+                        for h in headers
+                        if isinstance(h, dict) and str(h.get("name", "")).lower() == "content-type"
+                    ),
+                    mime,
+                )
+                metadata = Message()
+                metadata["content-type"] = content_type
+                decoded = raw.decode(metadata.get_content_charset() or "utf-8", errors="replace")
+            except (ValueError, TypeError, LookupError, binascii.Error):
+                raise ProviderDataError(reason="malformed_response") from None
+            (plain if mime == "text/plain" else markup).append(decoded)
+        elif str(mime).startswith("multipart/"):
+            parts = part.get("parts", [])
+            if not isinstance(parts, list) or len(parts) > 100:
+                raise ProviderDataError(reason="malformed_response")
+            pending.extend((p, depth + 1) for p in reversed(parts))
+    if not plain and not markup:
+        raise ProviderDataError(reason="malformed_response")
+    return _body_text("\n".join(plain or markup), markup=not plain)
 
 
 # --- one account's bearer ------------------------------------------------------------------
@@ -974,7 +1094,7 @@ class ProviderDataClient:
             await response.aclose()
         return response.status_code, b"".join(chunks)
 
-    async def _authorized_get(
+    async def _authorized_request(
         self,
         client: httpx.AsyncClient,
         url: str,
@@ -982,10 +1102,12 @@ class ProviderDataClient:
         headers: dict[str, str] | None,
         token: str,
         scheme: str,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
     ) -> tuple[int, bytes]:
         sent = dict(headers or ())
         sent["Authorization"] = f"{scheme} {token}"
-        request = client.build_request("GET", url, params=params, headers=sent)
+        request = client.build_request(method, url, params=params, headers=sent, json=payload)
         return await self._send(client, request)
 
     async def _get_json(
@@ -995,14 +1117,21 @@ class ProviderDataClient:
         url: str,
         params: dict[str, Any],
         headers: dict[str, str] | None = None,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """One authenticated GET, retried once with a renewed token after a ``401``."""
+        """One authenticated request, renewed once after 401; writes must be idempotent."""
         token = await bearer.token()
         scheme = bearer.scheme
-        status, body = await self._authorized_get(client, url, params, headers, token, scheme)
+        status, body = await self._authorized_request(
+            client, url, params, headers, token, scheme, method, payload
+        )
         if status == 401 and await bearer.renew(token):
             token = await bearer.token()
-            status, body = await self._authorized_get(client, url, params, headers, token, scheme)
+            status, body = await self._authorized_request(
+                client, url, params, headers, token, scheme, method, payload
+            )
         if status == 401:
             raise ProviderDataError(
                 "The provider refused the access token",
@@ -1062,6 +1191,175 @@ class ProviderDataClient:
         _require_scope(connection, _CALENDAR_SCOPES)
         async with self._http() as client:
             return await self._calendar_with(client, user_id, connection, start, end, count)
+
+    async def inbox_message(
+        self, user_id: str, connection: ProviderConnection, message_id: str
+    ) -> dict[str, Any]:
+        """Open owned live text and mark read where granted, within existing budgets."""
+        if not valid_message_id(message_id):
+            raise ValueError("Invalid message identifier")
+        owned = self._store.get_connection(user_id, connection.connection_id)
+        if owned is None:
+            raise ProviderDataError(reason="reconnect_required")
+        _require_scope(owned, _MAIL_SCOPES)
+        async with self._http() as client:
+            bearer = _Bearer(self, client, user_id, owned)
+            try:
+                return await self._bounded(self._message_with(client, bearer, owned, message_id))
+            except ProviderDataError:
+                raise
+            except Exception:
+                raise ProviderDataError(reason="malformed_response") from None
+
+    async def _message_with(
+        self,
+        client: httpx.AsyncClient,
+        bearer: _Bearer,
+        connection: ProviderConnection,
+        message_id: str,
+    ) -> dict[str, Any]:
+        path_id = quote(message_id, safe="")
+        recipients = []
+        if connection.provider == "google":
+            data = await self._get_json(
+                client, bearer, f"{_GMAIL_MESSAGES}/{path_id}", {"format": "full"}
+            )
+            summary = _gmail_message(data)
+            payload = data.get("payload", {})
+            body = _gmail_body(payload)
+            recipients = _recipients(
+                [
+                    h["value"]
+                    for h in payload.get("headers", [])
+                    if isinstance(h, dict)
+                    and str(h.get("name", "")).lower() in ("to", "cc", "bcc")
+                    and isinstance(h.get("value"), str)
+                ]
+            )
+        elif connection.provider == "microsoft":
+            data = await self._get_json(
+                client,
+                bearer,
+                f"https://graph.microsoft.com/v1.0/me/messages/{path_id}",
+                {
+                    "$select": (
+                        "id,subject,from,toRecipients,ccRecipients,bccRecipients,"
+                        "receivedDateTime,isRead,body,webLink"
+                    )
+                },
+                {"Prefer": 'outlook.body-content-type="text"'},
+            )
+            summary = _graph_message(data)
+            content = data.get("body", {})
+            if not isinstance(content, dict) or content.get("contentType", "").lower() not in (
+                "text",
+                "html",
+            ):
+                raise ProviderDataError(reason="malformed_response")
+            body = _body_text(
+                content.get("content"), markup=content["contentType"].lower() == "html"
+            )
+            for key in ("toRecipients", "ccRecipients", "bccRecipients"):
+                rows = data.get(key, [])
+                if isinstance(rows, list):
+                    for row in rows[:MAX_RECIPIENTS]:
+                        mailbox = row.get("emailAddress", {}) if isinstance(row, dict) else {}
+                        if isinstance(mailbox, dict):
+                            label = _text(mailbox.get("address"), 254)
+                            if label:
+                                recipients.append(label)
+        else:
+            origin = self._zoho_origin("mail")
+            listing = await self._get_json(client, bearer, origin + ZOHO_MAIL_PATH, {})
+            rows = listing.get("data")
+            if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+                raise ProviderDataError(reason="malformed_response")
+            account_id = rows[0].get("accountId")
+            accounts = [str(account_id)] if isinstance(account_id, (str, int)) else []
+            # A grant can expose multiple mail accounts. Do not choose one by position.
+            if len(accounts) != 1 or not re.fullmatch(r"[0-9]{1,128}", accounts[0]):
+                raise ProviderDataError(reason="malformed_response")
+            base = f"{origin}{ZOHO_MAIL_PATH}/{accounts[0]}"
+            listing = await self._get_json(
+                client,
+                bearer,
+                base + "/messages/search",
+                {
+                    "searchKey": "newMails",
+                    "start": "1",
+                    "limit": str(MAX_ITEMS),
+                    "includeto": "true",
+                },
+            )
+            rows = listing.get("data", [])
+            matches = (
+                [
+                    r
+                    for r in rows[:MAX_ITEMS]
+                    if isinstance(r, dict) and str(r.get("messageId")) == message_id
+                ]
+                if isinstance(rows, list)
+                else []
+            )
+            if len(matches) != 1:
+                raise ProviderDataError(reason="malformed_response")
+            row = matches[0]
+            folder = str(row.get("folderId", ""))
+            if not re.fullmatch(r"[0-9]{1,128}", folder) or not message_id.isdigit():
+                raise ProviderDataError(reason="malformed_response")
+            summary = _zoho_message({**row, "messageId": message_id})
+            data = await self._get_json(
+                client, bearer, f"{base}/folders/{folder}/messages/{path_id}/content", {}
+            )
+            content = data.get("data", {})
+            if not isinstance(content, dict) or str(content.get("messageId")) != message_id:
+                raise ProviderDataError(reason="malformed_response")
+            body = _body_text(content.get("content"), markup=True)
+            if isinstance(row.get("toAddress"), str):
+                recipients = _recipients([row["toAddress"]])
+        if summary is None or summary.id != message_id:
+            raise ProviderDataError(reason="malformed_response")
+        view = summary.view()
+        view.pop("preview")
+        # Validate the complete text-only detail before any provider mutation. Old
+        # read-only grants and Zoho retain their observed state, never a guessed read.
+        if summary.unread:
+            scopes = {scope.lower() for scope in connection.scopes}
+            if connection.provider == "google" and scopes.intersection(
+                {"https://www.googleapis.com/auth/gmail.modify", "https://mail.google.com/"}
+            ):
+                updated = await self._get_json(
+                    client,
+                    bearer,
+                    f"{_GMAIL_MESSAGES}/{path_id}/modify",
+                    {},
+                    method="POST",
+                    payload={"removeLabelIds": ["UNREAD"]},
+                )
+                if updated.get("id") != message_id or not isinstance(updated.get("labelIds"), list):
+                    raise ProviderDataError(reason="malformed_response")
+                view["unread"] = "UNREAD" in updated["labelIds"]
+            elif connection.provider == "microsoft" and scopes.intersection(
+                {"mail.readwrite", "mail.readwrite.shared"}
+            ):
+                updated = await self._get_json(
+                    client,
+                    bearer,
+                    f"https://graph.microsoft.com/v1.0/me/messages/{path_id}",
+                    {},
+                    method="PATCH",
+                    payload={"isRead": True},
+                )
+                if updated.get("id") != message_id or not isinstance(updated.get("isRead"), bool):
+                    raise ProviderDataError(reason="malformed_response")
+                view["unread"] = not updated["isRead"]
+        return {
+            **view,
+            "provider": connection.provider,
+            "connection_id": connection.connection_id,
+            "recipients": recipients[:MAX_RECIPIENTS],
+            "body": body,
+        }
 
     async def inbox_messages(
         self, user_id: str, connection: ProviderConnection, *, limit: int
@@ -1313,7 +1611,11 @@ class ProviderDataClient:
         if not isinstance(entries, list):
             return found
         for entry in entries[: limit * 8]:
-            value = _id_like(entry.get(key)) if isinstance(entry, dict) else None
+            raw = entry.get(key) if isinstance(entry, dict) else None
+            # Zoho documents mail account IDs as longs (calendar UIDs stay strings).
+            if key == "accountId" and type(raw) is int and raw > 0:
+                raw = str(raw)
+            value = _id_like(raw)
             if value is not None and _PATH_TOKEN.fullmatch(value) is not None:
                 found.append(value)
             if len(found) == limit:

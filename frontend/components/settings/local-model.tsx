@@ -212,7 +212,7 @@ export function LocalModelSettings() {
       </div>
 
       {note && (
-        <p className={note.kind === 'error' ? 'text-xs text-red-500' : 'text-xs text-green-500'}>
+        <p className={note.kind === 'error' ? 'text-xs text-red-500' : 'text-xs text-cyan-300'}>
           {note.text}
         </p>
       )}

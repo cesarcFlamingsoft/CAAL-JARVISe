@@ -118,6 +118,10 @@ services:
       - TTS_MODEL=${TTS_MODEL:-prince-canuma/Kokoro-82M}
       # mlx-audio Kokoro uses different voices than kokoro-fastapi
       - TTS_VOICE=${TTS_VOICE:-af_heart}
+      # The approved FRIDAY Qwen route is a private service. Carry its token on
+      # every ordinary agent recreate; an explicit Qwen selection fails closed
+      # rather than silently changing the speaker when this is unavailable.
+      - CAAL_QWEN_TRIAL_TOKEN=${CAAL_QWEN_TRIAL_TOKEN:-}
     volumes:
       - caal-memory:/app/data
       - caal-config:/app/config  # Runtime config (mcp_servers.json)

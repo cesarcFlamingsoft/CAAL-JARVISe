@@ -30,9 +30,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   isPreConnectBufferEnabled: true,
 
   logo: '/mexcantech-mark.png',
-  accent: '#45997c',
+  accent: '#75e2f2',
   logoDark: '/mexcantech-mark.png',
-  accentDark: '#45997c',
+  accentDark: '#75e2f2',
   startButtonText: 'Talk to FRIDAY',
 
   // LiveKit routing worker; user-facing identity remains FRIDAY.

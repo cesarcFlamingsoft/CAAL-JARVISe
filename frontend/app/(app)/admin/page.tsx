@@ -17,11 +17,11 @@ export default async function AdminPage() {
 
   if (auth.kind === 'unconfigured') {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-24">
+      <main className="friday-page mx-auto max-w-3xl px-6 py-24">
         <h1 className="text-xl font-semibold">Administration is not available</h1>
         <p className="text-muted-foreground mt-2 text-sm">
-          Multi-user identity is not configured for this deployment. See
-          docs/MULTI-USER-IDENTITY.md for the required settings.
+          Multi-user identity is not configured for this deployment. See docs/MULTI-USER-IDENTITY.md
+          for the required settings.
         </p>
       </main>
     );
@@ -36,7 +36,7 @@ export default async function AdminPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-20">
+    <main className="friday-page mx-auto max-w-6xl px-6 py-20">
       <header className="mb-8 flex items-baseline justify-between">
         <div>
           <h1 className="text-xl font-semibold">FRIDAY administration</h1>

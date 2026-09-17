@@ -19,13 +19,14 @@
     surface: it names no reminder, no number and no chat, and it never changes
     anything that already exists.
 
-Both routes live under ``/users/me`` so they inherit the identity boundary of
+These routes live under ``/users/me`` so they inherit the identity boundary of
 :mod:`caal.user_api`: a single-use ``caal-backend`` principal from the BFF
 names the user, the user is loaded from the database on every call, and the
 identity middleware makes every response uncacheable and free of the
 app-wide CORS policy. The reads themselves are :mod:`caal.provider_data`:
-bounded, https-only, token-renewing, and reduced to plain summaries. Nothing
-here returns or logs a token, a body, or an address beyond an account label.
+bounded, https-only, and token-renewing. The feeds return plain summaries.
+The explicit message reader returns bounded text and recipients to the owner
+only; it never indexes or logs that content.
 """
 
 from __future__ import annotations
@@ -33,12 +34,23 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
+from . import background_tasks
 from .connections_api import ConnectionsRuntime, require_connections
-from .provider_data import MAX_ITEMS, AccountFetch, CalendarEvent, InboxMessage
+from .provider_connections import is_valid_connection_id
+from .provider_data import (
+    MAX_ITEMS,
+    AccountFetch,
+    CalendarEvent,
+    InboxMessage,
+    ProviderDataError,
+    account_status,
+    valid_message_id,
+)
 from .tools import alarms_tools, reminder_delivery, reminders_tools
 from .tools.errors import SafeToolError
 from .user_api import CurrentUser, require_user
@@ -247,6 +259,48 @@ async def inbox_feed(
     )
 
 
+class InboxDetailResponse(_Strict):
+    id: str
+    connection_id: str
+    provider: str
+    subject: str | None
+    sender: str | None
+    recipients: list[str] = Field(max_length=50)
+    received_at: str
+    unread: bool
+    body: str = Field(max_length=65536)
+    link: str | None
+
+
+@router.get("/users/me/dashboard/inbox/message", response_model=InboxDetailResponse)
+async def inbox_message(
+    request: Request,
+    connection_id: str = Query(default="", alias="connectionId"),
+    message_id: str = Query(default="", alias="messageId"),
+    user: CurrentUser = Depends(require_user),
+    runtime: ConnectionsRuntime = Depends(require_connections),
+) -> InboxDetailResponse:
+    """Live, owner-scoped, ephemeral text. Never fall back to the summary index."""
+    if (
+        set(request.query_params) != {"connectionId", "messageId"}
+        or any(len(request.query_params.getlist(key)) != 1 for key in request.query_params)
+        or not is_valid_connection_id(connection_id)
+        or not valid_message_id(message_id)
+    ):
+        raise HTTPException(status_code=422, detail="invalid")
+    connection = runtime.store.get_connection(user.profile.user_id, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        message = await runtime.data.inbox_message(user.profile.user_id, connection, message_id)
+        return InboxDetailResponse(**message)
+    except ProviderDataError as exc:
+        raise HTTPException(status_code=502, detail=account_status(exc)) from None
+    except Exception:
+        # No exception text/traceback: provider payloads and message contents are private.
+        raise HTTPException(status_code=502, detail="unavailable") from None
+
+
 # --- the caller own local reminders ------------------------------------------------------
 
 
@@ -393,3 +447,43 @@ async def set_delivery_defaults(
         raise HTTPException(status_code=422, detail="invalid") from None
     logger.info("Saved a reminder delivery default of %d channel(s)", len(saved))
     return DeliveryDefaults(delivery=list(saved), available=_available(user_id), saved=True)
+
+
+class WorkItem(_Strict):
+    title: str = Field(max_length=120)
+    status: Literal["queued", "running", "succeeded", "failed", "cancelled", "interrupted"]
+    created_at: int
+    updated_at: int
+    started_at: int | None
+    finished_at: int | None
+
+
+class WorkFeedResponse(_Strict):
+    generated_at: int
+    items: list[WorkItem] = Field(max_length=12)
+
+
+@router.get("/users/me/dashboard/work", response_model=WorkFeedResponse)
+async def work_feed(
+    request: Request, user: CurrentUser = Depends(require_user)
+) -> WorkFeedResponse:
+    """Read only the caller's newest durable work; no caller-selected scope."""
+    if request.query_params:
+        raise HTTPException(status_code=422, detail="invalid")
+    rows = background_tasks.list_tasks(
+        user_id=user.profile.user_id, limit=12, newest_first=True
+    )
+    return WorkFeedResponse(
+        generated_at=int(time.time()),
+        items=[
+            WorkItem(
+                title=" ".join(background_tasks.redact_secrets(row.request).split())[:120],
+                status=row.status,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+            )
+            for row in rows
+        ],
+    )

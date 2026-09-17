@@ -34,6 +34,7 @@ import {
   parseStatus,
   parseSubjects,
 } from '@/lib/company/contract';
+import { COMPANY_SESSION_HREF } from '@/lib/company/session-mode';
 import {
   ACCEPTED_EXTENSIONS,
   MAX_UPLOAD_BYTES,
@@ -41,7 +42,6 @@ import {
   encodeUploadMetadata,
   parseUploadMetadata,
 } from '@/lib/company/upload';
-import { COMPANY_SESSION_HREF } from '@/lib/company/session-mode';
 
 const CLASSIFICATION_LABELS: Record<Classification, string> = {
   policy: 'Policy',
@@ -110,7 +110,9 @@ export default function CompanyLibraryPage() {
     // The metadata is validated here, packed into one header envelope, and
     // never put in the URL: a title and a filename say what a document is, and
     // a query string is the part of a request that access logs record.
-    const chosen = form.getAll('subjects').filter((item): item is string => typeof item === 'string');
+    const chosen = form
+      .getAll('subjects')
+      .filter((item): item is string => typeof item === 'string');
     const metadata = parseUploadMetadata({
       filename: file.name,
       title: String(form.get('title') ?? ''),
@@ -249,7 +251,7 @@ export default function CompanyLibraryPage() {
   const heading = status?.company_name ?? 'Company';
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-24 md:py-28">
+    <main className="friday-page mx-auto max-w-5xl px-4 py-24 md:py-28">
       <h1 className="text-foreground text-2xl font-semibold">{heading} Library</h1>
       <p className="text-muted-foreground mt-2 max-w-3xl text-sm">
         The documents FRIDAY may quote when you ask about your company: policies, HR documents,
@@ -270,7 +272,7 @@ export default function CompanyLibraryPage() {
       {/* --- how to ask FRIDAY about any of this ------------------------------------ */}
       <section
         aria-labelledby="company-session"
-        className="border-input bg-muted/30 mt-8 rounded-lg border p-5"
+        className="friday-panel border-input bg-muted/30 mt-8 rounded-lg border p-5"
       >
         <h2 id="company-session" className="text-foreground text-lg font-medium">
           Asking FRIDAY about these documents
@@ -288,7 +290,9 @@ export default function CompanyLibraryPage() {
             else.
           </li>
           <li>
-            <strong className="text-foreground">A company session can only answer questions.</strong>{' '}
+            <strong className="text-foreground">
+              A company session can only answer questions.
+            </strong>{' '}
             It has exactly two capabilities: search the library, and read an excerpt from one
             document. There is no email, no calendar, no web, no Home Assistant, no background work
             and no delegation — and also no reminders, no alarms and no notes to memory, because a

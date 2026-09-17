@@ -439,3 +439,55 @@ export function formatDayOrTime(iso: string, now: Date, timeZone?: string): stri
     new Date(iso)
   );
 }
+
+/** Exactly one opaque message identity; never accept a provider URL or account override. */
+export function messageQuery(params: URLSearchParams): string | null {
+  if ([...params.keys()].some((key) => !['connectionId', 'messageId'].includes(key))) return null;
+  const connection = params.getAll('connectionId');
+  const ids = params.getAll('messageId');
+  if (
+    connection.length !== 1 ||
+    !isConnectionId(connection[0]) ||
+    ids.length !== 1 ||
+    !/^[A-Za-z0-9_+=/~\-]{1,512}$/.test(ids[0])
+  )
+    return null;
+  return new URLSearchParams({ connectionId: connection[0], messageId: ids[0] }).toString();
+}
+
+export interface InboxMessageDetail extends Omit<InboxMessageItem, 'preview'> {
+  recipients: string[];
+  body: string;
+}
+
+/** Allowlist at both BFF and browser boundaries. Body is text, never interpreted as markup. */
+export function browserInboxMessage(data: unknown): InboxMessageDetail | null {
+  const row = record(data);
+  const base = message(data);
+  if (
+    !row ||
+    !base ||
+    typeof row.body !== 'string' ||
+    !Array.isArray(row.recipients) ||
+    !Number.isFinite(Date.parse(base.receivedAt))
+  )
+    return null;
+  return {
+    id: base.id,
+    connectionId: base.connectionId,
+    provider: base.provider,
+    subject: base.subject,
+    sender: base.sender,
+    receivedAt: base.receivedAt,
+    unread: base.unread,
+    link: base.link,
+    recipients: row.recipients
+      .slice(0, 50)
+      .map((v) => text(v, 254))
+      .filter((v): v is string => v !== null),
+    body: row.body
+      .slice(0, 65536)
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === '\n' || char === '\t' ? char : '')),
+  };
+}

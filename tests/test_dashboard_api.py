@@ -563,3 +563,130 @@ def test_a_provider_outage_falls_back_to_the_last_indexed_feed_and_says_stale(
     calendar = client.get(PATHS[0], headers=harness.bearer(harness.ana)).json()
     assert set(a["status"] for a in calendar["accounts"]) == set(["reconnect_required"])
     assert calendar["events"] == []
+
+
+def test_reader_identity_ownership_validation_and_no_store(harness, client):
+    h = harness
+    c = h.connect(h.ana)
+    path = "/users/me/dashboard/inbox/message"
+    query = dict(connectionId=c.connection_id, messageId="abc123")
+    assert client.get(path, params=query).status_code == 401
+    for user in (h.bo,):
+        response = client.get(path, params=query, headers=h.bearer(user))
+        assert response.status_code == 404
+        assert "no-store" in response.headers["cache-control"]
+    for bad in ("../x", "", "x" * 513, "a?b", "a#b"):
+        response = client.get(path, params={**query, "messageId": bad}, headers=h.bearer(h.ana))
+        assert response.status_code == 422
+    assert not h.provider.requests
+
+
+def test_reader_live_contract_and_failure_never_falls_back(harness, client):
+    import base64
+
+    h = harness
+    c = h.connect(h.ana)
+    h.provider.add(
+        "GET",
+        GMAIL_MESSAGES + "/abc123",
+        httpx.Response(
+            200,
+            json=dict(
+                id="abc123",
+                internalDate=str(NOW * 1000),
+                payload=dict(
+                    mimeType="text/plain",
+                    headers=[],
+                    body=dict(data=base64.urlsafe_b64encode(b"Live body").decode()),
+                ),
+                token=ACCESS,
+            ),
+        ),
+    )
+    query = dict(connectionId=c.connection_id, messageId="abc123")
+    response = client.get(
+        "/users/me/dashboard/inbox/message", params=query, headers=h.bearer(h.ana)
+    )
+    assert response.status_code == 200
+    assert response.json()["body"] == "Live body"
+    assert "no-store" in response.headers["cache-control"]
+    assert ACCESS not in response.text
+    h.provider.routes.clear()
+    response = client.get(
+        "/users/me/dashboard/inbox/message", params=query, headers=h.bearer(h.ana)
+    )
+    assert response.status_code == 502
+    assert response.json() == {"detail": "unavailable"}
+    assert "Live body" not in response.text
+
+
+def test_reader_rejects_duplicate_and_extra_query_keys(harness, client):
+    h = harness
+    c = h.connect(h.ana)
+    base = [("connectionId", c.connection_id), ("messageId", "abc123")]
+    for extra in [("messageId", "other"), ("connectionId", c.connection_id), ("folderId", "123")]:
+        response = client.get(
+            "/users/me/dashboard/inbox/message", params=base + [extra], headers=h.bearer(h.ana)
+        )
+        assert response.status_code == 422
+    assert not h.provider.requests
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_reader_endpoint_returns_confirmed_provider_read_state(harness, client, provider):
+    import base64
+
+    h = harness
+    scope = (
+        "https://www.googleapis.com/auth/gmail.modify" if provider == "google" else "Mail.ReadWrite"
+    )
+    c = h.connect(h.ana, provider, scopes=(scope,))
+    url = (
+        GMAIL_MESSAGES + "/abc123"
+        if provider == "google"
+        else "https://graph.microsoft.com/v1.0/me/messages/abc123"
+    )
+    data = (
+        dict(
+            id="abc123",
+            labelIds=["UNREAD"],
+            internalDate=str(NOW * 1000),
+            payload=dict(
+                mimeType="text/plain",
+                headers=[],
+                body=dict(data=base64.urlsafe_b64encode(b"Live body").decode()),
+            ),
+        )
+        if provider == "google"
+        else dict(
+            id="abc123",
+            isRead=False,
+            receivedDateTime="2023-11-14T22:13:20Z",
+            body=dict(contentType="text", content="Live body"),
+        )
+    )
+    method = "POST" if provider == "google" else "PATCH"
+    h.provider.add("GET", url, httpx.Response(200, json=data))
+    h.provider.add(
+        method,
+        url,
+        httpx.Response(200, json=dict(id="abc123", labelIds=[], isRead=True, token=ACCESS)),
+    )
+    path = "/users/me/dashboard/inbox/message"
+    query = dict(connectionId=c.connection_id, messageId="abc123")
+    assert client.get(path, params=query, headers=h.bearer(h.bo)).status_code == 404
+    assert not h.provider.requests
+    response = client.get(path, params=query, headers=h.bearer(h.ana))
+    assert response.status_code == 200
+    assert response.json()["unread"] is False
+    assert response.json()["body"] == "Live body"
+    assert ACCESS not in response.text
+    assert "no-store" in response.headers["cache-control"]
+    assert [r.method for r in h.provider.requests] == ["GET", method]
+    h.provider.routes.clear()
+    h.provider.requests.clear()
+    h.provider.add("GET", url, httpx.Response(404, json={"private": ACCESS}))
+    response = client.get(path, params=query, headers=h.bearer(h.ana))
+    assert response.status_code == 502
+    assert [r.method for r in h.provider.requests] == ["GET"]
+    assert ACCESS not in response.text

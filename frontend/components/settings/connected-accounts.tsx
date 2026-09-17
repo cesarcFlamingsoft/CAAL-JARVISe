@@ -118,6 +118,21 @@ export function ConnectedAccounts() {
     window.location.assign(result.data.authorizationUrl);
   }
 
+  async function reconnect(row: ConnectionRow, connection: BrowserConnection) {
+    // The provider callback upserts the same provider account, so owner labels
+    // and aliases stay attached while the old token is replaced after consent.
+    // Keep this account-specific flow explicit even though authorization begins
+    // at the provider level.
+    void connection.connectionId;
+    if (starting !== null) return;
+    setNotice({
+      provider: row.provider,
+      tone: 'info',
+      text: 'Reconnect this account to let FRIDAY mark opened messages read.',
+    });
+    await connect(row);
+  }
+
   async function confirmDisconnect(row: ConnectionRow, connection: BrowserConnection) {
     if (confirming !== connection.connectionId || removing !== null) return;
     setRemoving(connection.connectionId);
@@ -289,6 +304,16 @@ export function ConnectedAccounts() {
                       </p>
                       {!isConfirming && (
                         <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            aria-label={`Reconnect ${connection.accountLabel ?? row.label}`}
+                            title="Reconnect this account to let FRIDAY mark opened messages read"
+                            onClick={() => void reconnect(row, connection)}
+                            disabled={!row.canConnect || starting !== null || removing !== null}
+                          >
+                            {starting === row.provider ? 'Opening…' : 'Reconnect'}
+                          </Button>
                           <Button
                             variant="secondary"
                             size="sm"

@@ -26,6 +26,7 @@ from caal.internal_auth import (
     RateLimiter,
     mint_principal,
 )
+from caal.local_auth import LoginResult
 from caal.profile_crypto import KeyRing
 from caal.security_config import MultiUserConfig
 from caal.user_api import IdentityRuntime
@@ -118,8 +119,11 @@ class Harness:
             **kwargs,
         )
 
-    def bearer(self, user_id: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.principal(user_id)}"}
+    def bearer(self, user_id: str, *, session_binding: str | None = None) -> dict[str, str]:
+        claims = {"session_binding": session_binding} if session_binding else None
+        return {
+            "Authorization": f"Bearer {self.principal(user_id, claims=claims)}"
+        }
 
 
 @pytest.fixture
@@ -151,6 +155,141 @@ def _create_member(harness, client, admin_id: str, email="ana@example.com") -> s
     )
     assert response.status_code == 201, response.text
     return response.json()["user_id"]
+
+
+def test_passkey_routes_keep_login_usernameless_and_management_owner_scoped(
+    harness, client
+) -> None:
+    admin_id = _bootstrap_admin(harness, client)
+    profile = harness.store.get_user(admin_id)
+    calls = []
+    ceremony = "ceremony-" + "x" * 32
+
+    class FakePasskeys:
+        def begin_authentication(self):
+            calls.append(("begin_auth",))
+            return {"ceremonyId": ceremony, "publicKey": {"challenge": "challenge"}}
+
+        def finish_authentication(self, ceremony_id, credential):
+            calls.append(("finish_auth", ceremony_id, credential["id"]))
+            return LoginResult(
+                ok=True,
+                token="opaque-session-token-with-enough-length",
+                user=profile,
+                expires_at=harness.now + 3600,
+            )
+
+        def begin_registration(self, user_id, label, current_password, session_binding):
+            calls.append(("begin_register", user_id, label, current_password, session_binding))
+            return {"ceremonyId": "register", "publicKey": {"challenge": "challenge"}}
+
+        def finish_registration(
+            self, user_id, ceremony_id, label, credential, session_binding
+        ):
+            calls.append(
+                ("finish_register", user_id, ceremony_id, label, credential["id"], session_binding)
+            )
+            return {"label": label, "createdAt": harness.now, "lastUsedAt": None}
+
+        def list_credentials(self, user_id):
+            calls.append(("list", user_id))
+            return [{"id": "key_" + "a" * 24, "label": "Mac", "createdAt": 1, "lastUsedAt": None}]
+
+        def rename_credential(self, user_id, credential_id, label):
+            calls.append(("rename", user_id, credential_id, label))
+            return True
+
+        def revoke_credential(self, user_id, credential_id, current_password):
+            calls.append(("revoke", user_id, credential_id, current_password))
+            return True
+
+    harness.runtime.webauthn = FakePasskeys()
+    identity = {"Authorization": f"Bearer {harness.assertion('unused@example.com')}"}
+    options = client.post("/auth/passkey/options", headers=identity)
+    assert options.status_code == 200
+    assert "allowCredentials" not in options.json()["publicKey"]
+
+    assertion = {
+        "id": "credential",
+        "rawId": "credential",
+        "type": "public-key",
+        "authenticatorAttachment": "platform",
+        "response": {
+            "clientDataJSON": "client-data",
+            "authenticatorData": "auth-data",
+            "signature": "signature",
+            "userHandle": "user-handle",
+        },
+    }
+    verified = client.post(
+        "/auth/passkey/verify",
+        headers={"Authorization": f"Bearer {harness.assertion('unused@example.com')}"},
+        json={"ceremonyId": ceremony, "credential": assertion},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["session_token"] == "opaque-session-token-with-enough-length"
+
+    listed = client.get("/users/me/passkeys", headers=harness.bearer(admin_id))
+    assert set(listed.json()["passkeys"][0]) == {"id", "label", "createdAt", "lastUsedAt"}
+    begun = client.post(
+        "/users/me/passkeys/options",
+        headers=harness.bearer(admin_id, session_binding="a" * 64),
+        json={"label": "My Mac", "current_password": "current password"},
+    )
+    assert begun.status_code == 200
+    assert calls[-1] == (
+        "begin_register",
+        admin_id,
+        "My Mac",
+        "current password",
+        "a" * 64,
+    )
+
+    credential_id = "key_" + "a" * 24
+    renamed = client.patch(
+        f"/users/me/passkeys/{credential_id}",
+        headers=harness.bearer(admin_id),
+        json={"label": "Work Mac"},
+    )
+    assert renamed.status_code == 204
+    revoked = client.request(
+        "DELETE",
+        f"/users/me/passkeys/{credential_id}",
+        headers=harness.bearer(admin_id),
+        json={"current_password": "current password"},
+    )
+    assert revoked.status_code == 204
+
+
+def test_passkey_management_rejects_a_stolen_session_without_current_password(
+    harness, client
+) -> None:
+    admin_id = _bootstrap_admin(harness, client)
+
+    class GuardedPasskeys:
+        def begin_registration(self, *args):
+            raise AssertionError("missing passwords must be rejected before the service")
+
+        def revoke_credential(self, *args):
+            raise AssertionError("missing passwords must be rejected before the service")
+
+    harness.runtime.webauthn = GuardedPasskeys()
+    key_id = "key_" + "a" * 24
+
+    add = client.post(
+        "/users/me/passkeys/options",
+        headers=harness.bearer(admin_id, session_binding="a" * 64),
+        json={"label": "Attacker device"},
+    )
+    revoke = client.request(
+        "DELETE",
+        f"/users/me/passkeys/{key_id}",
+        headers=harness.bearer(admin_id),
+        json={},
+    )
+
+    assert add.status_code == 422
+    assert revoke.status_code == 422
 
 
 # --- configuration gate -----------------------------------------------------------

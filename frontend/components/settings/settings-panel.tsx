@@ -14,9 +14,9 @@ import {
 } from '@phosphor-icons/react/dist/ssr';
 import { Button } from '@/components/livekit/button';
 import { ConnectedAccounts } from '@/components/settings/connected-accounts';
-import { TtsSettings } from '@/components/settings/tts';
 import { LanguageSettings } from '@/components/settings/language';
 import { LocalModelSettings } from '@/components/settings/local-model';
+import { TtsSettings } from '@/components/settings/tts';
 import { WeatherLocation } from '@/components/settings/weather-location';
 
 // =============================================================================
@@ -308,7 +308,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const removeEmailAccount = (index: number) => {
     setSettings({
       ...settings,
-      email_accounts: (settings.email_accounts || []).filter((_, accountIndex) => accountIndex !== index),
+      email_accounts: (settings.email_accounts || []).filter(
+        (_, accountIndex) => accountIndex !== index
+      ),
     });
   };
 
@@ -732,7 +734,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
   const testEmailAccount = useCallback(async (account: EmailAccount) => {
     if (!account.id) return;
-    setEmailTests((prev) => ({ ...prev, [account.id]: { status: 'testing', error: null, info: null } }));
+    setEmailTests((prev) => ({
+      ...prev,
+      [account.id]: { status: 'testing', error: null, info: null },
+    }));
 
     try {
       const res = await fetch('/api/setup/test-email', {
@@ -742,7 +747,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       });
       const result = await res.json();
       if (result.success) {
-        const checks = result.data?.checks ? Object.keys(result.data.checks).join(' + ') : 'Connected';
+        const checks = result.data?.checks
+          ? Object.keys(result.data.checks).join(' + ')
+          : 'Connected';
         setEmailTests((prev) => ({
           ...prev,
           [account.id]: { status: 'success', error: null, info: checks || 'Connected' },
@@ -892,7 +899,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       case 'testing':
         return <CircleNotch className="h-4 w-4 animate-spin text-blue-500" />;
       case 'success':
-        return <Check className="h-4 w-4 text-green-500" weight="bold" />;
+        return <Check className="h-4 w-4 text-cyan-300" weight="bold" />;
       case 'error':
         return <X className="h-4 w-4 text-red-500" weight="bold" />;
       default:
@@ -1283,8 +1290,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       <WeatherLocation />
 
       {/* Native Assistant Tools */}
-      <div className="overflow-hidden rounded-xl border border-green-500/30">
-        <div className="bg-green-500/10 flex items-center justify-between border-b px-4 py-3">
+      <div className="overflow-hidden rounded-xl border border-cyan-500/30">
+        <div className="flex items-center justify-between border-b bg-cyan-500/10 px-4 py-3">
           <div>
             <span className="font-semibold">Native Assistant Tools</span>
             <p className="text-muted-foreground text-xs">
@@ -1331,14 +1338,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       <input
                         type="text"
                         value={account.display_name || ''}
-                        onChange={(e) => updateEmailAccount(index, { display_name: e.target.value })}
+                        onChange={(e) =>
+                          updateEmailAccount(index, { display_name: e.target.value })
+                        }
                         placeholder="Display name"
                         className="border-input bg-background flex-1 rounded-lg border px-3 py-2 text-sm"
                       />
                       <button
                         type="button"
                         onClick={() => removeEmailAccount(index)}
-                        className="text-muted-foreground hover:text-red-500 rounded-lg p-2"
+                        className="text-muted-foreground rounded-lg p-2 hover:text-red-500"
                         aria-label="Remove email account"
                       >
                         <Trash size={16} />
@@ -1389,7 +1398,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       <input
                         type="number"
                         value={account.imap_port || 993}
-                        onChange={(e) => updateEmailAccount(index, { imap_port: Number(e.target.value) })}
+                        onChange={(e) =>
+                          updateEmailAccount(index, { imap_port: Number(e.target.value) })
+                        }
                         placeholder="IMAP port"
                         className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
                       />
@@ -1403,21 +1414,27 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       <input
                         type="number"
                         value={account.smtp_port || 587}
-                        onChange={(e) => updateEmailAccount(index, { smtp_port: Number(e.target.value) })}
+                        onChange={(e) =>
+                          updateEmailAccount(index, { smtp_port: Number(e.target.value) })
+                        }
                         placeholder="SMTP port"
                         className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
                       />
                       <input
                         type="password"
                         value={account.imap_password || ''}
-                        onChange={(e) => updateEmailAccount(index, { imap_password: e.target.value })}
+                        onChange={(e) =>
+                          updateEmailAccount(index, { imap_password: e.target.value })
+                        }
                         placeholder={`IMAP app password (${REDACTED_SECRET} keeps existing)`}
                         className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
                       />
                       <input
                         type="password"
                         value={account.smtp_password || ''}
-                        onChange={(e) => updateEmailAccount(index, { smtp_password: e.target.value })}
+                        onChange={(e) =>
+                          updateEmailAccount(index, { smtp_password: e.target.value })
+                        }
                         placeholder={`SMTP app password (${REDACTED_SECRET} keeps existing)`}
                         className="border-input bg-background rounded-lg border px-3 py-2 text-sm"
                       />
@@ -1435,7 +1452,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         <input
                           type="checkbox"
                           checked={account.imap_ssl ?? true}
-                          onChange={(e) => updateEmailAccount(index, { imap_ssl: e.target.checked })}
+                          onChange={(e) =>
+                            updateEmailAccount(index, { imap_ssl: e.target.checked })
+                          }
                         />
                         IMAP SSL
                       </label>
@@ -1443,7 +1462,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         <input
                           type="checkbox"
                           checked={account.smtp_starttls ?? true}
-                          onChange={(e) => updateEmailAccount(index, { smtp_starttls: e.target.checked })}
+                          onChange={(e) =>
+                            updateEmailAccount(index, { smtp_starttls: e.target.checked })
+                          }
                         />
                         SMTP STARTTLS
                       </label>
@@ -1459,7 +1480,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         Test email
                       </button>
                       {emailTests[account.id]?.info && (
-                        <p className="text-xs text-green-500">{emailTests[account.id]?.info}</p>
+                        <p className="text-xs text-cyan-300">{emailTests[account.id]?.info}</p>
                       )}
                       {emailTests[account.id]?.error && (
                         <p className="text-xs text-red-500">{emailTests[account.id]?.error}</p>
@@ -1498,14 +1519,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       <input
                         type="text"
                         value={source.display_name || ''}
-                        onChange={(e) => updateCalendarSource(index, { display_name: e.target.value })}
+                        onChange={(e) =>
+                          updateCalendarSource(index, { display_name: e.target.value })
+                        }
                         placeholder="Display name"
                         className="border-input bg-background flex-1 rounded-lg border px-3 py-2 text-sm"
                       />
                       <button
                         type="button"
                         onClick={() => removeCalendarSource(index)}
-                        className="text-muted-foreground hover:text-red-500 rounded-lg p-2"
+                        className="text-muted-foreground rounded-lg p-2 hover:text-red-500"
                         aria-label="Remove calendar source"
                       >
                         <Trash size={16} />
@@ -1562,7 +1585,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         <input
                           type="checkbox"
                           checked={source.default || false}
-                          onChange={(e) => updateCalendarSource(index, { default: e.target.checked })}
+                          onChange={(e) =>
+                            updateCalendarSource(index, { default: e.target.checked })
+                          }
                         />
                         Default calendar
                       </label>
@@ -1570,7 +1595,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         <input
                           type="checkbox"
                           checked={source.writable ?? true}
-                          onChange={(e) => updateCalendarSource(index, { writable: e.target.checked })}
+                          onChange={(e) =>
+                            updateCalendarSource(index, { writable: e.target.checked })
+                          }
                         />
                         Writable
                       </label>
@@ -1586,7 +1613,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                         Test calendar
                       </button>
                       {calendarTests[source.id]?.info && (
-                        <p className="text-xs text-green-500">{calendarTests[source.id]?.info}</p>
+                        <p className="text-xs text-cyan-300">{calendarTests[source.id]?.info}</p>
                       )}
                       {calendarTests[source.id]?.error && (
                         <p className="text-xs text-red-500">{calendarTests[source.id]?.error}</p>
@@ -1627,7 +1654,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </div>
                 <Toggle
                   enabled={settings.alarms_enabled}
-                  onToggle={() => setSettings({ ...settings, alarms_enabled: !settings.alarms_enabled })}
+                  onToggle={() =>
+                    setSettings({ ...settings, alarms_enabled: !settings.alarms_enabled })
+                  }
                 />
               </div>
             </div>
@@ -1679,7 +1708,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </button>
               </div>
               {hassTest.error && <p className="text-xs text-red-500">{hassTest.error}</p>}
-              {hassTest.info && <p className="text-xs text-green-500">{hassTest.info}</p>}
+              {hassTest.info && <p className="text-xs text-cyan-300">{hassTest.info}</p>}
             </div>
             {hassAgents.length > 0 && (
               <div className="space-y-2">
@@ -1758,7 +1787,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </button>
               </div>
               {n8nTest.error && <p className="text-xs text-red-500">{n8nTest.error}</p>}
-              {n8nTest.info && <p className="text-xs text-green-500">{n8nTest.info}</p>}
+              {n8nTest.info && <p className="text-xs text-cyan-300">{n8nTest.info}</p>}
             </div>
           </div>
         )}
@@ -1804,7 +1833,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 <button
                   onClick={testFriday}
                   disabled={
-                    !settings.friday_host || !settings.friday_token || fridayTest.status === 'testing'
+                    !settings.friday_host ||
+                    !settings.friday_token ||
+                    fridayTest.status === 'testing'
                   }
                   className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
                 >
@@ -1813,7 +1844,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 </button>
               </div>
               {fridayTest.error && <p className="text-xs text-red-500">{fridayTest.error}</p>}
-              {fridayTest.info && <p className="text-xs text-green-500">{fridayTest.info}</p>}
+              {fridayTest.info && <p className="text-xs text-cyan-300">{fridayTest.info}</p>}
             </div>
           </div>
         )}
@@ -2191,9 +2222,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               <div className="flex items-center justify-between">
                 <div>
                   <label className="text-sm font-medium">Require Recognized Speaker</label>
-                  <p className="text-muted-foreground text-xs">
-                    Only respond to enrolled speakers
-                  </p>
+                  <p className="text-muted-foreground text-xs">Only respond to enrolled speakers</p>
                 </div>
                 <Toggle
                   enabled={settings.speaker_recognition_required}
@@ -2224,7 +2253,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="bg-background absolute inset-y-0 right-0 flex w-full flex-col shadow-2xl sm:w-[80%] sm:max-w-4xl">
+      <div className="friday-panel bg-background absolute inset-y-0 right-0 flex w-full flex-col shadow-2xl sm:w-[80%] sm:max-w-4xl">
         {/* Header */}
         <header className="shrink-0 border-b">
           <div className="flex items-center justify-between px-6 py-5">

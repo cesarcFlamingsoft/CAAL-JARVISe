@@ -1,23 +1,22 @@
 'use client';
 
-/**
- * What FRIDAY is doing right now. Everything live here comes from the LiveKit
- * room: the agent's state and the tool calls it reports. Background tasks
- * exist on the backend but have no endpoint yet, and the widget says so.
- */
+/** Durable work owned by the signed-in user, alongside current voice activity. */
 import { useEffect, useState } from 'react';
 import { ConnectionState } from 'livekit-client';
 import { useSessionContext, useVoiceAssistant } from '@livekit/components-react';
-import type { CapabilitiesState } from '@/hooks/useDashboardCapabilities';
+import type { FeedController } from '@/hooks/useDashboardFeed';
 import { useToolActivity } from '@/hooks/useToolActivity';
 import { type VoiceTone, voiceStatus } from '@/lib/dashboard/activity';
+import { formatDayOrTime } from '@/lib/dashboard/provider-data';
+import { WORK_STATUS, type WorkFeed } from '@/lib/dashboard/work';
 import { cn } from '@/lib/utils';
-import { WidgetBlocked, WidgetLoading, WidgetSignIn } from '../widget-notice';
+import { FeedFreshness } from '../feed-freshness';
+import { WidgetEmpty, WidgetError, WidgetLoading, WidgetSignIn } from '../widget-notice';
 
 const TONE_DOT: Record<VoiceTone, string> = {
   idle: 'bg-muted-foreground/50',
   busy: 'bg-amber-500 animate-pulse',
-  live: 'bg-green-500',
+  live: 'bg-cyan-500',
   error: 'bg-destructive',
 };
 
@@ -46,12 +45,17 @@ function useCallStartedAt(isConnected: boolean): number | null {
 }
 
 interface WorkWidgetProps {
-  capabilities: CapabilitiesState & { reload: () => void };
+  feed: FeedController<WorkFeed>;
   passwordLogin: boolean;
   now: Date | null;
 }
 
-export function WorkWidget({ capabilities, passwordLogin, now }: WorkWidgetProps) {
+export function WorkWidget({ feed, passwordLogin, now }: WorkWidgetProps) {
+  const activeCount =
+    feed.status === 'ready'
+      ? feed.data.items.filter((item) => item.status === 'queued' || item.status === 'running')
+          .length
+      : 0;
   const session = useSessionContext();
   const { state: agentState } = useVoiceAssistant();
   const activity = useToolActivity();
@@ -105,19 +109,57 @@ export function WorkWidget({ capabilities, passwordLogin, now }: WorkWidgetProps
         )}
       </section>
 
-      <section aria-label="Background tasks">
-        {capabilities.status === 'loading' ? (
-          <WidgetLoading label="Checking background work…" />
-        ) : capabilities.status === 'unauthorized' ? (
+      <section aria-label="Background tasks" className="space-y-3">
+        <FeedFreshness feed={feed} now={now} />
+        {feed.status === 'loading' ? (
+          <WidgetLoading label="Loading background work…" />
+        ) : feed.status === 'unauthorized' ? (
           <WidgetSignIn passwordLogin={passwordLogin} what="your background work" />
-        ) : (
-          <WidgetBlocked
-            title="Background tasks"
-            detail="Background task progress is not available here yet. Voice tool activity appears above."
-            endpoint={
-              capabilities.status === 'ready' ? capabilities.data.work.tasksEndpoint : 'GET /tasks'
-            }
+        ) : feed.status === 'unconfigured' ? (
+          <WidgetEmpty
+            title="Personal access is not configured"
+            detail="Background work is unavailable until personal access is configured."
           />
+        ) : feed.status === 'error' ? (
+          <WidgetError title="Could not load background work" onRetry={feed.reload} />
+        ) : (
+          <>
+            {activeCount > 0 && (
+              <p role="status" className="text-sm font-medium">
+                FRIDAY is working in the background · {activeCount}{' '}
+                {activeCount === 1 ? 'task' : 'tasks'}
+              </p>
+            )}
+            {feed.data.items.length === 0 ? (
+              <WidgetEmpty title="No background work yet" />
+            ) : (
+              <ol className="space-y-3">
+                {feed.data.items.map((item, index) => {
+                  const status = WORK_STATUS[item.status];
+                  const updated = new Date(item.updated_at * 1000).toISOString();
+                  return (
+                    <li key={index} className="space-y-1 text-sm">
+                      <p className="font-medium break-words">{item.title}</p>
+                      <p>{status.label}</p>
+                      {status.detail && (
+                        <p className="text-muted-foreground text-xs">{status.detail}</p>
+                      )}
+                      <p className="text-muted-foreground text-xs">
+                        Updated{' '}
+                        <time
+                          dateTime={updated}
+                          title={new Date(updated).toLocaleString()}
+                          aria-label={new Date(updated).toLocaleString()}
+                        >
+                          {now ? formatDayOrTime(updated, now) : new Date(updated).toLocaleString()}
+                        </time>
+                      </p>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </>
         )}
       </section>
     </div>

@@ -71,7 +71,10 @@ export function HomeAssistantAccess({
     else setError(explain(r.error));
   };
   return (
-    <section className="mt-3 max-w-md space-y-2 text-sm" aria-label="Home Assistant access">
+    <section
+      className="friday-panel mt-3 max-w-md space-y-2 text-sm"
+      aria-label="Home Assistant access"
+    >
       <h3 className="font-medium">Home Assistant</h3>
       {access ? (
         <>

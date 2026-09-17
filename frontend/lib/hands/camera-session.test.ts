@@ -250,3 +250,32 @@ describe('camera session', () => {
     assert.equal(last().status, 'idle');
   });
 });
+
+it('shares explicit Hands and Vision leases without replacing or prematurely stopping the stream', async () => {
+  const devices = new FakeMediaDevices(TWO_CAMERAS);
+  const { cam } = session(devices);
+  assert.equal(devices.requests.length, 0);
+  const vision = cam.acquire('vision');
+  const hands = cam.acquire('hands');
+  await Promise.all([vision, hands]);
+  const stream = cam.snapshot().stream;
+  assert.equal(devices.requests.length, 1, 'concurrent consumers share permission and stream');
+  await cam.selectDevice('cam-usb');
+  await cam.start();
+  assert.equal(cam.snapshot().stream, stream, 'retry and device selection cannot disrupt sharing');
+  assert.equal(devices.requests.length, 1);
+  cam.release('hands');
+  assert.equal(cam.snapshot().stream, stream, 'Vision survives disabling Hands');
+  await cam.acquire('hands');
+  cam.release('vision');
+  assert.equal(cam.snapshot().stream, stream, 'Hands survives closing Vision');
+  cam.release('hands');
+  assert.equal(devices.liveTracks().length, 0);
+  const pending = cam.acquire('vision');
+  cam.release('vision');
+  await pending;
+  assert.equal(devices.liveTracks().length, 0, 'close during permission discards the late stream');
+  await cam.acquire('vision');
+  cam.dispose();
+  assert.equal(devices.liveTracks().length, 0, 'workspace unmount releases everything');
+});

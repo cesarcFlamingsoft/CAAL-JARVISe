@@ -198,7 +198,7 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
       case 'testing':
         return <CircleNotch className="h-4 w-4 animate-spin text-blue-500" />;
       case 'success':
-        return <Check className="h-4 w-4 text-green-500" weight="bold" />;
+        return <Check className="h-4 w-4 text-cyan-300" weight="bold" />;
       case 'error':
         return <X className="h-4 w-4 text-red-500" weight="bold" />;
       default:
@@ -275,7 +275,7 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
                 </button>
               </div>
               {hassTest.error && <p className="text-xs text-red-500">{hassTest.error}</p>}
-              {hassTest.info && <p className="text-xs text-green-500">{hassTest.info}</p>}
+              {hassTest.info && <p className="text-xs text-cyan-300">{hassTest.info}</p>}
             </div>
             {hassAgents.length > 0 && (
               <div className="space-y-1">
@@ -348,7 +348,7 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
                 </button>
               </div>
               {n8nTest.error && <p className="text-xs text-red-500">{n8nTest.error}</p>}
-              {n8nTest.info && <p className="text-xs text-green-500">{n8nTest.info}</p>}
+              {n8nTest.info && <p className="text-xs text-cyan-300">{n8nTest.info}</p>}
             </div>
           </div>
         )}
@@ -391,7 +391,9 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
                 />
                 <button
                   onClick={testFriday}
-                  disabled={!data.friday_host || !data.friday_token || fridayTest.status === 'testing'}
+                  disabled={
+                    !data.friday_host || !data.friday_token || fridayTest.status === 'testing'
+                  }
                   className="bg-muted hover:bg-muted/80 flex items-center gap-2 rounded-md px-3 py-2 text-sm disabled:opacity-50"
                 >
                   <StatusIcon status={fridayTest.status} />
@@ -399,7 +401,7 @@ export function IntegrationsStep({ data, updateData }: IntegrationsStepProps) {
                 </button>
               </div>
               {fridayTest.error && <p className="text-xs text-red-500">{fridayTest.error}</p>}
-              {fridayTest.info && <p className="text-xs text-green-500">{fridayTest.info}</p>}
+              {fridayTest.info && <p className="text-xs text-cyan-300">{fridayTest.info}</p>}
             </div>
           </div>
         )}

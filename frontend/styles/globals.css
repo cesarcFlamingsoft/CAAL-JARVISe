@@ -24,7 +24,7 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-2: oklch(0.65 0.13 230);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
@@ -58,7 +58,7 @@
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
   --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-2: oklch(0.75 0.13 220);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
@@ -157,5 +157,107 @@
     100% {
       background-position: 250% 0;
     }
+  }
+}
+
+/* FRIDAY tokens live on the body so dialogs and other portals share the cockpit. */
+.friday-theme {
+  color-scheme: dark;
+  --background: #030a12;
+  --foreground: #e1f3fc;
+  --card: #081522;
+  --card-foreground: #e1f3fc;
+  --popover: #0b1c2c;
+  --popover-foreground: #e1f3fc;
+  --primary: #75e2f2;
+  --primary-foreground: #041019;
+  --primary-hover: #a0ecf8;
+  --secondary: #132b40;
+  --secondary-foreground: #d4edfc;
+  --muted: #122b3c;
+  --muted-foreground: #94b1c4;
+  --accent: #17374b;
+  --accent-foreground: #e1f3fc;
+  --border: #214053;
+  --input: #30536b;
+  --ring: #79eeff;
+  --success: #75e2f2;
+  --destructive: #f78787;
+  min-height: 100svh;
+  background:
+    radial-gradient(ellipse at 15% 12%, #08304970, transparent 48%),
+    linear-gradient(125deg, #02070d, #071321 65%, #02070d);
+  background-attachment: fixed;
+}
+
+.friday-theme :focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.friday-page {
+  padding-top: clamp(6rem, 10vh, 8rem);
+  padding-bottom: 6rem;
+}
+
+.friday-page > header,
+.friday-page > h1 {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.5rem;
+}
+
+.friday-page h1 {
+  color: var(--foreground);
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+
+.friday-panel {
+  border: 1px solid #2a5067a6;
+  border-radius: 1rem;
+  background: linear-gradient(140deg, #10283bf2, #06121ef5);
+  box-shadow:
+    inset 0 1px #a3e4ff0d,
+    0 16px 48px #0005;
+  backdrop-filter: blur(18px);
+}
+
+section.friday-panel {
+  padding: clamp(1rem, 2vw, 1.5rem);
+}
+
+.friday-theme :is(input:not([type='checkbox']):not([type='range']), select, textarea) {
+  border-color: var(--input);
+  color: var(--foreground);
+}
+
+.friday-theme input[type='range'],
+.friday-theme input[type='checkbox'] {
+  accent-color: var(--primary);
+}
+
+.mail-reader {
+  border-color: #43748c;
+  box-shadow:
+    inset 0 1px #a3e4ff18,
+    0 32px 100px #000b;
+}
+
+.mail-reader header {
+  background: linear-gradient(115deg, #143348, #081522);
+}
+
+.mail-reader-body {
+  overflow-wrap: anywhere;
+}
+
+.mail-reader-detail + .mail-reader-detail {
+  margin-top: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .friday-theme {
+    scroll-behavior: auto;
   }
 }

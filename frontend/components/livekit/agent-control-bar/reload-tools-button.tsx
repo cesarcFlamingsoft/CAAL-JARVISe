@@ -1,8 +1,8 @@
 'use client';
 
 import * as React from 'react';
-import { ArrowsClockwiseIcon } from '@phosphor-icons/react/dist/ssr';
 import { useRoomContext } from '@livekit/components-react';
+import { ArrowsClockwiseIcon } from '@phosphor-icons/react/dist/ssr';
 import { Toggle } from '@/components/livekit/toggle';
 import { Tooltip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -47,7 +47,7 @@ export function ReloadToolsButton() {
         pressed={false}
         onPressedChange={handleReload}
         disabled={loading}
-        className={cn(success && 'text-green-500')}
+        className={cn(success && 'text-cyan-300')}
       >
         <ArrowsClockwiseIcon weight="bold" className={cn(loading && 'animate-spin')} />
       </Toggle>

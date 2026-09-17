@@ -47,7 +47,7 @@ database leak hands out no live sessions.
 | `CAAL_BOOTSTRAP_ADMIN_EMAIL` | agent | no | The first administrator's email |
 | `CAAL_BOOTSTRAP_ADMIN_PASSWORD_HASH` | agent | **yes** | Argon2id hash of their one-time password — **never the password itself** |
 | `CAAL_IDENTITY_API_URL` | frontend | no | Backend base URL, `http://agent:8889` in Docker (compose sets it) |
-| `CAAL_PUBLIC_ORIGIN` | frontend | no | Public origin of the portal, e.g. `https://jarvis.example.com` |
+| `CAAL_PUBLIC_ORIGIN` | frontend + backend | no | Canonical HTTPS portal origin, e.g. `https://jarvis.example.com`; enables optional platform passkeys and pins their WebAuthn origin/RP ID |
 | `CAAL_PASSWORD_LOGIN` | agent, frontend | no | `false` disables password sign-in; only allowed when Access is configured |
 | `CAAL_SESSION_IDLE_MINUTES` | agent | no | Sliding timeout, default `480` (8 h) |
 | `CAAL_SESSION_ABSOLUTE_HOURS` | agent | no | Hard ceiling, default `168` (7 d) |

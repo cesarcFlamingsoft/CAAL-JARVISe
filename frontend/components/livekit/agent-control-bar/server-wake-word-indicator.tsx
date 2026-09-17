@@ -23,7 +23,7 @@ function formatWakeWordName(modelPath: string): string {
  * Indicator for server-side wake word detection state.
  * Shows an ear icon with color indicating current state:
  * - Blue: Sleeping (waiting for wake word)
- * - Green: Listening (active conversation)
+ * - Cyan: Listening (active conversation)
  * - Grey with slash: Disabled/unknown
  *
  * This replaces the client-side Picovoice toggle - server controls the state.
@@ -66,7 +66,7 @@ export function ServerWakeWordIndicator({ className }: { className?: string }) {
           'cursor-default transition-[color,box-shadow,background-color] outline-none',
           // Background based on state
           isActive
-            ? 'bg-green-500/20 text-green-700 dark:text-green-300'
+            ? 'bg-cyan-500/20 text-cyan-300 dark:text-cyan-300'
             : isSleeping
               ? 'bg-blue-500/20 text-blue-700 dark:text-blue-300'
               : 'bg-muted text-muted-foreground',

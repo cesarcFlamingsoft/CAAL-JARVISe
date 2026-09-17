@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiRequest, explain, loadCsrfToken } from '@/components/account/api-client';
+import { credentialToJson, requestOptionsFromJson } from '@/lib/auth/passkeys';
 
 interface LoginResponse {
   ok: boolean;
@@ -22,7 +23,7 @@ interface LoginResponse {
   mustChangePassword?: boolean;
 }
 
-export function LoginForm({ next }: { next: string }) {
+export function LoginForm({ next, passkeys }: { next: string; passkeys: boolean }) {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -56,6 +57,52 @@ export function LoginForm({ next }: { next: string }) {
     // be picked up by a fresh server render.
     window.location.assign(result.data.next ?? '/');
     void router;
+  }
+
+  async function onPasskey() {
+    if (busy) return;
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setError(
+        'Passkeys are not available in this browser. You can still sign in with your password.'
+      );
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const begun = await apiRequest<{ ceremonyId: string; publicKey: Record<string, unknown> }>(
+      '/api/auth/passkey/options',
+      { method: 'POST' }
+    );
+    if (!begun.ok) {
+      setError(explain(begun.error));
+      setBusy(false);
+      return;
+    }
+    try {
+      const credential = (await navigator.credentials.get({
+        publicKey: requestOptionsFromJson(begun.data.publicKey),
+      })) as PublicKeyCredential | null;
+      if (!credential) throw new Error('cancelled');
+      const verified = await apiRequest<{ next?: string }>('/api/auth/passkey/verify', {
+        method: 'POST',
+        body: {
+          ceremonyId: begun.data.ceremonyId,
+          credential: credentialToJson(credential),
+          next,
+        },
+      });
+      if (!verified.ok) {
+        setError(explain(verified.error));
+        setBusy(false);
+        return;
+      }
+      window.location.assign(verified.data.next ?? '/');
+    } catch {
+      setError(
+        'Passkey sign-in was cancelled or could not be completed. Your password still works.'
+      );
+      setBusy(false);
+    }
   }
 
   return (
@@ -106,6 +153,31 @@ export function LoginForm({ next }: { next: string }) {
       >
         {busy ? 'Signing in…' : 'Sign in'}
       </button>
+
+      {passkeys && (
+        <>
+          <div className="flex items-center gap-3" aria-hidden="true">
+            <span className="bg-border h-px flex-1" />
+            <span className="text-muted-foreground text-xs uppercase">or</span>
+            <span className="bg-border h-px flex-1" />
+          </div>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onPasskey}
+            className="border-primary/50 text-primary hover:bg-primary/10 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            Sign in with passkey
+          </button>
+
+          <p className="text-muted-foreground text-xs">
+            Passkeys use your device&apos;s secure biometric or screen-lock prompt. Face ID, Touch
+            ID, and other device checks stay on your device—FRIDAY never receives biometric data.
+            Password sign-in remains available.
+          </p>
+        </>
+      )}
 
       <p className="text-muted-foreground text-xs">
         Forgotten your password? There is no self-service reset: ask an administrator to issue you a

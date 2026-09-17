@@ -7,7 +7,8 @@ import { authenticate } from '@/lib/auth/session';
 export const dynamic = 'force-dynamic';
 
 const DENIED_TEXT: Record<string, string> = {
-  no_account: 'Your identity was verified, but there is no FRIDAY account for it yet. Ask an administrator to create one.',
+  no_account:
+    'Your identity was verified, but there is no FRIDAY account for it yet. Ask an administrator to create one.',
   suspended: 'This account is suspended. Ask an administrator if you think this is a mistake.',
   unavailable: 'The identity service is unavailable right now. Try again shortly.',
 };
@@ -35,7 +36,11 @@ export default async function AccountPage() {
       </p>
     );
   } else if (auth.kind === 'invalid') {
-    body = <p className="text-destructive text-sm">Your sign-in could not be verified. Reload the page.</p>;
+    body = (
+      <p className="text-destructive text-sm">
+        Your sign-in could not be verified. Reload the page.
+      </p>
+    );
   } else if (auth.kind === 'denied') {
     body = <p className="text-destructive text-sm">{DENIED_TEXT[auth.reason]}</p>;
   } else {
@@ -43,7 +48,7 @@ export default async function AccountPage() {
   }
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-20">
+    <main className="friday-page mx-auto max-w-2xl px-6 py-20">
       <header className="mb-8 flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Your account</h1>
         <Link

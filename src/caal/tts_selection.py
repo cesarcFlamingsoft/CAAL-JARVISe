@@ -40,7 +40,11 @@ def create_tts(runtime, *, kokoro_url, speaches_url, kokoro_model):
             voice="default",
         )
     config = trial_config()
-    if runtime["tts_provider"] == "qwen-trial" and config:
+    if runtime["tts_provider"] == "qwen-trial":
+        if config is None:
+            # Never impersonate FRIDAY with Kokoro when the approved Qwen route
+            # is selected but its private runtime contract is missing.
+            raise RuntimeError("qwen_trial_unavailable")
         # FRIDAY must never silently change speaker. A Qwen failure is surfaced
         # to the session rather than replayed through a differently voiced TTS.
         return sentence_adapter(QwenTTS(**config))

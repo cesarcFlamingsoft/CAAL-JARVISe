@@ -4,20 +4,26 @@ from caal import tts_selection
 
 
 @pytest.mark.asyncio
-async def test_default_and_unconfigured_qwen_keep_existing_kokoro(monkeypatch):
+async def test_default_kokoro_remains_available_but_explicit_qwen_never_changes_voice(monkeypatch):
     monkeypatch.delenv("CAAL_QWEN_TRIAL_TOKEN", raising=False)
-    for selected in ["kokoro", "qwen-trial"]:
-        provider = tts_selection.create_tts(
-            {"tts_provider": selected, "tts_voice_kokoro": "am_adam"},
+    provider = tts_selection.create_tts(
+        {"tts_provider": "kokoro", "tts_voice_kokoro": "am_adam"},
+        kokoro_url="http://localhost:8001",
+        speaches_url="http://localhost:8001",
+        kokoro_model="prince-canuma/Kokoro-82M",
+    )
+    try:
+        assert provider.model == "prince-canuma/Kokoro-82M"
+        assert provider._opts.voice == "am_adam"
+    finally:
+        await provider.aclose()
+    with pytest.raises(RuntimeError, match="qwen_trial_unavailable"):
+        tts_selection.create_tts(
+            {"tts_provider": "qwen-trial", "tts_voice_kokoro": "am_adam"},
             kokoro_url="http://localhost:8001",
             speaches_url="http://localhost:8001",
             kokoro_model="prince-canuma/Kokoro-82M",
         )
-        try:
-            assert provider.model == "prince-canuma/Kokoro-82M"
-            assert provider._opts.voice == "am_adam"
-        finally:
-            await provider.aclose()
 
 
 @pytest.mark.asyncio

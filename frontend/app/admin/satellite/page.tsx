@@ -69,14 +69,14 @@ export default function SatellitePage() {
     status?.enrollments.filter((e) => !devices.some((d) => d.satellite_id === e.satellite_id)) ||
     [];
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
+    <main className="friday-page mx-auto max-w-3xl space-y-6 p-6">
       <h1 className="text-2xl font-semibold">FRIDAY voice satellites</h1>
       <p>
         Manage your Home Assistant voice devices. Each speaker has its own credential and home
         permissions. Personal email, calendar, memory, scheduling and administrator tools are
         unavailable.
       </p>
-      <section className="space-y-3 rounded border p-4">
+      <section className="friday-panel space-y-3 rounded border p-4">
         <label className="block" htmlFor="ha-connection">
           Home Assistant connection
         </label>
@@ -134,7 +134,7 @@ export default function SatellitePage() {
         </p>
       )}
       {devices.map((device) => (
-        <section key={device.satellite_id} className="space-y-3 rounded border p-4">
+        <section key={device.satellite_id} className="friday-panel space-y-3 rounded border p-4">
           <h2 className="font-semibold">{device.name}</h2>
           <p className="text-sm break-all">{device.satellite_id}</p>
           <p>{device.enrollment ? 'Credential enrolled' : 'Not enrolled'}</p>
@@ -186,7 +186,7 @@ export default function SatellitePage() {
         </section>
       ))}
       {missing.map((e) => (
-        <section key={e.id} className="space-y-2 rounded border p-4">
+        <section key={e.id} className="friday-panel space-y-2 rounded border p-4">
           <p className="break-all">Existing enrollment: {e.satellite_id}</p>
           <p>Select its HA connection to verify the device and configure permissions.</p>
           <button
@@ -206,7 +206,7 @@ export default function SatellitePage() {
         </section>
       ))}
       {issued && (
-        <section className="space-y-3 rounded border p-4">
+        <section className="friday-panel space-y-3 rounded border p-4">
           <h2 className="font-semibold">Finish setup in Home Assistant</h2>
           <p className="break-all">
             Credential for {issued.satellite_id}. Copy it into the FRIDAY Voice Satellites

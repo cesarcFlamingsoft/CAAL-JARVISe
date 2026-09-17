@@ -10,9 +10,9 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { apiRequest, explain } from '@/components/account/api-client';
 import { HomeAssistantAccess } from '@/components/home-assistant/access';
 import { Button } from '@/components/livekit/button';
-import { apiRequest, explain } from '@/components/account/api-client';
 
 interface AdminUser {
   userId: string;
@@ -89,7 +89,11 @@ export function AdminPanel({ selfId }: { selfId: string }) {
     void refresh();
   }, [refresh]);
 
-  const run = async (key: string, action: () => Promise<{ ok: boolean; error?: string }>, done: string) => {
+  const run = async (
+    key: string,
+    action: () => Promise<{ ok: boolean; error?: string }>,
+    done: string
+  ) => {
     setBusy(key);
     setError(null);
     setNotice(null);
@@ -136,7 +140,11 @@ export function AdminPanel({ selfId }: { selfId: string }) {
     );
 
   const patchUser = (user: AdminUser, body: Record<string, string>, done: string) =>
-    run(user.userId, () => apiRequest(`/api/admin/users/${user.userId}`, { method: 'PATCH', body }), done);
+    run(
+      user.userId,
+      () => apiRequest(`/api/admin/users/${user.userId}`, { method: 'PATCH', body }),
+      done
+    );
 
   const setNumber = (user: AdminUser) =>
     run(
@@ -184,31 +192,34 @@ export function AdminPanel({ selfId }: { selfId: string }) {
 
   return (
     <div className="space-y-8">
-      <section className="border-input flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+      <section className="friday-panel border-input flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
         <p className="text-muted-foreground text-sm">Configure Home Assistant voice speakers.</p>
         <Link
           href="/admin/satellite"
           className="border-input hover:bg-muted focus-visible:ring-ring inline-flex min-h-11 items-center rounded-lg border px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-        >Home Assistant Voice</Link>
+        >
+          Home Assistant Voice
+        </Link>
       </section>
       {(error || notice) && (
-        <p className={error ? 'text-destructive text-sm' : 'text-muted-foreground text-sm'} role="status">
+        <p
+          className={error ? 'text-destructive text-sm' : 'text-muted-foreground text-sm'}
+          role="status"
+        >
           {error ?? notice}
         </p>
       )}
 
       {issued && (
         <div className="border-input bg-muted/40 rounded-lg border p-4" role="status">
-          <p className="text-sm font-medium">
-            One-time password for {shortId(issued.userId)}
-          </p>
+          <p className="text-sm font-medium">One-time password for {shortId(issued.userId)}</p>
           <code className="mt-2 block font-mono text-base break-all select-all">
             {issued.password}
           </code>
           <p className="text-muted-foreground mt-2 text-xs">
             Shown once and never again. Give it to the user over a channel you trust; they must
-            choose their own password before they can do anything else. Their existing sessions
-            have already been signed out.
+            choose their own password before they can do anything else. Their existing sessions have
+            already been signed out.
           </p>
           <Button variant="secondary" size="sm" className="mt-3" onClick={() => setIssued(null)}>
             Done, hide it
@@ -216,7 +227,7 @@ export function AdminPanel({ selfId }: { selfId: string }) {
         </div>
       )}
 
-      <section className="space-y-3">
+      <section className="friday-panel space-y-3">
         <h2 className="text-sm font-semibold tracking-wider uppercase">Create user</h2>
         <form
           className="flex flex-wrap items-end gap-2"
@@ -274,7 +285,7 @@ export function AdminPanel({ selfId }: { selfId: string }) {
         </form>
       </section>
 
-      <section className="space-y-3">
+      <section className="friday-panel space-y-3">
         <h2 className="text-sm font-semibold tracking-wider uppercase">
           Users <span className="text-muted-foreground font-normal">({users.length})</span>
         </h2>
@@ -306,7 +317,10 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                             value={nameDraft ?? user.displayName}
                             maxLength={80}
                             onChange={(event) =>
-                              setNameDrafts((drafts) => ({ ...drafts, [user.userId]: event.target.value }))
+                              setNameDrafts((drafts) => ({
+                                ...drafts,
+                                [user.userId]: event.target.value,
+                              }))
                             }
                             className={`${inputClass} w-44`}
                           />
@@ -316,8 +330,15 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                               size="sm"
                               disabled={busy !== null}
                               onClick={() =>
-                                void patchUser(user, { displayName: nameDraft.trim() }, 'Name updated.').then(
-                                  () => setNameDrafts((drafts) => ({ ...drafts, [user.userId]: undefined as never }))
+                                void patchUser(
+                                  user,
+                                  { displayName: nameDraft.trim() },
+                                  'Name updated.'
+                                ).then(() =>
+                                  setNameDrafts((drafts) => ({
+                                    ...drafts,
+                                    [user.userId]: undefined as never,
+                                  }))
                                 )
                               }
                             >
@@ -329,7 +350,10 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                           {user.emailHint} · {shortId(user.userId)}
                           {isSelf && ' · you'}
                         </span>
-                        <HomeAssistantAccess userId={user.userId} onChanged={()=>void refresh()} />
+                        <HomeAssistantAccess
+                          userId={user.userId}
+                          onChanged={() => void refresh()}
+                        />
                       </div>
                     </td>
                     <td className="py-3 pr-4">
@@ -390,7 +414,10 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                             maxLength={32}
                             autoComplete="off"
                             onChange={(event) =>
-                              setNumberDrafts((drafts) => ({ ...drafts, [user.userId]: event.target.value }))
+                              setNumberDrafts((drafts) => ({
+                                ...drafts,
+                                [user.userId]: event.target.value,
+                              }))
                             }
                             className={`${inputClass} w-40`}
                           />
@@ -426,7 +453,7 @@ export function AdminPanel({ selfId }: { selfId: string }) {
         </div>
       </section>
 
-      <section className="space-y-3">
+      <section className="friday-panel space-y-3">
         <h2 className="text-sm font-semibold tracking-wider uppercase">Audit trail</h2>
         <p className="text-muted-foreground text-xs">
           Most recent first. Actors and targets are opaque ids; emails, phone numbers and memory
@@ -449,7 +476,8 @@ export function AdminPanel({ selfId }: { selfId: string }) {
                   <td className="py-1.5 pr-4 whitespace-nowrap">{formatTime(event.occurredAt)}</td>
                   <td className="py-1.5 pr-4">{event.action}</td>
                   <td className="py-1.5 pr-4">
-                    {shortId(event.actorId)} <span className="text-muted-foreground">({event.actorRole})</span>
+                    {shortId(event.actorId)}{' '}
+                    <span className="text-muted-foreground">({event.actorRole})</span>
                   </td>
                   <td className="py-1.5 pr-4">{shortId(event.targetId)}</td>
                   <td className="py-1.5 pr-4">{JSON.stringify(event.detail)}</td>

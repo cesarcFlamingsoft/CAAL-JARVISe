@@ -106,8 +106,8 @@ describe('calendar and inbox widgets', () => {
     assert.match(section, /<motion\.div/, 'account details need a motion container');
     assert.match(section, /type="button"/, 'the account summary must be keyboard-clickable');
     assert.match(read(ISSUES), /describeAccountStatus\(/);
-    assert.match(inbox, /rel=.noopener noreferrer./);
-    assert.match(inbox, /target=._blank./);
+    assert.match(read('components/dashboard/message-reader.tsx'), /rel=.noopener noreferrer./);
+    assert.match(read('components/dashboard/message-reader.tsx'), /target=._blank./);
     for (const source of [calendar, inbox]) {
       assert.ok(!source.includes('dangerouslySetInnerHTML'));
       for (const name of SESSION_READS) assert.ok(!source.includes(name), name);

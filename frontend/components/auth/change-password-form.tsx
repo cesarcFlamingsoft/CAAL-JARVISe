@@ -58,11 +58,11 @@ export function ChangePasswordForm({ forced }: { forced: boolean }) {
   }
 
   if (done) {
-    return <p className="text-sm">Password changed. Taking you back to FRIDAY…</p>;
+    return <p className="text-sm text-cyan-300">Password changed. Taking you back to FRIDAY…</p>;
   }
 
   return (
-    <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+    <form onSubmit={onSubmit} className="friday-panel flex flex-col gap-4 p-6" noValidate>
       <div className="flex flex-col gap-1.5">
         <label htmlFor="current" className="text-sm font-medium">
           {forced ? 'One-time password' : 'Current password'}

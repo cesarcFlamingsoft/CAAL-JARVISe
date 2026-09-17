@@ -146,14 +146,29 @@ test('local and public sessions retain protected TTS/admin mutations and revocat
     }
     if (target.pathname.startsWith('/users/me/tts/voicebox')) {
       assert.equal(user.role, 'admin');
-      return Response.json({endpoint:'http://127.0.0.1:8000', credential_configured:true, credential:'must-be-stripped'});
+      return Response.json({
+        endpoint: 'http://127.0.0.1:8000',
+        credential_configured: true,
+        credential: 'must-be-stripped',
+      });
     }
     assert.equal(target.pathname, '/users/me/tts');
     if (init.method === 'PUT') {
       writes++;
       assert.equal(body.provider, 'qwen-trial');
     }
-    return Response.json({ provider: 'qwen-trial', qwen_configured: true, qwen_voice:'jarvis-designed', source:'personal', applies_to:'new_sessions', voicebox_status:'not_configured', can_configure:user.role === 'admin', profile_id:null, engine:null, model_size:null });
+    return Response.json({
+      provider: 'qwen-trial',
+      qwen_configured: true,
+      qwen_voice: 'jarvis-designed',
+      source: 'personal',
+      applies_to: 'new_sessions',
+      voicebox_status: 'not_configured',
+      can_configure: user.role === 'admin',
+      profile_id: null,
+      engine: null,
+      model_size: null,
+    });
   });
   for (const origin of [local, publicOrigin]) {
     const signedIn = await login.POST(
@@ -222,12 +237,25 @@ test('local and public sessions retain protected TTS/admin mutations and revocat
       { ...headers, 'x-caal-csrf': 'wrong' }
     );
     assert.equal((await (await admin.POST(adminCsrf)).json()).error, 'csrf');
-    const configRequest = () => request(origin, '/api/tts/voicebox', {endpoint:'http://127.0.0.1:8000', credential:'test-credential'}, headers);
+    const configRequest = () =>
+      request(
+        origin,
+        '/api/tts/voicebox',
+        { endpoint: 'http://127.0.0.1:8000', credential: 'test-credential' },
+        headers
+      );
     const configResult = await voicebox.PUT(configRequest());
     assert.equal(configResult.status, 200);
     assert.ok(!JSON.stringify(await configResult.json()).includes('must-be-stripped'));
     assert.equal((await voiceboxTest.POST(configRequest())).status, 200);
-    assert.equal((await voicebox.PUT(request(origin, '/api/tts/voicebox', {}, {...headers, 'x-caal-csrf':'wrong'}))).status, 403);
+    assert.equal(
+      (
+        await voicebox.PUT(
+          request(origin, '/api/tts/voicebox', {}, { ...headers, 'x-caal-csrf': 'wrong' })
+        )
+      ).status,
+      403
+    );
     user.role = 'member';
     assert.equal((await voicebox.PUT(configRequest())).status, 403);
     assert.equal((await voicebox.GET(configRequest())).status, 403);
@@ -292,4 +320,200 @@ test('login/logout reject hostile or malformed origins and preserve CSRF/rate li
     ).status,
     429
   );
+});
+
+test('passkey BFF keeps login usernameless, guards ceremonies, and hides session tokens', async (t) => {
+  process.env.CAAL_INTERNAL_AUTH_SECRET = 'test-only-internal-secret-'.repeat(3);
+  process.env.CAAL_IDENTITY_API_URL = 'http://backend.test';
+  process.env.CAAL_PUBLIC_ORIGIN = publicOrigin;
+  process.env.CAAL_TRUSTED_LOCAL_ORIGINS = local;
+  process.env.CAAL_ALLOW_INSECURE_COOKIES = 'false';
+  delete process.env.CF_ACCESS_TEAM_DOMAIN;
+  delete process.env.CF_ACCESS_AUD;
+  const options = await import('../../app/api/auth/passkey/options/route.ts');
+  const verify = await import('../../app/api/auth/passkey/verify/route.ts');
+  const session = 'passkey-session-token-never-returned-to-browser';
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const target = new URL(String(url));
+    const body = init.body ? JSON.parse(init.body) : null;
+    if (target.pathname === '/auth/passkey/options') {
+      calls++;
+      assert.equal(body, null);
+      return Response.json({
+        ceremonyId: 'ceremony-' + 'x'.repeat(32),
+        publicKey: { challenge: 'AQID', rpId: 'jarvis.mexcantech.io' },
+      });
+    }
+    assert.equal(target.pathname, '/auth/passkey/verify');
+    assert.equal(body.email, undefined);
+    assert.equal(body.ceremonyId, 'ceremony-' + 'x'.repeat(32));
+    return Response.json({
+      user_id: 'usr_' + '1'.repeat(24),
+      role: 'member',
+      status: 'active',
+      display_name: 'Test',
+      must_change_password: false,
+      session_token: session,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+  });
+
+  const begun = await options.POST(request(publicOrigin, '/api/auth/passkey/options', {}));
+  assert.equal(begun.status, 200);
+  assert.equal(calls, 1);
+  assert.equal(begun.headers.get('cache-control'), 'no-store');
+
+  const assertion = {
+    id: 'credential',
+    rawId: 'credential',
+    type: 'public-key',
+    authenticatorAttachment: 'platform',
+    response: {
+      clientDataJSON: 'client',
+      authenticatorData: 'authenticator',
+      signature: 'signature',
+      userHandle: 'handle',
+    },
+  };
+  const signedIn = await verify.POST(
+    request(publicOrigin, '/api/auth/passkey/verify', {
+      ceremonyId: 'ceremony-' + 'x'.repeat(32),
+      credential: assertion,
+      next: '/',
+    })
+  );
+  assert.equal(signedIn.status, 200);
+  assert.ok(!JSON.stringify(await signedIn.json()).includes(session));
+  assert.equal(signedIn.cookies.get('caal_session')?.httpOnly, true);
+  assert.equal(signedIn.cookies.get('caal_session')?.secure, true);
+
+  const hostile = request(
+    publicOrigin,
+    '/api/auth/passkey/options',
+    {},
+    { origin: 'https://hostile.example' }
+  );
+  assert.equal((await options.POST(hostile)).status, 403);
+  const noCsrf = request(publicOrigin, '/api/auth/passkey/options', {}, { 'x-caal-csrf': 'wrong' });
+  assert.equal((await options.POST(noCsrf)).status, 403);
+});
+
+test('passkey management requires bounded passwords and binds enrollment to one session', async (t) => {
+  process.env.CAAL_INTERNAL_AUTH_SECRET = 'test-only-internal-secret-'.repeat(3);
+  process.env.CAAL_IDENTITY_API_URL = 'http://backend.test';
+  process.env.CAAL_PUBLIC_ORIGIN = publicOrigin;
+  process.env.CAAL_TRUSTED_LOCAL_ORIGINS = local;
+  process.env.CAAL_ALLOW_INSECURE_COOKIES = 'false';
+  delete process.env.CF_ACCESS_TEAM_DOMAIN;
+  delete process.env.CF_ACCESS_AUD;
+  const options = await import('../../app/api/account/passkeys/options/route.ts');
+  const verify = await import('../../app/api/account/passkeys/verify/route.ts');
+  const passkey = await import('../../app/api/account/passkeys/[id]/route.ts');
+  const { jwtVerify } = await import('jose');
+  const session = 'management-session-token-never-returned';
+  const headers = { cookie: `caal_session=${session}; caal_csrf=${csrf}` };
+  const bindings: string[] = [];
+  let managementCalls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const target = new URL(String(url));
+    const body = init.body ? JSON.parse(init.body) : null;
+    if (target.pathname === '/auth/session') {
+      return Response.json({
+        user_id: 'usr_' + '1'.repeat(24),
+        role: 'member',
+        status: 'active',
+        display_name: 'Test',
+        must_change_password: false,
+      });
+    }
+    managementCalls++;
+    const authorization = new Headers(init.headers).get('authorization')!;
+    const { payload } = await jwtVerify(
+      authorization.slice(7),
+      new TextEncoder().encode(process.env.CAAL_INTERNAL_AUTH_SECRET)
+    );
+    assert.equal(typeof payload.session_binding, 'string');
+    assert.notEqual(payload.session_binding, session);
+    bindings.push(payload.session_binding as string);
+    if (target.pathname.endsWith('/options')) {
+      assert.deepEqual(body, { label: 'My Mac', current_password: 'correct password' });
+      return Response.json({ ceremonyId: 'ceremony-' + 'x'.repeat(32), publicKey: {} });
+    }
+    if (target.pathname.endsWith('/verify')) {
+      assert.equal(body.current_password, undefined);
+      return Response.json({ passkey: { label: 'My Mac' } });
+    }
+    assert.equal(target.pathname, '/users/me/passkeys/key_' + 'a'.repeat(24));
+    assert.deepEqual(body, { current_password: 'correct password' });
+    return new Response(null, { status: 204 });
+  });
+
+  const begun = await options.POST(
+    request(
+      publicOrigin,
+      '/api/account/passkeys/options',
+      {
+        label: 'My Mac',
+        currentPassword: 'correct password',
+      },
+      headers
+    )
+  );
+  assert.equal(begun.status, 200);
+  const finished = await verify.POST(
+    request(
+      publicOrigin,
+      '/api/account/passkeys/verify',
+      {
+        label: 'My Mac',
+        ceremonyId: 'ceremony-' + 'x'.repeat(32),
+        credential: { id: 'credential' },
+      },
+      headers
+    )
+  );
+  assert.equal(finished.status, 200);
+  const removed = await passkey.DELETE(
+    request(
+      publicOrigin,
+      '/api/account/passkeys/key_' + 'a'.repeat(24),
+      {
+        currentPassword: 'correct password',
+      },
+      headers
+    ),
+    { params: Promise.resolve({ id: 'key_' + 'a'.repeat(24) }) }
+  );
+  assert.equal(removed.status, 200);
+  assert.equal(bindings[0], bindings[1]);
+
+  const before = managementCalls;
+  assert.equal(
+    (
+      await options.POST(
+        request(publicOrigin, '/api/account/passkeys/options', { label: 'No password' }, headers)
+      )
+    ).status,
+    422
+  );
+  assert.equal(
+    (
+      await passkey.DELETE(
+        request(publicOrigin, '/api/account/passkeys/key_' + 'a'.repeat(24), {}, headers),
+        { params: Promise.resolve({ id: 'key_' + 'a'.repeat(24) }) }
+      )
+    ).status,
+    422
+  );
+  assert.equal(managementCalls, before);
+});
+
+test('PasskeyPanel exposes labelled current-password controls for add and remove', () => {
+  const source = readFileSync(resolve(root, 'components/account/passkey-panel.tsx'), 'utf8');
+  assert.match(source, /htmlFor=["']passkey-current-password["']/);
+  assert.match(source, /id=["']passkey-current-password["']/);
+  assert.match(source, /type=["']password["']/);
+  assert.match(source, /aria-labelledby=["']remove-passkey-heading["']/);
+  assert.match(source, /autoComplete=["']current-password["']/);
 });

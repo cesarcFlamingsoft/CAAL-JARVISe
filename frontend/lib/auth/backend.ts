@@ -23,6 +23,8 @@ interface CallOptions {
   body?: unknown;
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /** Opaque digest of the BFF-authenticated browser context, never the credential itself. */
+  sessionBinding?: string;
 }
 
 async function call(
@@ -52,7 +54,7 @@ async function call(
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
   } catch {
-    console.error(`[identity] request to ${path} failed`);
+    console.error('[identity] backend request failed');
     return { ok: false, status: null, data: null };
   }
   let data: unknown = null;
@@ -96,6 +98,7 @@ export async function callAsUser(
     secret: config.internalAuthSecret,
     subject: userId,
     audience: AUDIENCE_BACKEND,
+    ...(init.sessionBinding ? { claims: { session_binding: init.sessionBinding } } : {}),
   });
   return call(config, path, {
     ...init,
@@ -170,6 +173,31 @@ export async function login(
     method: 'POST',
     headers: await identityHeaders(config, clientKey),
     body: { email, password },
+    timeoutMs: LOGIN_TIMEOUT_MS,
+  });
+}
+
+/** Begin a discoverable passkey assertion; no account identifier is sent. */
+export async function beginPasskeyLogin(
+  config: IdentityConfig,
+  clientKey: string
+): Promise<BackendResult> {
+  return call(config, '/auth/passkey/options', {
+    method: 'POST',
+    headers: await identityHeaders(config, clientKey),
+  });
+}
+
+/** Verify a passkey assertion and receive the same opaque CAAL session as password login. */
+export async function finishPasskeyLogin(
+  config: IdentityConfig,
+  input: { ceremonyId: string; credential: unknown },
+  clientKey: string
+): Promise<BackendResult> {
+  return call(config, '/auth/passkey/verify', {
+    method: 'POST',
+    headers: await identityHeaders(config, clientKey),
+    body: input,
     timeoutMs: LOGIN_TIMEOUT_MS,
   });
 }

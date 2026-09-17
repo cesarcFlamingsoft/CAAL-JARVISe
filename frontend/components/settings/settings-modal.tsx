@@ -196,7 +196,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   // Use portal to render modal at document body level (avoids CSS filter stacking context issues)
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-background border-input dark:border-muted flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border shadow-xl">
+      <div className="friday-panel bg-background border-input dark:border-muted flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border shadow-xl">
         {/* Header - fixed */}
         <div className="border-input dark:border-muted flex shrink-0 items-center justify-between border-b p-4">
           <div className="flex items-center gap-2">
@@ -580,7 +580,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         min_endpointing_delay: parseFloat(e.target.value) || 0.5,
                       })
                     }
-                    className="w-full accent-[#45997c]"
+                    className="w-full accent-[var(--primary)]"
                   />
                   <div className="text-muted-foreground flex justify-between text-xs">
                     <span>Fast (0.1s)</span>

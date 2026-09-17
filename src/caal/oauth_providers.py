@@ -158,12 +158,12 @@ _SPECS: dict[str, ProviderSpec] = {
     "google": ProviderSpec(
         provider="google",
         display_name="Google",
-        # Read-only Gmail and Calendar. ``openid email`` yields the ID token
-        # that names the account (``sub``) so two Google accounts can coexist.
+        # Inbox opens deliberately require only this minimal state mutation;
+        # no compose/send or calendar-write scope is requested by default.
         default_scopes=(
             "openid",
             "email",
-            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/calendar.readonly",
         ),
         identity_scopes=("openid", "email"),
@@ -179,9 +179,9 @@ _SPECS: dict[str, ProviderSpec] = {
     "microsoft": ProviderSpec(
         provider="microsoft",
         display_name="Microsoft",
-        # Read-only Outlook mail and calendar; ``offline_access`` for a
-        # refresh token; ``openid email`` for the ID token naming the account.
-        default_scopes=("openid", "email", "offline_access", "Mail.Read", "Calendars.Read"),
+        # Mail.ReadWrite is limited to marking an opened message read; calendar
+        # remains read-only and compose/send privileges are never requested.
+        default_scopes=("openid", "email", "offline_access", "Mail.ReadWrite", "Calendars.Read"),
         identity_scopes=("openid", "email"),
         pkce=True,
         extra_authorize_params=(("response_mode", "query"), ("prompt", "select_account")),

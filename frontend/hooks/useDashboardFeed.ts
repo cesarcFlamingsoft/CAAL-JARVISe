@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type FeedState, createRefreshGate, reduceFeed } from '@/lib/dashboard/refresh';
 import { SCHEDULED_EVENT_NAME } from '@/lib/dashboard/scheduled-events';
+import { workRefreshInterval } from '@/lib/dashboard/work';
 
 export type { FeedState } from '@/lib/dashboard/refresh';
 export type FeedController<T> = FeedState<T> & { reload: () => void };
 export type FeedPath =
   | '/api/dashboard/calendar'
   | '/api/dashboard/inbox'
-  | '/api/dashboard/reminders';
+  | '/api/dashboard/reminders'
+  | '/api/dashboard/work';
 const REFRESH_INTERVAL_MS = 60_000;
 
 // Only in-flight responses are shared; no personal data is cached between mounts.
@@ -43,6 +45,8 @@ export function useDashboardFeed<T>(
   useEffect(() => {
     let cancelled = false;
     let generation = 0;
+    let interval = REFRESH_INTERVAL_MS;
+    let timer: number;
     const load = async () => {
       const version = generation;
       setState((current) =>
@@ -67,7 +71,17 @@ export function useDashboardFeed<T>(
       } catch {
         next = { status: 'error', code: 'network' };
       }
-      if (!cancelled && version === generation) setState((current) => reduceFeed(current, next));
+      if (!cancelled && version === generation) {
+        setState((current) => reduceFeed(current, next));
+        if (path === '/api/dashboard/work' && next.status === 'ready') {
+          const nextInterval = workRefreshInterval(next.data);
+          if (nextInterval !== interval) {
+            interval = nextInterval;
+            window.clearInterval(timer);
+            timer = window.setInterval(refresh, interval);
+          }
+        }
+      }
     };
     const visible = () => document.visibilityState === 'visible';
     let gate = createRefreshGate(load, visible);
@@ -84,7 +98,7 @@ export function useDashboardFeed<T>(
     };
     refreshRef.current = refresh;
     refresh();
-    const timer = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    timer = window.setInterval(refresh, interval);
     document.addEventListener('visibilitychange', refresh);
     window.addEventListener('focus', refresh);
     window.addEventListener('settings-updated', invalidate);

@@ -53,7 +53,7 @@ export function WakeWordToggle({ className, ...props }: WakeWordToggleProps) {
       title={title}
       className={cn(
         // Highlight when actively listening
-        isListening && 'ring-2 ring-green-500/50',
+        isListening && 'ring-2 ring-cyan-500/50',
         // Red ring when there's an error
         error && 'ring-2 ring-red-500/50',
         className
@@ -64,7 +64,7 @@ export function WakeWordToggle({ className, ...props }: WakeWordToggleProps) {
         weight="bold"
         className={cn(
           isPending && 'animate-spin',
-          isListening && 'text-green-500',
+          isListening && 'text-cyan-300',
           error && 'text-red-500'
         )}
       />

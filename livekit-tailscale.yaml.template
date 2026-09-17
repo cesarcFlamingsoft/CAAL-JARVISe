@@ -4,12 +4,13 @@ keys:
   ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
 
 rtc:
-  use_external_ip: false
+  # Public browser clients must receive the WAN candidate rather than this
+  # Mac's RFC1918 address; Cloudflare carries signalling, not WebRTC media.
+  use_external_ip: true
+  # One publicly mapped UDP port is sufficient for this single-node server and
+  # avoids the router's failed 101-port UPnP range allocation.
+  udp_port: 7881
   tcp_port: 7881
-  # Must match the published Docker UDP range exactly.  These values are sent
-  # to browsers as ICE candidates, not translated through Docker's mapping.
-  port_range_start: 50100
-  port_range_end: 50200
 
 # TURN/TLS for remote access (Tailscale or mkcert)
 turn:
