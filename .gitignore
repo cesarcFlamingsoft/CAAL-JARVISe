@@ -115,3 +115,27 @@ mobile/releases/*.apk
 # Local agent and transient asset workspace
 .hermes/
 .brandtmp/
+
+# Generated frontend deployment/build snapshots
+/frontend/.next-cinematic-build/
+/frontend/.next-deploy.previous.*/
+
+# Transient operational reports (source/configuration remains trackable)
+/reports/adaptive-voice/
+/reports/bilingual/
+/reports/company-knowledge/
+/reports/git-commit/
+/reports/ha-lamp-failure/
+/reports/ha-satellite-pilot/
+/reports/ha-satellite-rollout/
+/reports/ha-voice-navigation/
+/reports/home-assistant-access/
+/reports/jarvis-ui-cinematic/
+/reports/network-troubleshooting/
+/reports/real-speedtest/
+/reports/startup-resilience/
+/reports/tool-regression/
+/reports/tts-backend-choice/
+/reports/voice-weather/
+/reports/weather-voice/
+/reports/voice-weather-consistency-task.md

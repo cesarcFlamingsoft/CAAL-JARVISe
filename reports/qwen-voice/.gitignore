@@ -1,0 +1,23 @@
+venv/
+.token
+__pycache__/
+.pytest_cache/
+frontend-build-source/
+
+# Generated audition/verification output; runtime source stays versioned.
+.private/
+*.wav
+*.json
+*.jsonl
+*.txt
+*.patch
+FINAL.md
+LIVE.md
+LOCAL-ORIGIN.md
+*-audition/
+customvoice-*/
+balanced-male-audition/
+natural-british-audition/
+professional-tuning/
+refined-audition/
+smooth-playful-audition/
