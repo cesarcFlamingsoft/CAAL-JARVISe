@@ -237,6 +237,9 @@ async def test_participant_disconnect_clears_pending_and_rejects_late_result():
         "Can you tell me what I'm holding?",
         "What does this look like?",
         "What is in front of me?",
+        "What am I holding in my hand?",
+        "What am I holding on my hand?",
+        "Friday, can you see what I have in my hand?",
     ],
 )
 def test_natural_explicit_variations_need_no_special_phrase(text):

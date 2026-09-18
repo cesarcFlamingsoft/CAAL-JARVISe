@@ -12,8 +12,10 @@ from typing import Any
 _TOPIC = re.compile(r"^[a-f0-9]{32}$")
 _QUESTIONS = re.compile(
     r"(?:friday[, ]+)?(?:what (?:is|s) this (?:that )?i (?:am|m) (?:handling|holding)|"
-    r"what (?:am i holding|(?:is|s) in my hand|can you see|does this look like|is in front of me)|"
+    r"what (?:am i holding(?: (?:in|on) my hand)?|(?:is|s) in my hand|"
+    r"can you see|does this look like|is in front of me)|"
     r"(?:can you |could you )?tell me what i (?:am|m) holding|"
+    r"(?:friday[, ]+)?(?:can you |could you )?see what i have in my hand|"
     r"(?:can you |could you |please )?(?:describe|tell me) what you (?:see|can see)|"
     r"(?:please )?(?:analyze|describe) (?:the |my )?(?:current )?(?:camera view|vision preview))"
 )
