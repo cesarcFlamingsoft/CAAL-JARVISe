@@ -1,5 +1,6 @@
 """Ephemeral, explicit-only browser commands; descriptions never enter a model."""
 
+import ast
 import asyncio
 import json
 from pathlib import Path
@@ -211,3 +212,36 @@ async def test_camera_tool_is_discovered_after_the_camera_opens_even_if_cache_wa
     view.live = True
     tools = await llm_node._discover_tools(agent)
     assert [tool["function"]["name"] for tool in tools] == ["analyze_camera_view", "web_search"]
+
+
+def test_entrypoint_keeps_json_as_the_module_serializer_for_visual_send():
+    """A conditional local import makes json unbound in the earlier sender closure."""
+    tree = ast.parse(Path("voice_agent.py").read_text())
+    entry = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "entrypoint"
+    )
+
+    class DirectScopeImports(ast.NodeVisitor):
+        names: set[str]
+
+        def __init__(self):
+            self.names = set()
+
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_Import(self, node):
+            self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+
+        def visit_ImportFrom(self, node):
+            self.names.update(alias.asname or alias.name for alias in node.names)
+
+    finder = DirectScopeImports()
+    for statement in entry.body:
+        finder.visit(statement)
+    assert "json" not in finder.names

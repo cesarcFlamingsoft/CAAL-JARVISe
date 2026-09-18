@@ -2550,7 +2550,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     _session_ref: AgentSession | None = None
 
     if wake_word_enabled:
-        import json
         import random
 
         wake_word_model = all_settings.get("wake_word_model", "models/hey_jarvis.onnx")
@@ -2987,8 +2986,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         tool_params: list[dict],
     ) -> None:
         """Publish tool usage status to frontend via data packet."""
-        import json
-
         payload = json.dumps(
             {
                 "tool_used": tool_used,
