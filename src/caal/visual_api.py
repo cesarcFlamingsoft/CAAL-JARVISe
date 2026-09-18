@@ -6,6 +6,7 @@ import base64
 import binascii
 import io
 import json
+import logging
 import os
 import threading
 from collections.abc import Callable
@@ -22,6 +23,8 @@ from . import user_api
 from .internal_auth import RateLimiter
 from .local_ollama import is_model_name, normalize_endpoint, resolve_local_alias
 from .user_api import CurrentUser, IdentityRuntime, require_user
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_IMAGE_BYTES",
@@ -152,6 +155,7 @@ class VisualRuntime:
         client = httpx.AsyncClient(
             timeout=OLLAMA_TIMEOUT, trust_env=False, transport=self._transport
         )
+        stage = "model_capabilities"
         try:
             shown = await client.post(
                 f"{endpoint}/api/show",
@@ -163,6 +167,7 @@ class VisualRuntime:
             capabilities = show.get("capabilities") if isinstance(show, dict) else None
             if not isinstance(capabilities, list) or "vision" not in capabilities:
                 raise VisionUnavailableError
+            stage = "camera_analysis"
             answered = await client.post(
                 f"{endpoint}/api/chat",
                 json={
@@ -175,7 +180,10 @@ class VisualRuntime:
                 headers={"Accept": "application/json"},
             )
             payload = self._json(answered)
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError, VisionUnavailableError) as exc:
+            logger.warning(
+                "Visual analysis unavailable at stage=%s kind=%s", stage, type(exc).__name__
+            )
             raise VisionUnavailableError from exc
         finally:
             await client.aclose()
