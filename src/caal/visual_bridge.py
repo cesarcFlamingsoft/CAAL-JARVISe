@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 _TOPIC = re.compile(r"^[a-f0-9]{32}$")
+_LAST_OBSERVATION_SECONDS = 5 * 60
 
 
 class VisualBridge:
@@ -27,6 +28,9 @@ class VisualBridge:
         self._closed = False
         self.pending: asyncio.Future[str] | None = None
         self._command: dict[str, Any] | None = None
+        # A text-only, short-lived observation lets a spoken follow-up refer to
+        # this same preview without retaining the camera frame.
+        self._last_description: tuple[str, float] | None = None
 
     def cancel(self) -> None:
         if self._command is not None and self._binding is not None:
@@ -49,6 +53,7 @@ class VisualBridge:
         self._closed = True
         self.cancel()
         self._binding = None
+        self._last_description = None
 
     def disconnect(self, participant: str) -> None:
         if self._binding is not None and self._binding[0] == participant:
@@ -80,11 +85,13 @@ class VisualBridge:
             if binding != self._binding:
                 self.cancel()
                 self._binding = binding
+                self._last_description = None
             return
         if action == "vision.close":
             if self._binding == (participant, value.get("epoch")):
                 self.cancel()
                 self._binding = None
+                self._last_description = None
             return
         command = self._command
         if action != "vision.result" or command is None or self.pending is None:
@@ -106,12 +113,23 @@ class VisualBridge:
             self.cancel()
             return
         self._command = None
+        self._last_description = (description, time.monotonic())
         if not self.pending.done():
             self.pending.set_result(description)
 
     def available(self) -> bool:
         """Whether this exact personal browser session has an active camera binding."""
         return not self._closed and self.user is not None and self._binding is not None
+
+    def last_observation(self) -> str | None:
+        """Return only the recent text description for this live preview."""
+        if not self.available() or self._last_description is None:
+            return None
+        description, observed_at = self._last_description
+        if time.monotonic() - observed_at > _LAST_OBSERVATION_SECONDS:
+            self._last_description = None
+            return None
+        return description
 
     async def analyze(self) -> str:
         """Capture one bound camera frame and return its local description to the LLM tool."""

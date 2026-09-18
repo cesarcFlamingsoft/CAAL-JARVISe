@@ -48,7 +48,10 @@ MAX_DECODED_BYTES = MAX_IMAGE_PIXELS * 3
 MAX_BASE64_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
 MAX_REQUEST_BYTES = MAX_BASE64_CHARS + 1024
 MAX_PROMPT_CHARS = 240
-VISUAL_PROMPT = "Briefly describe what is visible in this camera view."
+VISUAL_PROMPT = (
+    "Briefly describe what is visible in this camera view. Include a visible brand, model, "
+    "or text only when clear; never guess."
+)
 MAX_OUTPUT_CHARS = 1200
 # Ollama's /api/show includes model metadata and can exceed the bounded chat
 # response envelope; only its capability list is used here.

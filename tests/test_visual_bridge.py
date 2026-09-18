@@ -37,6 +37,7 @@ async def test_one_shot_bound_result_returns_to_the_tool_without_speaking():
     assert not task.done()
     bridge.receive(json.dumps(reply).encode(), participant)
     assert await task == "A blue mug."
+    assert bridge.last_observation() == "A blue mug."
     bridge.receive(json.dumps(reply).encode(), participant)
     assert answers == []
     assert bridge.pending is None

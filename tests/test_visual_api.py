@@ -20,7 +20,10 @@ from caal.visual_api import MAX_IMAGE_BYTES, VisualRuntime
 
 SECRET = "v" * 48
 NOW = 1_700_000_000
-PROMPT = "Briefly describe what is visible in this camera view."
+PROMPT = (
+    "Briefly describe what is visible in this camera view. Include a visible brand, model, "
+    "or text only when clear; never guess."
+)
 
 
 def jpeg(width: int = 32, height: int = 24) -> str:

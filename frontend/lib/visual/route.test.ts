@@ -44,7 +44,8 @@ registerHooks({
 const origin = 'http://localhost:3000';
 const csrf = 'visual-test-csrf-token-long-enough';
 const image = 'a'.repeat(100);
-const prompt = 'Briefly describe what is visible in this camera view.';
+const prompt =
+  'Briefly describe what is visible in this camera view. Include a visible brand, model, or text only when clear; never guess.';
 let index = 0;
 
 function request(
