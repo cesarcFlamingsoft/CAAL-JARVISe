@@ -140,10 +140,10 @@ def test_the_live_service_matches_the_approved_bilingual_contract():
         (LIVE / "friday-female-audition" / "approved-live.json").read_text()
     )
     assert live.STYLE == approval["english"]["style"]
-    assert live.MODEL == approval["english"]["model"]
-    assert live.REVISION == approval["english"]["revision"]
-    assert live.SPANISH_MODEL == approval["spanish"]["model"]
-    assert live.SPANISH_REVISION == approval["spanish"]["revision"]
+    assert live.ANCHOR_MODEL == approval["english"]["model"]
+    assert live.ANCHOR_REVISION == approval["english"]["revision"]
+    assert live.MODEL == approval["spanish"]["model"]
+    assert live.REVISION == approval["spanish"]["revision"]
     assert live.SPANISH_REFERENCE_TEXT == approval["spanish"]["reference_text"]
     assert live.SPANISH_REFERENCE_AUDIO.name == approval["english"]["reference_audio"]
     assert live.STYLES["es"] == "Approved female FRIDAY synthetic-reference clone."

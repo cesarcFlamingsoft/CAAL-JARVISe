@@ -10,18 +10,25 @@ from pathlib import Path
 
 import numpy as np
 
-MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
-REVISION = "5c390979e4b93af5f2932f90742ca99c7dd04687"
-MODEL_PATH = (
+# The approved VoiceDesign render below is a permanent synthetic anchor, not the
+# live speaker generator. Every live request uses the Qwen Base clone model with
+# this exact reference, which keeps FRIDAY's speaker identity stable across turns.
+ANCHOR_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+ANCHOR_REVISION = "5c390979e4b93af5f2932f90742ca99c7dd04687"
+ANCHOR_MODEL_PATH = (
     "/Users/cesar/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit/snapshots/"
+    + ANCHOR_REVISION
+)
+MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit"
+REVISION = "37e955a1deb861c088ae5f3a67043185f3d1a60c"
+MODEL_PATH = (
+    "/Users/cesar/.cache/huggingface/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-4bit/snapshots/"
     + REVISION
 )
-SPANISH_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit"
-SPANISH_REVISION = "37e955a1deb861c088ae5f3a67043185f3d1a60c"
-SPANISH_MODEL_PATH = (
-    "/Users/cesar/.cache/huggingface/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-4bit/snapshots/"
-    + SPANISH_REVISION
-)
+# Compatibility aliases for reports and staged bilingual tests.
+SPANISH_MODEL = MODEL
+SPANISH_REVISION = REVISION
+SPANISH_MODEL_PATH = MODEL_PATH
 
 STYLE = (
     "A poised adult British woman in her late thirties with a clear, warm, naturally feminine "
@@ -86,31 +93,19 @@ class QwenModel:
     def generate(self, text, language=DEFAULT_LANGUAGE):
         lang_code, _ = design_for(language)
         self.seed(SEED)
-        if language in (None, "en"):
-            model = self._model(MODEL_PATH)
-            results = model.generate(
-                text,
-                instruct=STYLE,
-                lang_code=lang_code,
-                stream=True,
-                streaming_interval=self.interval,
-                max_tokens=MAX_TOKENS,
-                verbose=False,
-            )
-        else:
-            if not SPANISH_REFERENCE_AUDIO.is_file():
-                raise FileNotFoundError("Approved Spanish clone reference is missing")
-            model = self._model(SPANISH_MODEL_PATH)
-            results = model.generate(
-                text,
-                lang_code=lang_code,
-                ref_audio=str(SPANISH_REFERENCE_AUDIO),
-                ref_text=SPANISH_REFERENCE_TEXT,
-                stream=True,
-                streaming_interval=self.interval,
-                max_tokens=MAX_TOKENS,
-                verbose=False,
-            )
+        if not SPANISH_REFERENCE_AUDIO.is_file():
+            raise FileNotFoundError("Approved FRIDAY clone anchor is missing")
+        model = self._model(MODEL_PATH)
+        results = model.generate(
+            text,
+            lang_code=lang_code,
+            ref_audio=str(SPANISH_REFERENCE_AUDIO),
+            ref_text=SPANISH_REFERENCE_TEXT,
+            stream=True,
+            streaming_interval=self.interval,
+            max_tokens=MAX_TOKENS,
+            verbose=False,
+        )
         try:
             for result in results:
                 audio = np.asarray(result.audio)

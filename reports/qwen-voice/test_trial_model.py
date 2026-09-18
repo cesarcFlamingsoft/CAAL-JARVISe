@@ -5,7 +5,7 @@ import pytest
 import trial_model
 
 
-def test_warm_model_is_reused_and_decoder_reset_on_close():
+def test_english_uses_the_fixed_friday_anchor_clone_and_resets_decoder():
     loaded = []
     resets = []
     options = []
@@ -29,12 +29,14 @@ def test_warm_model_is_reused_and_decoder_reset_on_close():
         gen = model.generate("Understood.")
         assert next(gen) == np.array([16383, -16383], dtype="<i2").tobytes()
         gen.close()
-    assert len(loaded) == 1
+    assert loaded == [trial_model.SPANISH_MODEL_PATH]
     assert len(resets) == 2
     assert options[0]["stream"] is True
     assert options[0]["streaming_interval"] == 0.24
-    assert options[0]["instruct"] == trial_model.STYLE
-    assert "ref_audio" not in options[0]
+    assert options[0]["lang_code"] == "English"
+    assert options[0]["ref_audio"] == str(trial_model.SPANISH_REFERENCE_AUDIO)
+    assert options[0]["ref_text"] == trial_model.SPANISH_REFERENCE_TEXT
+    assert "instruct" not in options[0]
 
 
 def test_spanish_is_routed_to_the_fixed_female_friday_clone_prompt():
