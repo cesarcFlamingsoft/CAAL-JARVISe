@@ -32,6 +32,7 @@ __all__ = [
     "MAX_IMAGE_PIXELS",
     "VisualRuntime",
     "decode_jpeg",
+    "compact_jpeg_for_model",
     "get_visual_runtime",
     "router",
 ]
@@ -39,6 +40,10 @@ __all__ = [
 MAX_IMAGE_EDGE = 640
 MAX_IMAGE_PIXELS = MAX_IMAGE_EDGE * MAX_IMAGE_EDGE
 MAX_IMAGE_BYTES = 400 * 1024
+# Gemma receives a separately re-encoded model input: keeping it at 384px
+# prevents a high-detail browser frame from producing empty visual completions.
+MODEL_IMAGE_EDGE = 384
+MODEL_JPEG_QUALITY = 70
 MAX_DECODED_BYTES = MAX_IMAGE_PIXELS * 3
 MAX_BASE64_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
 MAX_REQUEST_BYTES = MAX_BASE64_CHARS + 1024
@@ -108,6 +113,30 @@ def decode_jpeg(value: str) -> bytes:
     except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
         raise ValueError("invalid_image") from exc
     return raw
+
+
+def compact_jpeg_for_model(value: str) -> str:
+    """Re-encode the validated camera image to a small, model-stable JPEG."""
+    raw = decode_jpeg(value)
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            image.load()
+            compact = image.convert("RGB")
+            compact.thumbnail((MODEL_IMAGE_EDGE, MODEL_IMAGE_EDGE), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            compact.save(
+                output,
+                format="JPEG",
+                quality=MODEL_JPEG_QUALITY,
+                optimize=True,
+                progressive=False,
+            )
+        encoded = output.getvalue()
+    except (OSError, UnidentifiedImageError) as exc:
+        raise ValueError("invalid_image") from exc
+    if not encoded or len(encoded) > MAX_IMAGE_BYTES:
+        raise ValueError("invalid_image")
+    return base64.b64encode(encoded).decode("ascii")
 
 
 class VisionUnavailableError(Exception):
@@ -283,11 +312,11 @@ async def analyze_camera_view(
     if not runtime.allow(user.profile.user_id):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limited")
     try:
-        decode_jpeg(body.image)
+        model_image = compact_jpeg_for_model(body.image)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid_image") from exc
     try:
-        description = await runtime.analyze(image=body.image, prompt=body.prompt)
+        description = await runtime.analyze(image=model_image, prompt=body.prompt)
     except VisionUnavailableError as exc:
         raise HTTPException(status_code=503, detail="vision_unavailable") from exc
     return VisualResponse(description=description)

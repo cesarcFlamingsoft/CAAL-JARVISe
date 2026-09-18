@@ -194,7 +194,8 @@ def test_checks_vision_then_sends_a_tool_free_local_chat_payload(client, harness
     assert payload["stream"] is False
     assert payload["messages"][0]["role"] == "user"
     assert payload["messages"][0]["content"] == PROMPT
-    assert payload["messages"][0]["images"] == [body()["image"]]
+    assert isinstance(payload["messages"][0]["images"][0], str)
+    assert payload["messages"][0]["images"][0] != body()["image"]
     assert "tools" not in payload
     assert payload["options"]["num_predict"] <= 300
     assert all(request.url.host == "localhost" for request in harness.requests)
@@ -226,6 +227,23 @@ def test_retries_one_transient_local_vision_failure(client, harness):
     response = client.post("/users/me/visual/analyze", headers=harness.bearer(), json=body())
     assert response.status_code == 200
     assert response.json() == {"description": "A blue view."}
+
+
+def test_reencodes_camera_frame_to_a_compact_model_input(client, harness):
+    source = jpeg(640, 480)
+    harness.answers = [
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(200, json={"message": {"content": "A blue view."}}),
+    ]
+    response = client.post(
+        "/users/me/visual/analyze", headers=harness.bearer(), json=body(image=source)
+    )
+    assert response.status_code == 200
+    model_image = json.loads(harness.requests[1].content)["messages"][0]["images"][0]
+    assert model_image != source
+    with Image.open(io.BytesIO(base64.b64decode(model_image))) as image:
+        assert image.format == "JPEG"
+        assert image.size == (384, 288)
 
 
 def test_accepts_a_bounded_large_show_response_but_keeps_chat_response_strict(client, harness):
