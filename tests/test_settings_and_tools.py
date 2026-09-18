@@ -4,6 +4,19 @@ import json
 REDACTED = "********"
 
 
+def test_runtime_root_finds_mounted_settings_above_installed_package(tmp_path):
+    from caal import settings as settings_module
+
+    runtime = tmp_path / "app"
+    runtime.mkdir()
+    (runtime / "settings.json").write_text("{}")
+    installed = runtime / ".venv/lib/python3.11/site-packages/caal/settings.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("# synthetic module location")
+
+    assert settings_module.runtime_root(installed, cwd=tmp_path / "elsewhere") == runtime
+
+
 def configure_settings_module(monkeypatch, tmp_path):
     from caal import settings as settings_module
 

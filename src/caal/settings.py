@@ -24,8 +24,21 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
+
+def runtime_root(module_file: str | Path = __file__, *, cwd: str | Path | None = None) -> Path:
+    """Find the project/runtime root for source and mounted-package deployments."""
+    module_path = Path(module_file).resolve()
+    for parent in module_path.parents:
+        if (parent / "settings.json").exists() or (parent / "prompt").is_dir():
+            return parent
+    current = Path.cwd() if cwd is None else Path(cwd)
+    if (current / "settings.json").exists() or (current / "prompt").is_dir():
+        return current
+    return module_path.parent.parent.parent
+
+
 # Paths - use environment variable for Docker, fallback for local dev
-_SCRIPT_DIR = Path(__file__).parent.parent.parent  # src/caal -> project root
+_SCRIPT_DIR = runtime_root()
 SETTINGS_PATH = Path(os.getenv("CAAL_SETTINGS_PATH", _SCRIPT_DIR / "settings.json"))
 PROMPT_DIR = Path(os.getenv("CAAL_PROMPT_DIR", _SCRIPT_DIR / "prompt"))
 

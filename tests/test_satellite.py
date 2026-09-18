@@ -173,7 +173,12 @@ async def test_real_loop_uses_prompt_and_bounded_local_transport(monkeypatch):
             return httpx.Response(200, json={"capabilities": ["completion", "tools"]})
         assert body["model"] == "fixture-local"
         assert body["options"]["num_predict"] == 1024
+        assert body["options"]["temperature"] == 0.0
         assert "Actual fixture prompt" in body["messages"][0]["content"]
+        assert (
+            "Only use an exact entity_id returned by home.states"
+            in body["messages"][0]["content"]
+        )
         if len(requests) == 2:
             return httpx.Response(
                 200,

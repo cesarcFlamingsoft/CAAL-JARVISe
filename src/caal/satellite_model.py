@@ -57,7 +57,9 @@ class SatelliteModel(LLMProvider):
             messages=messages,
             tools=tools,
             stream=stream,
-            options={"num_predict": 1024, "num_ctx": 8192, "temperature": 0.7},
+            # Satellite tool calls are safety-sensitive. Keep local decoding deterministic
+            # so state-derived entity IDs are copied rather than creatively rewritten.
+            options={"num_predict": 1024, "num_ctx": 8192, "temperature": 0.0},
             **self.think_fields,
         )
 
