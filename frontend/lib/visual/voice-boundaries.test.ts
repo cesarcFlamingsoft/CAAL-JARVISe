@@ -8,7 +8,7 @@ test('voice commands are gated by current user, Personal mode, room, participant
   const dock = read('components/dashboard/voice-dock.tsx');
   assert.match(
     dock,
-    /!session.isConnected \|\| !room \|\| !agent \|\| !userId \|\| companyPrivate/
+    /!session\.isConnected[\s\S]*!room[\s\S]*!agent[\s\S]*!userId[\s\S]*companyPrivate[\s\S]*!visionOpen[\s\S]*!cameraLive/
   );
   assert.match(dock, /visionOpen && cameraLive/);
   assert.match(dock, /participant\?\.identity !== agent.identity/);

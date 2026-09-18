@@ -58,7 +58,16 @@ export function VoiceDock({
   const { state: agentState, agent } = useVoiceAssistant();
   const room = useRoomContext();
   useEffect(() => {
-    if (!session.isConnected || !room || !agent || !userId || companyPrivate) return;
+    if (
+      !session.isConnected ||
+      !room ||
+      !agent ||
+      !userId ||
+      companyPrivate ||
+      !visionOpen ||
+      !cameraLive
+    )
+      return;
     const epoch = crypto.randomUUID().replaceAll('-', '');
     const binding = {
       user: userId,
