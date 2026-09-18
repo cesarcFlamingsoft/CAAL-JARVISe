@@ -50,7 +50,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, ".env"))
 
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, StopResponse, mcp, stt
+from livekit.agents import Agent, AgentSession, StopResponse, function_tool, mcp, stt
 from livekit.plugins import groq as groq_plugin
 from livekit.plugins import silero
 
@@ -127,7 +127,7 @@ from caal.tools import reminders_tools
 from caal.tools.delivery_semantics import SemanticDeliveryReader
 from caal.tools.schedule_semantics import SemanticScheduleReader
 from caal.user_scope import UserScope
-from caal.visual_bridge import OPEN_VISION, UNAVAILABLE, VisualBridge
+from caal.visual_bridge import VisualBridge
 from caal.waiting_audio import (
     WAITING_AUDIO_START,
     WAITING_CUE,
@@ -1014,11 +1014,6 @@ class LocalTurnHandler:
             # language lives on the agent. Published from session state only,
             # never from the words of the turn.
             reply_localization.begin_turn(self._agent)
-        if self._visual is not None:
-            from caal import company_privacy
-
-            if await self._visual.handle(text, company=company_privacy.session_is_private()):
-                return True
         if self._company_gate is not None:
             try:
                 if await self._company_gate.handle(text, self._session):
@@ -2059,6 +2054,7 @@ class VoiceAssistant(WebSearchTools, Agent):
         friday_tool_definitions: list[dict] | None = None,
         friday_tool_callables: dict | None = None,
         turn_consumed: Callable[[str], Awaitable[bool]] | None = None,
+        visual: VisualBridge | None = None,
         sync_return_context: Callable[[Any, Any], Awaitable[bool]] | None = None,
         user_scope: UserScope | None = None,
         tool_data_cache: ToolDataCache | None = None,
@@ -2122,8 +2118,35 @@ class VoiceAssistant(WebSearchTools, Agent):
         # Routine delay is not progress; keep ordinary replies free of spoken filler.
         self._waiting_cues_enabled = False
         self._turn_consumed = turn_consumed
+        # The LLM only sees the camera tool when this exact authenticated browser
+        # session has an active Personal-mode camera binding.
+        self._visual_bridge = visual
         # Catches this session up after a phone leg ended, before the LLM sees the turn
         self._sync_return_context = sync_return_context
+
+    @function_tool
+    async def analyze_camera_view(self) -> dict[str, str]:
+        """Inspect the current live Personal-mode camera view when it helps answer the user.
+
+        Use only when the user asks about something visible or asks what FRIDAY can see.
+        This tool is offered only while the user's camera is actively open. It captures one
+        reduced frame locally, does not retain it, and returns a concise local description.
+        """
+        visual = self._visual_bridge
+        if visual is None or not visual.available():
+            return {
+                "status": "unavailable",
+                "message": (
+                    "The live camera view is no longer available. Ask the user to open Vision."
+                ),
+            }
+        try:
+            return {"status": "ok", "description": await visual.analyze()}
+        except (TimeoutError, ValueError):
+            return {
+                "status": "unavailable",
+                "message": "The local camera analysis is unavailable. Ask the user to try again.",
+            }
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """Drop a turn CAAL answered itself, so the LLM never sees the command.
@@ -2851,8 +2874,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         else "disabled (no signed-in user or no local model)",
     )
 
-    from caal.visual_speech import speak_visual, speech_target
-
     async def _visual_send(packet, participant):
         if participant not in ctx.room.remote_participants:
             return
@@ -2861,19 +2882,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             destination_identities=[participant],
         )
 
-    async def _visual_speak(description):
-        if description in (OPEN_VISION, UNAVAILABLE):
-            await session.say(description, add_to_chat_ctx=False)
-            return
-        try:
-            await speak_visual(session, description, **speech_target(tts_instance))
-        except Exception:
-            await session.say(UNAVAILABLE, add_to_chat_ctx=False)
-
     visual_bridge = VisualBridge(
         user=user_scope.user_id if ctx.room.name.startswith("caal-web-")
         and not company_session_requested else None,
-        room=ctx.room.name, send=_visual_send, speak=_visual_speak,
+        room=ctx.room.name, send=_visual_send,
     )
     local_turn_handler = LocalTurnHandler(
         phone_handoff=phone_handoff,
@@ -3055,6 +3067,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         friday_tool_definitions=friday_tool_definitions,
         friday_tool_callables=friday_tool_callables,
         turn_consumed=local_turn_handler.turn_consumed,
+        visual=visual_bridge,
         sync_return_context=return_sync.hydrate if return_sync is not None else None,
         user_scope=user_scope,
         tool_data_cache=tool_data_cache,

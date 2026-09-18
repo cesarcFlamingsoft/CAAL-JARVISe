@@ -6,39 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from caal.visual_bridge import VisualBridge, explicit_visual_question
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "What is this I am handling?",
-        "What am I holding?",
-        "Can you describe what you see?",
-        "What's in my hand?",
-        "Analyze the current camera view.",
-    ],
-)
-def test_explicit_questions(text):
-    assert explicit_visual_question(text)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "hello",
-        "I am handling a problem",
-        "What is this?",
-        "look up cameras",
-        "Don't analyze the camera view",
-        "Explain what is this I am handling in Python",
-        "What am I holding tomorrow?",
-        "Read my private contract",
-        "Vision is open",
-    ],
-)
-def test_unrelated_or_ambiguous_text(text):
-    assert not explicit_visual_question(text)
+from caal.visual_bridge import VisualBridge
 
 
 def setup_bridge():
@@ -47,20 +15,17 @@ def setup_bridge():
     async def send(packet, participant):
         commands.append((packet, participant))
 
-    async def speak(text):
-        answers.append(text)
-
-    bridge = VisualBridge(user="usr_test", room="caal-web-test", send=send, speak=speak)
+    bridge = VisualBridge(user="usr_test", room="caal-web-test", send=send)
     ready = dict(action="vision.ready", user="usr_test", room="caal-web-test", epoch="a" * 32)
     bridge.receive(json.dumps(ready).encode(), "user-test")
     return bridge, commands, answers
 
 
 @pytest.mark.asyncio
-async def test_one_shot_bound_result_and_no_normal_chat_command():
+async def test_one_shot_bound_result_returns_to_the_tool_without_speaking():
     bridge, commands, answers = setup_bridge()
-    assert not await bridge.handle("hello")
-    task = asyncio.create_task(bridge.handle("What is this I am handling?"))
+    assert bridge.available()
+    task = asyncio.create_task(bridge.analyze())
     await asyncio.sleep(0)
     command, participant = commands[0]
     assert participant == "user-test"
@@ -70,30 +35,21 @@ async def test_one_shot_bound_result_and_no_normal_chat_command():
     bridge.receive(json.dumps(reply).encode(), "wrong-user")
     assert not task.done()
     bridge.receive(json.dumps(reply).encode(), participant)
-    assert await task
+    assert await task == "A blue mug."
     bridge.receive(json.dumps(reply).encode(), participant)
-    assert answers == ["A blue mug."]
+    assert answers == []
     assert bridge.pending is None
 
 
 @pytest.mark.asyncio
-async def test_company_closed_stale_and_cancel():
-    bridge, commands, answers = setup_bridge()
-    assert await bridge.handle("What am I holding?", company=True)
-    assert commands == []
-    task = asyncio.create_task(bridge.handle("What am I holding?"))
-    await asyncio.sleep(0)
-    packet, participant = commands[0]
-    bridge.cancel()
-    bridge.receive(
-        json.dumps({**packet, "action": "vision.result", "description": "secret"}).encode(),
-        participant,
-    )
-    assert await task
-    assert "secret" not in answers
+async def test_closed_or_unbound_camera_is_not_available_to_the_tool():
+    bridge = VisualBridge(user=None, room="caal-web-test", send=lambda *_: None)
+    assert not bridge.available()
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await bridge.analyze()
+    bridge, _, _ = setup_bridge()
     bridge.close()
-    await bridge.handle("What am I holding?")
-    assert [packet["action"] for packet, _ in commands] == ["vision.analyze", "vision.cancel"]
+    assert not bridge.available()
 
 
 def test_source_boundaries():
@@ -121,45 +77,23 @@ def test_source_boundaries():
 
 
 @pytest.mark.asyncio
-async def test_close_cancels_private_speech_already_in_progress():
+async def test_close_cancels_an_in_progress_analysis():
     bridge, commands, _ = setup_bridge()
-    started = asyncio.Event()
-    cancelled = asyncio.Event()
-
-    async def speak(text):
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    bridge._speak = speak
-    task = asyncio.create_task(bridge.handle("What am I holding?"))
+    task = asyncio.create_task(bridge.analyze())
     await asyncio.sleep(0)
-    packet, participant = commands[0]
+    command, participant = commands[0]
+    bridge.close()
     bridge.receive(
-        json.dumps({**packet, "action": "vision.result", "description": "private"}).encode(),
+        json.dumps({**command, "action": "vision.result", "description": "private"}).encode(),
         participant,
     )
-    await started.wait()
-    bridge.close()
-    await asyncio.sleep(0)
-    try:
-        assert cancelled.is_set()
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await task
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("spoken", [False, True])
-async def test_actual_local_turn_hook_consumes_visual_without_model_or_duplicate(spoken):
-    from test_typed_chat_handoff import (
-        FakeEndCall,
-        FakeSession,
-        _load_voice_agent,
-        _run_turn,
-    )
+async def test_visual_intent_reaches_the_llm_which_can_choose_the_camera_tool():
+    from test_typed_chat_handoff import FakeEndCall, FakeSession, _load_voice_agent
 
     voice_agent = _load_voice_agent()
     bridge, commands, answers = setup_bridge()
@@ -169,31 +103,30 @@ async def test_actual_local_turn_hook_consumes_visual_without_model_or_duplicate
         end_call=FakeEndCall(),
         visual=bridge,
     )
-    text = "What is this I am handling?"
-    if spoken:
-        handler.on_final_transcript(text)
-    reached_model = []
-    turn = asyncio.create_task(_run_turn(handler, text, reached_model))
-    for _ in range(10):
-        await asyncio.sleep(0)
-        if commands:
-            break
+
+    assert await handler.turn_consumed("What is this I am handling?") is False
+    assert commands == []
+    assert answers == []
+
+
+@pytest.mark.asyncio
+async def test_camera_tool_analysis_returns_a_bound_result_without_speaking_it():
+    bridge, commands, answers = setup_bridge()
+    task = asyncio.create_task(bridge.analyze())
+    await asyncio.sleep(0)
     command, participant = commands[0]
     bridge.receive(
-        json.dumps({**command, "action": "vision.result", "description": "A mug."}).encode(),
+        json.dumps({**command, "action": "vision.result", "description": "A blue mug."}).encode(),
         participant,
     )
-    await turn
-    assert reached_model == []
-    assert answers == ["A mug."]
-    assert len(commands) == 1
-    assert not await handler.turn_consumed("hello")
+    assert await task == "A blue mug."
+    assert answers == []
 
 
 @pytest.mark.asyncio
 async def test_invalid_results_never_resolve_pending_turn():
     bridge, commands, answers = setup_bridge()
-    task = asyncio.create_task(bridge.handle("What am I holding?"))
+    task = asyncio.create_task(bridge.analyze())
     await asyncio.sleep(0)
     command, participant = commands[0]
     reply = {**command, "action": "vision.result", "description": "A mug."}
@@ -211,13 +144,14 @@ async def test_invalid_results_never_resolve_pending_turn():
     assert answers == []
     assert not task.done()
     bridge.close()
-    assert await task
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await task
 
 
 @pytest.mark.asyncio
 async def test_participant_disconnect_clears_pending_and_rejects_late_result():
     bridge, commands, answers = setup_bridge()
-    task = asyncio.create_task(bridge.handle("What am I holding?"))
+    task = asyncio.create_task(bridge.analyze())
     await asyncio.sleep(0)
     command, participant = commands[0]
     bridge.disconnect(participant)
@@ -225,22 +159,51 @@ async def test_participant_disconnect_clears_pending_and_rejects_late_result():
         json.dumps({**command, "action": "vision.result", "description": "secret"}).encode(),
         participant,
     )
-    assert await task
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await task
     assert bridge.pending is None
     assert answers == []
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Friday, what can you see?",
-        "Can you tell me what I'm holding?",
-        "What does this look like?",
-        "What is in front of me?",
-        "What am I holding in my hand?",
-        "What am I holding on my hand?",
-        "Friday, can you see what I have in my hand?",
-    ],
-)
-def test_natural_explicit_variations_need_no_special_phrase(text):
-    assert explicit_visual_question(text)
+@pytest.mark.asyncio
+async def test_camera_tool_is_discovered_after_the_camera_opens_even_if_cache_was_cold(monkeypatch):
+    from importlib import import_module
+    from types import SimpleNamespace
+
+    llm_node = import_module("caal.llm.llm_node")
+
+    monkeypatch.setattr(llm_node.settings_module, "get_setting", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        llm_node,
+        "_tool_available",
+        lambda agent, name: name == "web_search"
+        or (name == "analyze_camera_view" and agent._visual_bridge.available()),
+    )
+
+    async def analyze_camera_view(self):
+        """Inspect the live camera."""
+
+    async def web_search(self, query: str):
+        """Search the web."""
+
+    class View:
+        def __init__(self):
+            self.live = False
+
+        def available(self):
+            return self.live
+
+    view = View()
+    agent = SimpleNamespace(
+        _tools=[
+            SimpleNamespace(__func__=analyze_camera_view),
+            SimpleNamespace(__func__=web_search),
+        ],
+        _visual_bridge=view,
+        _llm_tools_cache=None,
+    )
+    cold_tools = await llm_node._discover_tools(agent)
+    assert [tool["function"]["name"] for tool in cold_tools] == ["web_search"]
+    view.live = True
+    tools = await llm_node._discover_tools(agent)
+    assert [tool["function"]["name"] for tool in tools] == ["analyze_camera_view", "web_search"]

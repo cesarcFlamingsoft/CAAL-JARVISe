@@ -13,7 +13,7 @@ from collections.abc import Callable
 __all__ = ["AGENT_METHOD_TOOLS", "resolve_agent_method_tool"]
 
 # Names of @function_tool decorated methods defined on the agent classes.
-AGENT_METHOD_TOOLS: frozenset[str] = frozenset({"web_search"})
+AGENT_METHOD_TOOLS: frozenset[str] = frozenset({"analyze_camera_view", "web_search"})
 
 
 def resolve_agent_method_tool(agent: object, tool_name: str) -> Callable[..., object] | None:

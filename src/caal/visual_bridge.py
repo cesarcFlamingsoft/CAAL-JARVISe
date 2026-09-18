@@ -10,24 +10,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 _TOPIC = re.compile(r"^[a-f0-9]{32}$")
-_QUESTIONS = re.compile(
-    r"(?:friday[, ]+)?(?:what (?:is|s) this (?:that )?i (?:am|m) (?:handling|holding)|"
-    r"what (?:am i holding(?: (?:in|on) my hand)?|(?:is|s) in my hand|"
-    r"can you see|does this look like|is in front of me)|"
-    r"(?:can you |could you )?tell me what i (?:am|m) holding|"
-    r"(?:friday[, ]+)?(?:can you |could you )?see what i have in my hand|"
-    r"(?:can you |could you |please )?(?:describe|tell me) what you (?:see|can see)|"
-    r"(?:please )?(?:analyze|describe) (?:the |my )?(?:current )?(?:camera view|vision preview))"
-)
-OPEN_VISION = "Open Vision in Personal mode with a live camera preview, then ask again."
-UNAVAILABLE = "The local visual answer is unavailable. Please try again."
-
-
-def explicit_visual_question(text: str) -> bool:
-    if not isinstance(text, str) or len(text) > 160:
-        return False
-    normalized = re.sub(r"[’']", " ", text.lower()).strip(" .?!")
-    return _QUESTIONS.fullmatch(" ".join(normalized.split())) is not None
 
 
 class VisualBridge:
@@ -37,21 +19,16 @@ class VisualBridge:
         user: str | None,
         room: str,
         send: Callable[[dict[str, Any], str], Awaitable[None]],
-        speak: Callable[[str], Awaitable[None]],
     ) -> None:
         self.user, self.room = user, room
-        self._send, self._speak = send, speak
+        self._send = send
         self._binding: tuple[str, str] | None = None
         self._seq = 0
         self._closed = False
         self.pending: asyncio.Future[str] | None = None
         self._command: dict[str, Any] | None = None
-        self._speech_task: asyncio.Future[None] | None = None
 
     def cancel(self) -> None:
-        if self._speech_task is not None:
-            self._speech_task.cancel()
-            self._speech_task = None
         if self._command is not None and self._binding is not None:
             packet = {**self._command, "action": "vision.cancel"}
             participant = self._binding[0]
@@ -132,16 +109,17 @@ class VisualBridge:
         if not self.pending.done():
             self.pending.set_result(description)
 
-    async def handle(self, text: str, *, company: bool = False) -> bool:
+    def available(self) -> bool:
+        """Whether this exact personal browser session has an active camera binding."""
+        return not self._closed and self.user is not None and self._binding is not None
+
+    async def analyze(self) -> str:
+        """Capture one bound camera frame and return its local description to the LLM tool."""
+        if not self.available():
+            raise ValueError("vision_unavailable")
         self.cancel()
-        if not explicit_visual_question(text):
-            return False
-        if self._closed:
-            return True
-        if company or not self.user or self._binding is None:
-            await self._speak(OPEN_VISION)
-            return True
         binding = self._binding
+        assert binding is not None
         self._seq += 1
         command = dict(
             action="vision.analyze",
@@ -156,22 +134,9 @@ class VisualBridge:
         try:
             await self._send(command, binding[0])
             description = await asyncio.wait_for(asyncio.shield(future), 30)
-            if self.pending is future and self._binding == binding and not self._closed:
-                self._speech_task = asyncio.ensure_future(self._speak(description or OPEN_VISION))
-                description = ""
-                await self._speech_task
-                self._speech_task = None
-        except asyncio.CancelledError:
-            if self.pending is future:
-                raise
-        except Exception:
-            # Fail closed; no exception or packet content is emitted.
-            if self.pending is future and not self._closed:
-                try:
-                    await self._speak(UNAVAILABLE)
-                except Exception:
-                    pass
+            if not description:
+                raise ValueError("vision_unavailable")
+            return description
         finally:
             if self.pending is future:
                 self.cancel()
-        return True

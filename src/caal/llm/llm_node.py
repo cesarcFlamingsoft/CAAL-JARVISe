@@ -649,6 +649,9 @@ def _company_tool_policy(agent, name: str) -> bool | None:
 
 def _tool_available(agent, name: str) -> bool:
     """Connected identities read their own accounts, never deployment-wide stores."""
+    if name == "analyze_camera_view":
+        visual = getattr(agent, "_visual_bridge", None)
+        return bool(visual is not None and visual.available())
     company = _company_tool_policy(agent, name)
     if company is not None:
         if not company:
@@ -783,12 +786,11 @@ async def _discover_tools(agent) -> list[dict] | None:
         tool_names = [t["function"]["name"] for t in tools]
         logger.info(f"Discovered {len(tools)} tools: {tool_names}")
 
-    # Cache tools on agent and return
-    tools = [t for t in tools if _tool_available(agent, t["function"]["name"])]
-    result = tools if tools else None
-    agent._llm_tools_cache = result
-
-    return result
+    # Cache the complete discovered set. Availability is session state: the live
+    # camera tool may appear after the ordinary tools were cached, so filter only
+    # at the boundary where this turn's tool list is returned.
+    agent._llm_tools_cache = tools or None
+    return [t for t in tools if _tool_available(agent, t["function"]["name"])] or None
 
 
 async def _get_mcp_tools(mcp_server) -> list[dict]:
@@ -965,7 +967,13 @@ async def _execute_tool_calls(
 # knowledge, so they do not cross the Hermes barrier, but they do not belong in
 # the log either, and neither do the row ids they carry.
 PRIVATE_LOCAL_TOOLS = frozenset(
-    {"alarms.set", "reminders.create", "reminders.list", "reminders.set_delivery"}
+    {
+        "alarms.set",
+        "analyze_camera_view",
+        "reminders.create",
+        "reminders.list",
+        "reminders.set_delivery",
+    }
 )
 
 
