@@ -169,27 +169,36 @@ class VisualRuntime:
                 raise VisionUnavailableError
             for attempt in range(2):
                 stage = "camera_analysis" if attempt == 0 else "camera_analysis_retry"
-                answered = await client.post(
-                    f"{endpoint}/api/chat",
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt, "images": [image]}],
-                        "stream": False,
-                        "options": {"num_predict": 300, "temperature": 0.2},
-                    },
-                    follow_redirects=False,
-                    headers={"Accept": "application/json"},
-                )
-                payload = self._json(answered)
-                message = payload.get("message") if isinstance(payload, dict) else None
-                content = message.get("content") if isinstance(message, dict) else None
-                concise = (
-                    " ".join(content.split())[:MAX_OUTPUT_CHARS].strip()
-                    if isinstance(content, str)
-                    else ""
-                )
-                if concise:
-                    return concise
+                try:
+                    answered = await client.post(
+                        f"{endpoint}/api/chat",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt, "images": [image]}],
+                            "stream": False,
+                            "options": {"num_predict": 300, "temperature": 0.2},
+                        },
+                        follow_redirects=False,
+                        headers={"Accept": "application/json"},
+                    )
+                    payload = self._json(answered)
+                    message = payload.get("message") if isinstance(payload, dict) else None
+                    content = message.get("content") if isinstance(message, dict) else None
+                    concise = (
+                        " ".join(content.split())[:MAX_OUTPUT_CHARS].strip()
+                        if isinstance(content, str)
+                        else ""
+                    )
+                    if concise:
+                        return concise
+                except (httpx.HTTPError, ValueError, VisionUnavailableError) as exc:
+                    if attempt:
+                        raise
+                    logger.warning(
+                        "Visual analysis transient failure kind=%s; retrying once",
+                        type(exc).__name__,
+                    )
+                    continue
                 if attempt == 0:
                     logger.warning("Visual analysis returned no description; retrying once")
             raise VisionUnavailableError

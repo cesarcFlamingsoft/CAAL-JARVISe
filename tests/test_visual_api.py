@@ -217,6 +217,17 @@ def test_retries_one_empty_local_vision_response(client, harness):
     ]
 
 
+def test_retries_one_transient_local_vision_failure(client, harness):
+    harness.answers = [
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(503, text="temporary"),
+        httpx.Response(200, json={"message": {"content": "A blue view."}}),
+    ]
+    response = client.post("/users/me/visual/analyze", headers=harness.bearer(), json=body())
+    assert response.status_code == 200
+    assert response.json() == {"description": "A blue view."}
+
+
 def test_accepts_a_bounded_large_show_response_but_keeps_chat_response_strict(client, harness):
     harness.answers = [
         httpx.Response(200, json={"capabilities": ["vision"], "model_info": {"x": "z" * 160_000}}),
