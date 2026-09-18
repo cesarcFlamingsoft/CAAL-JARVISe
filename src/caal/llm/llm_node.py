@@ -704,45 +704,47 @@ async def _discover_tools(agent) -> list[dict] | None:
     # Get @function_tool decorated methods from agent (bound methods on class)
     if hasattr(agent, "_tools") and agent._tools:
         for tool in agent._tools:
-            if hasattr(tool, "__func__"):
-                func = tool.__func__
-                name = func.__name__
-                description = func.__doc__ or ""
-                sig = inspect.signature(func)
-                properties = {}
-                required = []
+            func = getattr(tool, "__func__", None) or getattr(tool, "__wrapped__", None)
+            if func is None:
+                continue
+            info = getattr(tool, "info", None)
+            name = getattr(info, "name", None) or func.__name__
+            description = getattr(info, "description", None) or func.__doc__ or ""
+            sig = inspect.signature(func)
+            properties = {}
+            required = []
 
-                for param_name, param in sig.parameters.items():
-                    if param_name == "self":
-                        continue
-                    param_type = "string"
-                    if param.annotation is not inspect.Parameter.empty:
-                        if param.annotation is str:
-                            param_type = "string"
-                        elif param.annotation is int:
-                            param_type = "integer"
-                        elif param.annotation is float:
-                            param_type = "number"
-                        elif param.annotation is bool:
-                            param_type = "boolean"
-                    properties[param_name] = {"type": param_type}
-                    if param.default is inspect.Parameter.empty and param_name != "self":
-                        required.append(param_name)
+            for param_name, param in sig.parameters.items():
+                if param_name == "self":
+                    continue
+                param_type = "string"
+                if param.annotation is not inspect.Parameter.empty:
+                    if param.annotation is str:
+                        param_type = "string"
+                    elif param.annotation is int:
+                        param_type = "integer"
+                    elif param.annotation is float:
+                        param_type = "number"
+                    elif param.annotation is bool:
+                        param_type = "boolean"
+                properties[param_name] = {"type": param_type}
+                if param.default is inspect.Parameter.empty and param_name != "self":
+                    required.append(param_name)
 
-                tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "description": description,
-                            "parameters": {
-                                "type": "object",
-                                "properties": properties,
-                                "required": required,
-                            },
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": description,
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": required,
                         },
-                    }
-                )
+                    },
+                }
+            )
 
     # Get MCP tools from all configured servers (except n8n and home_assistant)
     # n8n uses webhook-based workflow discovery, not direct MCP tools

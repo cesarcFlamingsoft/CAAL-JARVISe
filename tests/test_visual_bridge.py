@@ -180,9 +180,13 @@ async def test_camera_tool_is_discovered_after_the_camera_opens_even_if_cache_wa
         or (name == "analyze_camera_view" and agent._visual_bridge.available()),
     )
 
+    from livekit.agents import function_tool
+
+    @function_tool
     async def analyze_camera_view(self):
         """Inspect the live camera."""
 
+    @function_tool
     async def web_search(self, query: str):
         """Search the web."""
 
