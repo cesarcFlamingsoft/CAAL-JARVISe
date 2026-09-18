@@ -14,7 +14,7 @@ from .speech_request import SpeechProfile, speech_profile
 class QwenTTS(tts.TTS):
     @property
     def model(self) -> str:
-        return "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+        return "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit"
 
     @property
     def provider(self) -> str:

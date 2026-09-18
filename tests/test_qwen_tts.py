@@ -298,7 +298,7 @@ async def test_short_first_sentence_starts_without_waiting_for_remaining_text():
 async def test_metrics_identify_actual_trial_model():
     provider = qwen_tts.QwenTTS(endpoint="http://127.0.0.1:18003", token="a" * 32)
     try:
-        assert provider.model == "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+        assert provider.model == "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit"
         assert provider.provider == "qwen-trial-mlx"
     finally:
         await provider.aclose()
