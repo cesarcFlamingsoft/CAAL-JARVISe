@@ -192,6 +192,7 @@ def test_checks_vision_then_sends_a_tool_free_local_chat_payload(client, harness
     payload = json.loads(harness.requests[1].content)
     assert payload["model"] == "gemma4:e4b"
     assert payload["stream"] is False
+    assert payload["think"] is False
     assert payload["messages"][0]["role"] == "user"
     assert payload["messages"][0]["content"] == PROMPT
     assert isinstance(payload["messages"][0]["images"][0], str)
@@ -216,6 +217,17 @@ def test_retries_one_empty_local_vision_response(client, harness):
         "/api/chat",
         "/api/chat",
     ]
+
+
+def test_empty_retries_report_a_specific_no_description_failure(client, harness):
+    harness.answers = [
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(200, json={"message": {"content": ""}}),
+        httpx.Response(200, json={"message": {"content": ""}}),
+    ]
+    response = client.post("/users/me/visual/analyze", headers=harness.bearer(), json=body())
+    assert response.status_code == 502
+    assert response.json() == {"detail": "vision_no_description"}
 
 
 def test_retries_one_transient_local_vision_failure(client, harness):

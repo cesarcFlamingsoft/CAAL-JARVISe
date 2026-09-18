@@ -143,6 +143,10 @@ class VisionUnavailableError(Exception):
     pass
 
 
+class VisionNoDescriptionError(VisionUnavailableError):
+    """The local model answered but did not produce a caption."""
+
+
 class VisualRuntime:
     """The only network path: two bounded calls to one validated local Ollama."""
 
@@ -205,6 +209,9 @@ class VisualRuntime:
                             "model": model,
                             "messages": [{"role": "user", "content": prompt, "images": [image]}],
                             "stream": False,
+                            # A visual caption is a bounded observation, not a reasoning
+                            # turn: reserve the output budget for the description itself.
+                            "think": False,
                             "options": {"num_predict": 300, "temperature": 0.2},
                         },
                         follow_redirects=False,
@@ -230,7 +237,9 @@ class VisualRuntime:
                     continue
                 if attempt == 0:
                     logger.warning("Visual analysis returned no description; retrying once")
-            raise VisionUnavailableError
+            raise VisionNoDescriptionError
+        except VisionNoDescriptionError:
+            raise
         except (httpx.HTTPError, ValueError, VisionUnavailableError) as exc:
             logger.warning(
                 "Visual analysis unavailable at stage=%s kind=%s", stage, type(exc).__name__
@@ -317,6 +326,8 @@ async def analyze_camera_view(
         raise HTTPException(status_code=422, detail="invalid_image") from exc
     try:
         description = await runtime.analyze(image=model_image, prompt=body.prompt)
+    except VisionNoDescriptionError as exc:
+        raise HTTPException(status_code=502, detail="vision_no_description") from exc
     except VisionUnavailableError as exc:
         raise HTTPException(status_code=503, detail="vision_unavailable") from exc
     return VisualResponse(description=description)

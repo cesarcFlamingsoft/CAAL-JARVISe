@@ -103,6 +103,9 @@ export async function POST(req: NextRequest) {
     if (result.status === 503 && detail === 'vision_unavailable') {
       return apiError(503, 'vision_unavailable');
     }
+    if (result.status === 502 && detail === 'vision_no_description') {
+      return apiError(502, 'vision_no_description');
+    }
     return backendFailure(result.status, result.data);
   }
   const description = (result.data as { description?: unknown } | null)?.description;

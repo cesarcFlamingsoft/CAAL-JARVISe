@@ -23,6 +23,7 @@ const ERROR_TEXT: Record<string, string> = {
   company_mode_blocked: 'Visual analysis is unavailable in Company Mode.',
   not_signed_in: 'Sign in to analyze the camera view.',
   vision_unavailable: 'Local visual analysis is unavailable.',
+  vision_no_description: 'The local visual model returned no description for this frame.',
   rate_limited: 'Please wait before analyzing another view.',
 };
 
