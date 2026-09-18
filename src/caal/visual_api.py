@@ -167,19 +167,32 @@ class VisualRuntime:
             capabilities = show.get("capabilities") if isinstance(show, dict) else None
             if not isinstance(capabilities, list) or "vision" not in capabilities:
                 raise VisionUnavailableError
-            stage = "camera_analysis"
-            answered = await client.post(
-                f"{endpoint}/api/chat",
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt, "images": [image]}],
-                    "stream": False,
-                    "options": {"num_predict": 300, "temperature": 0.2},
-                },
-                follow_redirects=False,
-                headers={"Accept": "application/json"},
-            )
-            payload = self._json(answered)
+            for attempt in range(2):
+                stage = "camera_analysis" if attempt == 0 else "camera_analysis_retry"
+                answered = await client.post(
+                    f"{endpoint}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt, "images": [image]}],
+                        "stream": False,
+                        "options": {"num_predict": 300, "temperature": 0.2},
+                    },
+                    follow_redirects=False,
+                    headers={"Accept": "application/json"},
+                )
+                payload = self._json(answered)
+                message = payload.get("message") if isinstance(payload, dict) else None
+                content = message.get("content") if isinstance(message, dict) else None
+                concise = (
+                    " ".join(content.split())[:MAX_OUTPUT_CHARS].strip()
+                    if isinstance(content, str)
+                    else ""
+                )
+                if concise:
+                    return concise
+                if attempt == 0:
+                    logger.warning("Visual analysis returned no description; retrying once")
+            raise VisionUnavailableError
         except (httpx.HTTPError, ValueError, VisionUnavailableError) as exc:
             logger.warning(
                 "Visual analysis unavailable at stage=%s kind=%s", stage, type(exc).__name__
@@ -187,15 +200,6 @@ class VisualRuntime:
             raise VisionUnavailableError from exc
         finally:
             await client.aclose()
-
-        message = payload.get("message") if isinstance(payload, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
-            raise VisionUnavailableError
-        concise = " ".join(content.split())[:MAX_OUTPUT_CHARS].strip()
-        if not concise:
-            raise VisionUnavailableError
-        return concise
 
     @staticmethod
     def _json(response: httpx.Response, *, maximum: int = MAX_UPSTREAM_BYTES) -> object:

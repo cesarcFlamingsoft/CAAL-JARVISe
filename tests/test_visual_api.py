@@ -201,6 +201,22 @@ def test_checks_vision_then_sends_a_tool_free_local_chat_payload(client, harness
     assert "hermes" not in repr(payload).lower()
 
 
+def test_retries_one_empty_local_vision_response(client, harness):
+    harness.answers = [
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(200, json={"message": {"content": ""}}),
+        httpx.Response(200, json={"message": {"content": "A blue view."}}),
+    ]
+    response = client.post("/users/me/visual/analyze", headers=harness.bearer(), json=body())
+    assert response.status_code == 200
+    assert response.json() == {"description": "A blue view."}
+    assert [request.url.path for request in harness.requests] == [
+        "/api/show",
+        "/api/chat",
+        "/api/chat",
+    ]
+
+
 def test_accepts_a_bounded_large_show_response_but_keeps_chat_response_strict(client, harness):
     harness.answers = [
         httpx.Response(200, json={"capabilities": ["vision"], "model_info": {"x": "z" * 160_000}}),
