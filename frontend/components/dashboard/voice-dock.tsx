@@ -26,6 +26,7 @@ import { ScrollArea } from '@/components/livekit/scroll-area/scroll-area';
 import { type VoiceTone, voiceStatus } from '@/lib/dashboard/activity';
 import { cn } from '@/lib/utils';
 import { type VisionAnalysis, VisionCommandHandler } from '@/lib/visual/bridge';
+import { reanalyzeLastCameraView } from '@/lib/visual/client';
 import { VoiceReactor } from './voice-reactor';
 
 const TONE_DOT: Record<VoiceTone, string> = {
@@ -94,7 +95,9 @@ export function VoiceDock({
             return analyze(signal);
           }
         : null,
-      send
+      send,
+      async (question, signal) =>
+        reanalyzeLastCameraView(question, { signal, expectedUser: userId })
     );
     const receive = (
       payload: Uint8Array,

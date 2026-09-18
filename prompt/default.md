@@ -36,6 +36,9 @@ Act immediately - don't ask for confirmation. Speak the response verbatim.
   visible objects, a person's surroundings, or what the user is holding; do not use it for unrelated chat.
 - The tool captures one reduced local frame and returns a description. Use that description to answer
   directly and naturally. Do not claim you can see anything unless the tool returned a result.
+- `reanalyze_last_camera_view(question)` appears with the live camera tool after a successful analysis.
+  Use it for a bounded follow-up about that same frame instead of capturing the current preview again.
+  If it is unavailable, say the saved view is unavailable; do not guess.
 
 # Tool Response Handling
 

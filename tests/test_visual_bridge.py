@@ -126,6 +126,23 @@ async def test_camera_tool_analysis_returns_a_bound_result_without_speaking_it()
 
 
 @pytest.mark.asyncio
+async def test_reanalysis_sends_a_bounded_followup_without_recapturing():
+    bridge, commands, _ = setup_bridge()
+    task = asyncio.create_task(bridge.reanalyze("What color is the mug?"))
+    await asyncio.sleep(0)
+    command, participant = commands[0]
+    assert command["action"] == "vision.reanalyze"
+    assert command["question"] == "What color is the mug?"
+    bridge.receive(
+        json.dumps({**command, "action": "vision.result", "description": "Blue."}).encode(),
+        participant,
+    )
+    assert await task == "Blue."
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await bridge.reanalyze("bad\nquestion")
+
+
+@pytest.mark.asyncio
 async def test_invalid_results_never_resolve_pending_turn():
     bridge, commands, answers = setup_bridge()
     task = asyncio.create_task(bridge.analyze())

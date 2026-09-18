@@ -88,3 +88,47 @@ export async function analyzeCameraView(
     frame = null;
   }
 }
+
+export async function reanalyzeLastCameraView(
+  question: string,
+  dependencies: Omit<Dependencies, 'capture'> = {}
+): Promise<string> {
+  if (question.length < 1 || question.length > 240 || /[\x00-\x1f\x7f]/.test(question))
+    throw new Error('invalid');
+  dependencies.signal?.throwIfAborted();
+  const csrf = await (dependencies.csrf ?? (() => csrfToken(dependencies.expectedUser)))();
+  dependencies.signal?.throwIfAborted();
+  let response: Response;
+  try {
+    response = await (dependencies.request ?? fetch)('/api/visual/reanalyze', {
+      method: 'POST',
+      signal: dependencies.signal,
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CAAL-CSRF': csrf,
+        ...(dependencies.expectedUser ? { 'X-CAAL-Visual-User': dependencies.expectedUser } : {}),
+      },
+      body: JSON.stringify({ question }),
+    });
+  } catch {
+    throw new Error('analysis_unavailable');
+  }
+  const body = (await response.json().catch(() => null)) as {
+    description?: unknown;
+    error?: unknown;
+  } | null;
+  if (!response.ok) {
+    const code = typeof body?.error === 'string' ? body.error : 'analysis_unavailable';
+    throw new Error(code);
+  }
+  if (typeof body?.description !== 'string' || body.description.length > 1200) {
+    throw new Error('analysis_unavailable');
+  }
+  if (dependencies.expectedUser && (await csrfToken(dependencies.expectedUser)) !== csrf) {
+    throw new Error('not_signed_in');
+  }
+  dependencies.signal?.throwIfAborted();
+  return body.description;
+}

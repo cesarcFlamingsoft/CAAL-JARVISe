@@ -42,7 +42,7 @@ from caal.user_scope import (
 
 from ..integrations.n8n import execute_n8n_workflow
 from ..utils.formatting import strip_markdown_for_tts
-from .agent_tools import resolve_agent_method_tool
+from .agent_tools import AGENT_METHOD_TOOLS, resolve_agent_method_tool
 from .context_barrier import (
     TOOL_DATA_HEADER,
     is_knowledge_tool,
@@ -665,7 +665,7 @@ def _company_tool_policy(agent, name: str) -> bool | None:
 
 def _tool_available(agent, name: str) -> bool:
     """Connected identities read their own accounts, never deployment-wide stores."""
-    if name == "analyze_camera_view":
+    if name in {"analyze_camera_view", "reanalyze_last_camera_view"}:
         visual = getattr(agent, "_visual_bridge", None)
         return bool(visual is not None and visual.available())
     company = _company_tool_policy(agent, name)
@@ -725,6 +725,8 @@ async def _discover_tools(agent) -> list[dict] | None:
                 continue
             info = getattr(tool, "info", None)
             name = getattr(info, "name", None) or func.__name__
+            if name not in AGENT_METHOD_TOOLS:
+                continue
             description = getattr(info, "description", None) or func.__doc__ or ""
             sig = inspect.signature(func)
             properties = {}
@@ -988,6 +990,7 @@ PRIVATE_LOCAL_TOOLS = frozenset(
     {
         "alarms.set",
         "analyze_camera_view",
+        "reanalyze_last_camera_view",
         "reminders.create",
         "reminders.list",
         "reminders.set_delivery",

@@ -23,6 +23,7 @@ from . import user_api
 from .internal_auth import RateLimiter
 from .local_ollama import is_model_name, normalize_endpoint, resolve_local_alias
 from .user_api import CurrentUser, IdentityRuntime, require_user
+from .visual_cache import VisualFrameCache
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,9 @@ VISUAL_PROMPT = (
     "or text only when clear; never guess."
 )
 MAX_OUTPUT_CHARS = 1200
+FOLLOWUP_PREFIX = (
+    "Answer this visual follow-up about the saved camera frame, using only visible evidence: "
+)
 # Ollama's /api/show includes model metadata and can exceed the bounded chat
 # response envelope; only its capability list is used here.
 MAX_SHOW_BYTES = 256 * 1024
@@ -82,6 +86,17 @@ class VisualRequest(_Strict):
 
 class VisualResponse(_Strict):
     description: str
+
+
+class VisualReanalyzeRequest(_Strict):
+    question: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
+
+    @field_validator("question")
+    @classmethod
+    def safe_question(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("control character")
+        return value
 
 
 def decode_jpeg(value: str) -> bytes:
@@ -165,6 +180,7 @@ class VisualRuntime:
         self._load = load
         self._transport = transport
         self.limiter = limiter or RateLimiter(limit=ANALYSIS_LIMIT_PER_MINUTE, window_seconds=60)
+        self.cache = VisualFrameCache()
 
     def allow(self, user_id: str) -> bool:
         return self.limiter.allow(user_id, now=self.identity.clock())
@@ -251,6 +267,13 @@ class VisualRuntime:
         finally:
             await client.aclose()
 
+    async def reanalyze(self, *, user_id: str, session_binding: str, question: str) -> str | None:
+        """Analyze this binding's retained compact frame, if it still exists."""
+        image = self.cache.get(user_id, session_binding)
+        if image is None:
+            return None
+        return await self.analyze(image=image, prompt=FOLLOWUP_PREFIX + question)
+
     @staticmethod
     def _json(response: httpx.Response, *, maximum: int = MAX_UPSTREAM_BYTES) -> object:
         if response.status_code != 200 or len(response.content) > maximum:
@@ -307,6 +330,26 @@ async def _bounded_request(request: Request) -> VisualRequest:
         raise HTTPException(status_code=422, detail="invalid") from exc
 
 
+async def _bounded_followup_request(request: Request) -> VisualReanalyzeRequest:
+    maximum = MAX_PROMPT_CHARS + 128
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            if int(length) > maximum:
+                raise HTTPException(status_code=422, detail="invalid")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid") from exc
+    received = bytearray()
+    async for chunk in request.stream():
+        received.extend(chunk)
+        if len(received) > maximum:
+            raise HTTPException(status_code=422, detail="invalid")
+    try:
+        return VisualReanalyzeRequest.model_validate(json.loads(received))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail="invalid") from exc
+
+
 router = APIRouter(tags=["visual"])
 
 
@@ -329,8 +372,35 @@ async def analyze_camera_view(
         raise HTTPException(status_code=422, detail="invalid_image") from exc
     try:
         description = await runtime.analyze(image=model_image, prompt=body.prompt)
+        runtime.cache.put(user.profile.user_id, user.session_binding, model_image)
     except VisionNoDescriptionError as exc:
         raise HTTPException(status_code=502, detail="vision_no_description") from exc
     except VisionUnavailableError as exc:
         raise HTTPException(status_code=503, detail="vision_unavailable") from exc
+    return VisualResponse(description=description)
+
+
+@router.post("/users/me/visual/reanalyze", response_model=VisualResponse)
+async def reanalyze_camera_view(
+    request: Request,
+    user: CurrentUser = Depends(require_user),
+    runtime: VisualRuntime = Depends(require_visual_runtime),
+) -> VisualResponse:
+    if user.session_binding is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="owner_binding_required")
+    body = await _bounded_followup_request(request)
+    if not runtime.allow(user.profile.user_id):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limited")
+    try:
+        description = await runtime.reanalyze(
+            user_id=user.profile.user_id,
+            session_binding=user.session_binding,
+            question=body.question,
+        )
+    except VisionNoDescriptionError as exc:
+        raise HTTPException(status_code=502, detail="vision_no_description") from exc
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="vision_unavailable") from exc
+    if description is None:
+        raise HTTPException(status_code=404, detail="visual_frame_unavailable")
     return VisualResponse(description=description)

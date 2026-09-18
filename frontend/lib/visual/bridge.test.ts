@@ -109,3 +109,33 @@ test('a cancellation arriving before its command prevents later capture', async 
   await h.handler.receive(command, 'a');
   assert.equal(h.captures(), 0);
 });
+
+test('validated reanalysis forwards a bounded question without camera capture', async () => {
+  let captures = 0;
+  const sent: unknown[] = [];
+  const handler = new VisionCommandHandler(
+    binding,
+    async () => {
+      captures++;
+      return 'captured';
+    },
+    async (packet) => {
+      sent.push(packet);
+    },
+    async (question) => `The saved frame says: ${question}`
+  );
+  await handler.receive(
+    { ...command, action: 'vision.reanalyze', seq: 2, question: 'What color?' },
+    'a'
+  );
+  assert.equal(captures, 0);
+  assert.equal(
+    (sent[0] as { description: string }).description,
+    'The saved frame says: What color?'
+  );
+  await handler.receive(
+    { ...command, action: 'vision.reanalyze', seq: 3, question: 'bad\nquestion' },
+    'a'
+  );
+  assert.equal(sent.length, 1);
+});

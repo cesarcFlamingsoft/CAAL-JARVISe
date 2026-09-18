@@ -2148,6 +2148,32 @@ class VoiceAssistant(WebSearchTools, Agent):
                 "message": "The local camera analysis is unavailable. Ask the user to try again.",
             }
 
+    @function_tool
+    async def reanalyze_last_camera_view(self, question: str) -> dict[str, str]:
+        """Answer a follow-up about the last successfully analyzed camera frame.
+
+        Use this instead of capturing the current preview again when the user asks a
+        more specific question about the same view. It is available only while that
+        authenticated Personal-mode camera binding remains active.
+        """
+        visual = self._visual_bridge
+        if visual is None or not visual.available():
+            return {
+                "status": "unavailable",
+                "message": (
+                    "The saved camera view is no longer available. Ask the user to open Vision."
+                ),
+            }
+        try:
+            return {"status": "ok", "description": await visual.reanalyze(question)}
+        except (TimeoutError, ValueError):
+            return {
+                "status": "unavailable",
+                "message": (
+                    "The saved camera view is unavailable. Ask the user to analyze the view again."
+                ),
+            }
+
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """Drop a turn CAAL answered itself, so the LLM never sees the command.
 

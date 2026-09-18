@@ -17,6 +17,7 @@ from caal.security_config import MultiUserConfig
 from caal.user_api import IdentityRuntime
 from caal.user_store import MEMBER, Actor, UserStore
 from caal.visual_api import MAX_IMAGE_BYTES, VisualRuntime
+from caal.visual_cache import VisualFrameCache
 
 SECRET = "v" * 48
 NOW = 1_700_000_000
@@ -111,6 +112,12 @@ def body(**changes):
         "prompt": PROMPT,
         "company_private": False,
     }
+    value.update(changes)
+    return value
+
+
+def followup(**changes):
+    value = {"question": "What color is the mug?"}
     value.update(changes)
     return value
 
@@ -259,6 +266,63 @@ def test_reencodes_camera_frame_to_a_compact_model_input(client, harness):
     with Image.open(io.BytesIO(base64.b64decode(model_image))) as image:
         assert image.format == "JPEG"
         assert image.size == (384, 288)
+
+
+def test_reanalyze_uses_only_the_successfully_analyzed_compact_frame(client, harness):
+    harness.answers = [
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(200, json={"message": {"content": "A blue mug."}}),
+        httpx.Response(200, json={"capabilities": ["vision"]}),
+        httpx.Response(200, json={"message": {"content": "The mug is blue."}}),
+    ]
+    initial = client.post("/users/me/visual/analyze", headers=harness.bearer(), json=body())
+    assert initial.status_code == 200
+    response = client.post(
+        "/users/me/visual/reanalyze", headers=harness.bearer(), json=followup()
+    )
+    assert response.status_code == 200
+    assert response.json() == {"description": "The mug is blue."}
+    payload = json.loads(harness.requests[-1].content)
+    assert payload["messages"][0]["content"].startswith(visual_api.FOLLOWUP_PREFIX)
+    assert payload["messages"][0]["images"][0] != body()["image"]
+
+
+def test_reanalyze_rejects_invalid_questions_and_cross_binding_access(client, harness):
+    for question in ("", "x" * 241, "visible\ntext"):
+        response = client.post(
+            "/users/me/visual/reanalyze", headers=harness.bearer(), json=followup(question=question)
+        )
+        assert response.status_code == 422
+    other = harness.bearer()
+    # A token with a distinct valid binding cannot read the first binding's frame.
+    claims = {"session_binding": "b" * 64}
+    token = mint_principal(
+        secret=SECRET, subject=harness.user, audience=AUDIENCE_BACKEND, claims=claims, now=NOW
+    )
+    response = client.post(
+        "/users/me/visual/reanalyze", headers={"Authorization": f"Bearer {token}"}, json=followup()
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "visual_frame_unavailable"}
+    assert other
+
+
+def test_frame_cache_is_process_keyed_expiring_and_permissioned(tmp_path):
+    now = [1000.0]
+    cache = VisualFrameCache(tmp_path / "frames", clock=lambda: now[0])
+    cache.put("usr_a", "binding_a", "YWJj")
+    paths = list((tmp_path / "frames").iterdir())
+    assert len(paths) == 1
+    assert paths[0].name != "usr_a"
+    assert paths[0].stat().st_mode & 0o777 == 0o600
+    assert b"YWJj" not in paths[0].read_bytes()
+    assert cache.get("usr_a", "binding_a") == "YWJj"
+    assert cache.get("usr_a", "binding_b") is None
+    now[0] += 30 * 60 + 1
+    assert cache.get("usr_a", "binding_a") is None
+    cache.put("usr_a", "binding_a", "YWJj")
+    restarted = VisualFrameCache(tmp_path / "frames", clock=lambda: now[0])
+    assert restarted.get("usr_a", "binding_a") is None
 
 
 def test_accepts_a_bounded_large_show_response_but_keeps_chat_response_strict(client, harness):

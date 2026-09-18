@@ -133,6 +133,19 @@ class VisualBridge:
 
     async def analyze(self) -> str:
         """Capture one bound camera frame and return its local description to the LLM tool."""
+        return await self._request("vision.analyze")
+
+    async def reanalyze(self, question: str) -> str:
+        """Ask the browser BFF to reanalyze this binding's retained compact frame."""
+        if (
+            not isinstance(question, str)
+            or not 0 < len(question) <= 240
+            or any(ord(character) < 32 or ord(character) == 127 for character in question)
+        ):
+            raise ValueError("vision_unavailable")
+        return await self._request("vision.reanalyze", question=question)
+
+    async def _request(self, action: str, **extra: str) -> str:
         if not self.available():
             raise ValueError("vision_unavailable")
         self.cancel()
@@ -140,13 +153,14 @@ class VisualBridge:
         assert binding is not None
         self._seq += 1
         command = dict(
-            action="vision.analyze",
+            action=action,
             user=self.user,
             room=self.room,
             epoch=binding[1],
             seq=self._seq,
             expires=int(time.time() * 1000) + 30000,
         )
+        command.update(extra)
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.pending, self._command = future, command
         try:

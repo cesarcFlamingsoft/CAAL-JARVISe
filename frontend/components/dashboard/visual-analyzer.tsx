@@ -165,8 +165,11 @@ export function VisualAnalyzer({
           {busy ? 'Analyzing…' : 'Analyze camera view'}
         </Button>
         <p id="visual-analysis-privacy" className="text-muted-foreground text-xs">
-          Visual analysis is on-demand. One reduced frame goes only to FRIDAY’s local Ollama service
-          and is not retained; gesture tracking remains browser-local.
+          Visual analysis is on-demand. After a successful analysis, one 384px reduced frame is
+          encrypted on this server for this signed-in browser session only, so FRIDAY can answer a
+          {/* gesture tracking remains browser-local */}
+          follow-up without recapturing. It expires within 30 minutes and on server restart; gesture tracking
+          remains browser-local.
         </p>
       </div>
       {result && (
