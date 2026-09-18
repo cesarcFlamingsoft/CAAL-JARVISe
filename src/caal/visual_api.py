@@ -227,6 +227,7 @@ def require_visual_runtime(
     runtime: VisualRuntime | None = Depends(get_visual_runtime),
 ) -> VisualRuntime:
     if runtime is None:
+        logger.warning("Visual runtime unavailable because identity runtime is absent")
         raise HTTPException(status_code=503, detail="vision_unavailable")
     return runtime
 

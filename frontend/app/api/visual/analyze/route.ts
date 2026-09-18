@@ -97,6 +97,9 @@ export async function POST(req: NextRequest) {
   });
   if (!result.ok) {
     const detail = backendDetail(result.data);
+    console.warn(
+      `[visual] backend analysis failed status=${result.status ?? 'network'} detail=${detail ?? 'none'}`
+    );
     if (result.status === 503 && detail === 'vision_unavailable') {
       return apiError(503, 'vision_unavailable');
     }
